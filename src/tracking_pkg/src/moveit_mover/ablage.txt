@@ -1,0 +1,62 @@
+
+    void handPositionCallback(const geometry_msgs::msg::Pose::SharedPtr msg) { // Plant bewegung wenn Handposition empfangen wird
+        // Zielpose definieren
+        geometry_msgs::msg::Pose above_pose;
+        double x_pos = msg->position.x;
+        double y_pos = msg->position.y;
+        double z_pos = msg->position.z;
+        RCLCPP_INFO(this->get_logger(), "Received hand position: x=%.3f, y=%.3f, z=%.3f", x_pos, y_pos, z_pos);
+        above_pose.position.x = x_pos - 0.2; 
+        above_pose.position.y = y_pos;
+        above_pose.position.z = z_pos + 0.25;
+        above_pose.orientation = msg->orientation;
+
+        // constraints definieren
+        moveit_msgs::msg::Constraints constraints;
+        // Elbow up constraints hinzufügen (elbow joint muss positiv sein)
+        moveit_msgs::msg::JointConstraint elbow_constraint;
+        elbow_constraint.joint_name = "elbow_joint"; //
+        elbow_constraint.position = 0.52;              // Zielposition (ca. 30°)
+        elbow_constraint.tolerance_above = 2.25;       // darf bis 3 rad also ca. 170° nach oben gehen
+        elbow_constraint.tolerance_below = 0.52;       // erlaubt nur positive Winkel > 0
+        elbow_constraint.weight = 1.0;
+        constraints.joint_constraints.push_back(elbow_constraint);
+        // Shoulder/base constraint zwischen -90° und 90°
+        moveit_msgs::msg::JointConstraint shoulder_constraint;
+        shoulder_constraint.joint_name = "shoulder_pan_joint"; // ggf. anpassen
+        shoulder_constraint.position = 0;                  
+        shoulder_constraint.tolerance_above = 1.57;            
+        shoulder_constraint.tolerance_below = -1.57;           
+        shoulder_constraint.weight = 1.0;
+        constraints.joint_constraints.push_back(shoulder_constraint);
+        // Constraint setzen
+        // move_group_->setPathConstraints(constraints);
+        // Zielpose setzen
+        move_group_->setPoseTarget(above_pose);
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Step 1: Moving above hand...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Step 1 planning failed.");
+            return;
+        }
+        
+        // 2. Jetzt absenken zur eigentlichen Zielhöhe
+        geometry_msgs::msg::Pose target_pose = above_pose;
+        target_pose.position.z = z_pos + 0.15;
+        
+        move_group_->setPoseTarget(target_pose);
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Step 2: Lowering to hand...");
+            move_group_->execute(plan);
+        
+            // Greiferaktivierung starten
+            RCLCPP_INFO(this->get_logger(), "Zeroing gripper after reaching target pose...");
+            publishGripperZeroer(true);
+            RCLCPP_INFO(this->get_logger(), "Waiting for feedback via /gripper_done...");
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Step 2 planning failed.");
+        }
+    }

@@ -1,0 +1,53 @@
+Simulation starten:					ros2 launch ur_simulation_gazebo ur_sim_control.launch.py ur_type:=ur3e
+Simulation mit Moveit starten:				ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py ur_type:=ur3e
+
+Moveit setup laden:					ros2 launch ur_moveit_config ur_moveit.launch.py use_sim_time:=true ur_type:=ur3e # execution funzt net wenn kein robi erkannt ist
+
+Irgendwie mit echtem Robi?:				ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 launch_rviz:=true
+
+
+URSim öffnen:						ros2 run ur_client_library start_ursim.sh -m ur3e
+für websocket ansteuerung				-> ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 launch_rviz:=true
+							
+
+
+
+							!!!über websocket mit URsim!!!
+							einfach die localhost IP angeben -> hier kannst du noch das skript anpassen dass er auf den gripper scheisst und vollständig
+							zur Pose fährt.
+							
+							
+							
+
+							!!!mit echtem robi oder URsim!!!
+Mit MoveIt:							
+UrSim starten(wenn kein echter robi):			ros2 run ur_client_library start_ursim.sh -m ur3e
+Mit Lan Kabel verbinden
+IP in Code anpassen (Links, Rechts, Simu)
+MoveIt treiber starten:					ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 launch_rviz:=false 
+					##für echten robi nutze 192.168.1.10/11 -> ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.1.11 launch_rviz:=false
+										-> ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.1.168 launch_rviz:=false
+										-> ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=10.42.0.2 launch_rviz:=false
+
+urcaps auf teachpad starten mit der ip welche dem pc zugewiesen wird (schau mit ifconfig) # für den echten robo ist das die mittlere IP z.b. 192.168.1.206
+						
+					
+							ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e launch_rviz:=true
+				
+							
+Über TCP/IP:
+UrSim starten(wenn kein echter robi):			ros2 run ur_client_library start_ursim.sh -m ur3e
+Mit Lan kabel verbinden
+IP in Code anpassen (Links, Rechts, Simu)
+
+
+wenn mir nicht an router:
+bei network bei dem port -> einstellungen -> IPv4 -> shared to other computers
+bei ifconfig nach IP suchen enp47s0 oder enp46s0 (10.42.0.1 z.B.)
+auf teachpad in den netzwerkeinstellungen IP adresse angeben mit der IP vom pc +1 am ende (10.42.0.2 z.B)
+Subnetzmaske: 255.255.255.0
+Standard Gateway: 0.0.0.0
+Bevorzugter DNS-Server: gleiches wie PC (10.42.0.1 z.B.)
+Ros driver mit IP vom roboter (z.B. 10.42.0.2) verbinden
+
+bei router wieder auf dhcp ändern

@@ -1,0 +1,28 @@
+screenshot : shift + strg + alt + r
+Restart : Alt + F2 -> r
+Create Venv : python3 -m venv venv
+Activate venv : in Ordner der venv -> source venv/bin/activate
+Deactivate venv : deactivate
+Lösche venv : rm -rf venv
+Liste der installierten libraries : pip list
+Liste als Liste exportieren : pip freeze > global_packages.txt
+pip libraries löschen : pip uninstall <paket1> <paket2> <paket3>
+pip liste löschen : xargs pip uninstall < global_packages.txt
+running Tailscale : sudo tailscale up
+Bildschirme wiederherstellen : sudo systemctl restart display-manager
+Öffne VSCode : code
+libraries aus txt installieren : pip install -r requirements.txt
+conda aktivieren : source ~/miniconda3/bin/activate -> conda activate openmmlab
+conda deaktivieren : conda deactivate 
+conda env erstellen : conda create --name myenv python=3.9 <- hier version spezifizieren
+Suchzeile in VSCode : CTRL+SHIFT+P 
+Python interpreter wechseln : Python: Select Interpreter
+ROS msgs zeigen: ros2 interface list (| grep ... wenn nötig)
+ROS msgs parameter zeigen: ros2 interface show geometry_msgs/msg/Pose
+
+
+
+# null grad um y zeigt nach oben?? 0,0,0,1
+# 90 grad zeigt weg (richtung positiv x) 0,0.707,0,0.707 WAAGERECHT!
+# 180 grad zeigt nach unten 0,1,0,0
+richtige ausrichtung mit korrekter rotation = -0.63, 0.63, -0.321, 0.321

@@ -1,0 +1,8 @@
+in /opt/ros/humble/share/ur_description/urdf die ur.urdf.xacro mit zylinder für werkzeug erweitert (zeilen 152-175)
+ändern mit      sudo gedit /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro
+
+
+in /opt/ros/humble/share/ur_description/config/ur3e das joint_limits.yaml angepasst sodass base und elbow constrained sind
+ändern mit      sudo gedit /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
+
+!die files werden durch ros updates oder treiber updates wieder geändert!
