@@ -19,10 +19,6 @@ The project investigates collaborative robotic instrument handover using a **UR3
 
 The goal is to create an extensible research platform for evaluating intelligent robotic assistance in surgical environments.
 
-### System Architecture
-
-![System Architecture](files/system_setup.jpeg)
-
 ---
 
 ## Table of Contents
@@ -31,7 +27,6 @@ The goal is to create an extensible research platform for evaluating intelligent
 - [Project Status](#project-status)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
 - [Deployment](#deployment)
 
 ---
@@ -47,10 +42,6 @@ Core experimental package containing:
 - tool selection workflows
 - scene and visualization helpers
 - RealSense camera integration
-
-### gripper_force_feedback
-
-Force-based release logic and gripper control experiments.
 
 ### Universal_Robots_ROS2_Gazebo_Simulation
 
@@ -86,8 +77,8 @@ Official UR simulation environment included as a git submodule for testing and d
 ### Hardware Requirements (for physical deployment)
 
 - Universal Robots UR3e manipulator
-- Intel RealSense D435 camera
-- Gripper and force-feedback sensors
+- Intel RealSense D455 camera
+- Robotiq 2F gripper
 
 ### Software Dependencies
 
@@ -128,33 +119,6 @@ ros2 launch ur_simulation_gazebo ur_sim_control.launch.py
 
 ### 4. Deploy on Hardware
 
-For detailed step-by-step instructions on physical deployment, see [Deployment Guide](deployment_guide.md).
+For detailed step-by-step instructions on physical deployment, see **[Deployment Guide](deployment_guide.md)**.
 
 ---
-
-## Project Structure
-
-```
-.
-├── deployment_guide.md           # Hardware deployment instructions
-├── README.md                      # This file
-├── files/                         # Documentation and configuration files
-│   ├── joint_limits.yaml
-│   ├── ur.urdf.xacro
-│   └── system_setup.jpeg
-└── src/
-    ├── tracking_pkg/             # Main research package
-    │   ├── launch/               # ROS 2 launch files
-    │   └── src/
-    │       ├── hand_tracker/     # MediaPipe hand tracking
-    │       ├── moveit_mover/     # Motion execution
-    │       ├── socket_mover/     # WebSocket-based control
-    │       └── publisher/        # Scene and sensor publishers
-    └── Universal_Robots_ROS2_Gazebo_Simulation/
-```
-
----
-
-## Deployment & Hardware Setup
-
-For detailed step-by-step instructions on how to deploy this project on the physical UR3e robot, including network configuration, file permissions, and startup procedures, please refer to the **[Deployment Guide](deployment_guide.md)**.
