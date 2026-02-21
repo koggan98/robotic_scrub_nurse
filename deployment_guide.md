@@ -126,12 +126,3 @@ ros2 launch tracking_pkg loop_launch.py
 ```
 
 ---
-
-## 7. Verification
-
-Once all components are running:
-
-1. Check that the UR robot is connected and operational
-2. Verify MoveIt is initialized and can control the robot
-3. Confirm hand tracking is detecting gestures
-4. Test tool selection and gripper control
