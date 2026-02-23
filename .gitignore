@@ -22,6 +22,7 @@ EOF
 
 # personal documents
 files/
+*.csv
 
 
 
