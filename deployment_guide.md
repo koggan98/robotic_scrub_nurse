@@ -145,6 +145,7 @@ ros2 run tracking_pkg tool_selection.py
 This starts:
 - `ur_moveit_config` (without its default RViz)
 - RViz with preloaded tracking displays
+- TF visualization with directly visible frames (`camera_frame`, `aruco_board_frame`, and robot TCP frame)
 - `tracking_pkg/loop_launch.py` (camera, frames, hand tracker, loop mover, sound node, ...)
 
 ```bash
