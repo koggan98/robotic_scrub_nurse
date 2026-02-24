@@ -39,6 +39,7 @@ Core experimental package containing:
 
 - motion execution logic (MoveIt 2)
 - hand tracking integration (MediaPipe)
+- event-based handover audio feedback (`/handover_event` -> system speakers)
 - tool selection workflows
 - scene and visualization helpers
 - RealSense camera integration
@@ -85,6 +86,7 @@ Official UR simulation environment included as a git submodule for testing and d
 - **MoveIt 2**: Motion planning
 - **Intel RealSense SDK**: Camera integration
 - **MediaPipe**: Hand tracking and pose estimation
+- **ALSA utils (`aplay`)**: runtime speaker playback for handover events
 
 ### Python Packages
 

@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <geometry_msgs/msg/pose.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <Eigen/Dense>
 #include <thread> 
@@ -48,6 +49,8 @@ public:
         gripper_zeroer_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
         // request_joint_state publisher initialisieren
         request_joint_state = this->create_publisher<std_msgs::msg::Bool>("/request_joint_state", 10);
+        // handover event publisher initialisieren
+        handover_event_publisher_ = this->create_publisher<std_msgs::msg::String>("/handover_event", 10);
 
         RCLCPP_INFO(this->get_logger(), "Moveit Mover Node initialized.");
     }
@@ -82,8 +85,13 @@ private:
     bool received_joint_state_ = false; 
 
     void handPositionCallback(const geometry_msgs::msg::Pose::SharedPtr msg) {
-        if (!waiting_for_hand_pose_ || !tool_has_been_picked_up_) {
-            RCLCPP_INFO(this->get_logger(), "Ignoring hand pose – not waiting.");
+        if (!waiting_for_hand_pose_) {
+            RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but system is not waiting for a gesture.");
+            return;
+        }
+
+        if (!tool_has_been_picked_up_) {
+            RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but no tool has been picked up yet.");
             return;
         }    
 
@@ -92,7 +100,8 @@ private:
         hand_pose_with_offset.position.x += hand_offset_.x;
         hand_pose_with_offset.position.y += hand_offset_.y;
         hand_pose_with_offset.position.z += hand_offset_.z;
-        RCLCPP_INFO(this->get_logger(), "Hand pose received, proceeding with handover...");
+        publishHandoverEvent("gesture_detected");
+        RCLCPP_INFO(this->get_logger(), "Gesture detected from hand pose message, proceeding with handover...");
         performHandoverToHandPose();
     }
     
@@ -235,6 +244,7 @@ private:
             target_pose.position.z);
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Reachability decision: reachable.");
             RCLCPP_INFO(this->get_logger(), "Moving above hand...");
             move_group_->execute(plan);
             waiting_for_hand_pose_ = false;
@@ -246,6 +256,8 @@ private:
             hand_pose_received_ = true;
             std::this_thread::sleep_for(std::chrono::milliseconds(1500));
         } else {
+            publishHandoverEvent("reachability:unreachable_plan_failed");
+            RCLCPP_ERROR(this->get_logger(), "Reachability decision: unreachable.");
             RCLCPP_ERROR(this->get_logger(), "Planning to above hand failed.");
             return;
         }
@@ -681,6 +693,13 @@ private:
         RCLCPP_INFO(this->get_logger(), "Published joint state request.");
     }
 
+    void publishHandoverEvent(const std::string &event_name) {
+        auto msg = std_msgs::msg::String();
+        msg.data = event_name;
+        handover_event_publisher_->publish(msg);
+        RCLCPP_INFO(this->get_logger(), "Published handover event: %s", event_name.c_str());
+    }
+
     // Subscriber für /hand_position Topic
     rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr hand_position_sub_;
     // MoveGroupInterface für Robotersteuerung
@@ -692,6 +711,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_buffered_sub_;
     // Publisher für /request_joint_states
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr request_joint_state;
+    // Publisher für /handover_event
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_event_publisher_;
 };
 
 int main(int argc, char** argv) {

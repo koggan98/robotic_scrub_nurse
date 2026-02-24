@@ -48,21 +48,25 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 1. Camera node publishes RGB/depth/camera parameters.
 2. Frame publisher provides board/camera transforms.
 3. Hand tracker detects gesture and publishes `hand_pose`.
-4. Loop mover handles tool pickup, then waits for hand pose.
-5. Loop mover plans handover pose and triggers gripper sensing/release.
-6. Gripper feedback resets the system for the next cycle.
+4. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
+5. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
+6. Loop mover attempts MoveIt handover planning:
+   - on plan failure: publishes `/handover_event = reachability:unreachable_plan_failed`,
+   - on plan success: executes handover without additional audio event.
+7. Sound publisher node subscribes to `/handover_event` and plays system audio (`aplay`) only for those two events.
+8. Gripper feedback resets the system for the next cycle.
 
 ## Current Constraints
 - MoveIt path is the only supported runtime path.
-- Reachability state is not yet formalized as a dedicated published interface.
-- Audio feedback path is not implemented yet.
+- Reachability publish interface is intentionally minimal and only emits unreachable planning failures.
+- Audio feedback is intentionally minimal (gesture-detected + unreachable only).
+- No audio is emitted for hand poses received outside valid waiting state.
 - Target-hand selection is not yet generalized beyond current detection behavior.
 
-## Planned Interfaces (Not Implemented)
+## Runtime Interfaces
 - `target_hand_pose`
-- `reachability_state`
-- `audio_feedback_event`
+- `/handover_event` (`std_msgs/msg/String`)
+  - `gesture_detected`
+  - `reachability:unreachable_plan_failed`
 - `target_roi`
 - `target_roi_marker`
-
-No code-level API/type change is introduced by this documentation refactor.

@@ -22,10 +22,13 @@ This roadmap keeps the core thesis streams intact while enforcing:
 - Dependency: logging standards in `AGENTS.md`.
 
 ## Workstream B: Reachability Classification and Audio Feedback
-- Objective: classify target hand poses as reachable/unreachable and provide audio feedback for both outcomes.
+- Objective: classify target hand poses via MoveIt handover planning and provide selective audio feedback.
 - Outputs:
-  - reachability decision path,
-  - audio event behavior for reachable/unreachable states.
+  - runtime event interface `/handover_event` (`std_msgs/msg/String`) with:
+    - `gesture_detected` (only in valid waiting state after tool pickup),
+    - `reachability:unreachable_plan_failed` (when MoveIt handover planning fails),
+  - audio behavior restricted to gesture-detected and unreachable outcomes,
+  - explicit no-audio behavior for non-waiting or pre-pickup hand pose messages.
 - Dependency: baseline data flow in `ARCHITECTURE.md`.
 
 ## Workstream C: Target-Hand Selection and ROI Visualization
@@ -64,8 +67,12 @@ This roadmap keeps the core thesis streams intact while enforcing:
 
 ## M2: Audio Feedback Integration
 - Deliverables:
-  - reachable/unreachable audio behavior specification,
-  - integrated event-to-audio signaling concept.
+  - integrated event-to-audio signaling via `/handover_event`,
+  - speaker output on Ubuntu runtime via `aplay`,
+  - acceptance checks:
+    - one tone on `gesture_detected`,
+    - one negative tone on `reachability:unreachable_plan_failed`,
+    - no sound for hand pose messages while not waiting for gesture.
 
 ## M3: Target-Hand Robustness
 - Deliverables:
@@ -88,5 +95,7 @@ This roadmap keeps the core thesis streams intact while enforcing:
 - If `Yes`: require explicit design/safety/logging review before activation.
 
 ## Interfaces and Types
-- No immediate code API/interface/type changes in this documentation refactor.
-- Planned interfaces remain architecture-owned and non-implemented (see `ARCHITECTURE.md`).
+- Implemented runtime interface:
+  - `/handover_event` (`std_msgs/msg/String`) with events:
+    - `gesture_detected`
+    - `reachability:unreachable_plan_failed`

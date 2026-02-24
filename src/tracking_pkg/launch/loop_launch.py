@@ -34,6 +34,12 @@ def generate_launch_description():
             name='gripper_opener_with_zeroer',
             output='screen'
         ),
+        Node(
+            package='tracking_pkg',
+            executable='handover_sound_publisher.py',
+            name='handover_sound_publisher',
+            output='screen'
+        ),
         # Verzögerter Start der Node um 5 Sekunden
         TimerAction(
             period=5.0,  # Verzögerung in Sekunden

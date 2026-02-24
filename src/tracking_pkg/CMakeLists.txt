@@ -9,6 +9,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -24,6 +26,7 @@ install(
     src/publisher/mir_publisher.py
     src/publisher/joint_states_publisher.py
     src/publisher/tool_selection.py
+    src/publisher/handover_sound_publisher.py
     src/moveit_mover/gripper_mover.py
     src/moveit_mover/gripper_opener_with_zeroer.py
   DESTINATION lib/${PROJECT_NAME}
@@ -41,8 +44,8 @@ add_executable(moveit_mover src/moveit_mover/moveit_mover.cpp)
 add_executable(loop_mover src/moveit_mover/loop_mover.cpp)
 
 # Abhängigkeiten mit dem Ziel verknüpfen
-ament_target_dependencies(moveit_mover rclcpp geometry_msgs moveit_ros_planning_interface)
-ament_target_dependencies(loop_mover rclcpp geometry_msgs moveit_ros_planning_interface)
+ament_target_dependencies(moveit_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
+ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
 
 # Installation des ausführbaren Ziels
 install(TARGETS moveit_mover
@@ -55,6 +58,11 @@ install(TARGETS loop_mover
 
 install(
   DIRECTORY src/publisher/collisionObjects
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY src/publisher/sounds
   DESTINATION share/${PROJECT_NAME}
 )
 
