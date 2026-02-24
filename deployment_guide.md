@@ -49,7 +49,7 @@ pip install mediapipe pyrealsense2 tabulate
 
 ## 3. Network Setup
 
-The robot must be configured with a static IP address.
+The robot must be configured with a static IP address within the network settings.
 
 ### Robot Example Configuration
 
@@ -61,17 +61,18 @@ Update the IP address in the following files:
 - `gripper_mover.py`
 - `gripper_opener_with_zeroer.py`
 
-Use the following command to find your workstation's IP address:
-
-```bash
-ifconfig
-```
-
 Then update the robot IP in the launch command accordingly:
 
 ```bash
 ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.12.10 launch_rviz:=false
 ```
+
+Use the following command to find your workstation's IP address:
+
+```bash
+ifconfig
+```
+Then, under `Installation` in the UR control panel, change the host IP according to the terminal output.
 
 ---
 
@@ -111,6 +112,10 @@ ros2 launch ur_robot_driver ur_control.launch.py \
   launch_rviz:=false
 ```
 
+Add `External Control` on the UR control panel and start the program.
+
+Activate the robotiq gripper.
+
 ### Terminal 2: MoveIt Motion Planning
 
 ```bash
@@ -127,7 +132,6 @@ ros2 run tracking_pkg tool_selection.py
 
 ### Terminal 4: Main Logic
 
-In terminal B
 ```bash
 ros2 launch tracking_pkg loop_launch.py
 ```

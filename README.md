@@ -60,7 +60,6 @@ Official UR simulation environment included as a git submodule for testing and d
 
 ### Planned Additions
 
-- Improved collision modelling
 - Advanced motion planning pipelines
 - Semantic tool handling
 - Perception-driven grasp reasoning
