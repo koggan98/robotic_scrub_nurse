@@ -119,8 +119,15 @@ ros2 launch ur_moveit_config ur_moveit.launch.py \
   launch_rviz:=true
 ```
 
-### Terminal 3: Application Workflow
+### Terminal 3: Tool Selector
 
+```bash
+ros2 run tracking_pkg tool_selection.py 
+```
+
+### Terminal 4: Main Logic
+
+In terminal B
 ```bash
 ros2 launch tracking_pkg loop_launch.py
 ```
