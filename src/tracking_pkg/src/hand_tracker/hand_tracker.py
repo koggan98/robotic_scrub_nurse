@@ -276,10 +276,7 @@ class HandPositionPublisher(Node):
             shaka_candidates = [c for c in candidates if c["is_shaka"]]
 
             if self.locked_hand_active:
-                if locked_match and locked_match["is_shaka"]:
-                    self._unlock("locked hand shaka")
-                    locked_match = None
-                elif shaka_candidates:
+                if shaka_candidates:
                     best_shaka = self._select_best_shaka(shaka_candidates)
                     if locked_match is None or best_shaka is not locked_match:
                         self._lock_to(best_shaka, now, "other hand shaka")
