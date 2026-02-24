@@ -2,6 +2,7 @@
 
 import cv2
 import time
+import math
 from mediapipe_and_gesture import *
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
@@ -21,7 +22,19 @@ class HandPositionPublisher(Node):
         self.marker_publisher = self.create_publisher(Marker, 'hand_pose_marker', 10)
         
         self.bridge = CvBridge()
-        self.mp_tracker = MediaPipeTracker()
+        self.declare_parameter("max_num_hands", 2)
+        self.declare_parameter("shaka_angle_threshold", 160.0)
+        self.declare_parameter("reacquire_max_dt", 1.0)
+        self.declare_parameter("reacquire_max_px", 60.0)
+        self.declare_parameter("reacquire_max_dz", 0.15)
+
+        self.max_num_hands = int(self.get_parameter("max_num_hands").value)
+        self.shaka_angle_threshold = float(self.get_parameter("shaka_angle_threshold").value)
+        self.reacquire_max_dt = float(self.get_parameter("reacquire_max_dt").value)
+        self.reacquire_max_px = float(self.get_parameter("reacquire_max_px").value)
+        self.reacquire_max_dz = float(self.get_parameter("reacquire_max_dz").value)
+
+        self.mp_tracker = MediaPipeTracker(max_num_hands=self.max_num_hands)
         self.gesture_tracker = HandGestureTracker()
 
         self.rgb_image = None
@@ -39,6 +52,11 @@ class HandPositionPublisher(Node):
         #Für den TF erhalt
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        self.locked_hand_active = False
+        self.locked_hand_pixel = None
+        self.locked_hand_depth = None
+        self.last_seen_time = 0.0
 
         self.get_logger().info(f"Tracking Node initialized")
         self.waiting_for_images_logged = False # Flag für einmalige Ausgabe von "Warte auf RGB- und Tiefenbilder..."
@@ -154,6 +172,55 @@ class HandPositionPublisher(Node):
         marker.color.a = 1.0
         self.marker_publisher.publish(marker)
 
+    def _lock_to(self, candidate, now, reason):
+        self.locked_hand_active = True
+        self.locked_hand_pixel = (candidate["x"], candidate["y"])
+        self.locked_hand_depth = candidate["z"]
+        self.last_seen_time = now
+        self.get_logger().info(
+            f"Hand lock acquired: {reason} at x={candidate['x']} y={candidate['y']} z={candidate['z']}"
+        )
+
+    def _unlock(self, reason):
+        self.locked_hand_active = False
+        self.locked_hand_pixel = None
+        self.locked_hand_depth = None
+        self.last_seen_time = 0.0
+        self.get_logger().info(f"Hand lock released: {reason}")
+
+    def _update_locked(self, candidate, now):
+        self.locked_hand_pixel = (candidate["x"], candidate["y"])
+        self.locked_hand_depth = candidate["z"]
+        self.last_seen_time = now
+
+    def _select_best_shaka(self, shaka_candidates):
+        best = None
+        best_score = None
+        for c in shaka_candidates:
+            if best is None or c["score"] > best_score:
+                best = c
+                best_score = c["score"]
+        return best
+
+    def _match_locked_hand(self, candidates):
+        if not self.locked_hand_pixel:
+            return None
+        best = None
+        best_dist = None
+        for c in candidates:
+            dx = c["x"] - self.locked_hand_pixel[0]
+            dy = c["y"] - self.locked_hand_pixel[1]
+            dist = math.hypot(dx, dy)
+            if dist > self.reacquire_max_px:
+                continue
+            if self.locked_hand_depth is not None and c["z"] is not None:
+                if abs(c["z"] - self.locked_hand_depth) > self.reacquire_max_dz:
+                    continue
+            if best is None or dist < best_dist:
+                best = c
+                best_dist = dist
+        return best
+
         
     def run(self):
 
@@ -172,11 +239,11 @@ class HandPositionPublisher(Node):
             results = self.mp_tracker.process_frame(color_frame)
             hand_landmarks = results.multi_hand_landmarks
 
+            candidates = []
             if hand_landmarks:
                 self.mp_tracker.draw_landmarks(color_frame, hand_landmarks)
 
                 for hand in hand_landmarks:
-                    # Berechne die Mitte der Handfläche
                     x, y = self.gesture_tracker.get_hand_center_wrist(hand, color_frame.shape, self.mp_tracker.mp_hands)
 
                     if 0 <= y < depth_frame.shape[0] and 0 <= x < depth_frame.shape[1]:
@@ -184,15 +251,59 @@ class HandPositionPublisher(Node):
                     else:
                         z = None
 
-                    if z is not None:
-                        camera_coords = self.transform_to_metric((x, y), z)
-                        
-                        self.publish_hand_marker(camera_coords)
+                    is_shaka = self.gesture_tracker.is_shaka(
+                        hand, self.mp_tracker.mp_hands, self.shaka_angle_threshold
+                    )
+                    shaka_score = self.gesture_tracker.shaka_score(
+                        hand, self.mp_tracker.mp_hands, self.shaka_angle_threshold
+                    )
+                    candidates.append(
+                        {
+                            "landmarks": hand,
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "is_shaka": is_shaka,
+                            "score": shaka_score,
+                        }
+                    )
 
-                        if self.gesture_tracker.detect_double_open_close(hand, self.mp_tracker.mp_hands):
-                            point_in_world = self.transform_camera_to_world(camera_coords)
+            now = time.time()
+            locked_match = None
+            if self.locked_hand_active:
+                locked_match = self._match_locked_hand(candidates)
+
+            shaka_candidates = [c for c in candidates if c["is_shaka"]]
+
+            if self.locked_hand_active:
+                if locked_match and locked_match["is_shaka"]:
+                    self._unlock("locked hand shaka")
+                    locked_match = None
+                elif shaka_candidates:
+                    best_shaka = self._select_best_shaka(shaka_candidates)
+                    if locked_match is None or best_shaka is not locked_match:
+                        self._lock_to(best_shaka, now, "other hand shaka")
+                        locked_match = best_shaka
+                else:
+                    if locked_match:
+                        self._update_locked(locked_match, now)
+                    elif now - self.last_seen_time > self.reacquire_max_dt:
+                        self._unlock("reacquire timeout")
+            else:
+                if shaka_candidates:
+                    best_shaka = self._select_best_shaka(shaka_candidates)
+                    self._lock_to(best_shaka, now, "shaka detected")
+                    locked_match = best_shaka
+
+            if self.locked_hand_active and locked_match:
+                if locked_match["z"] is not None:
+                    camera_coords = self.transform_to_metric((locked_match["x"], locked_match["y"]), locked_match["z"])
+                    if camera_coords is not None:
+                        self.publish_hand_marker(camera_coords)
+                        point_in_world = self.transform_camera_to_world(camera_coords)
+                        if point_in_world is not None:
                             hand_position = Pose()
-                            hand_position.position.x = float(point_in_world[0]) # Hier roboterpunkte
+                            hand_position.position.x = float(point_in_world[0])
                             hand_position.position.y = float(point_in_world[1])
                             hand_position.position.z = float(point_in_world[2])
                             hand_position.orientation.x = -0.63
@@ -200,12 +311,23 @@ class HandPositionPublisher(Node):
                             hand_position.orientation.z = -0.321
                             hand_position.orientation.w = 0.321
                             self.publisher_.publish(hand_position)
+                            self.get_logger().info(
+                                f"Handposition veröffentlicht (Roboterframe): x={point_in_world[0]}, y={point_in_world[1]}, z={point_in_world[2]}"
+                            )
+                else:
+                    self.get_logger().warn("Locked hand has no depth value; skipping publish.")
 
-                            self.get_logger().info(f"Handposition veröffentlicht (Roboterframe): x={point_in_world[0]}, y={point_in_world[1]}, z={point_in_world[2]}")
-                     # Zeichne die Tiefe der Handflächenmitte auf das Bild
-                    if z is not None:
-                        cv2.circle(color_frame, (x, y), 5, (255, 0, 0), thickness=2)
-                        cv2.putText(color_frame, f"{z}m", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            if locked_match and locked_match["z"] is not None:
+                cv2.circle(color_frame, (locked_match["x"], locked_match["y"]), 5, (255, 0, 0), thickness=2)
+                cv2.putText(
+                    color_frame,
+                    f"{locked_match['z']}m",
+                    (locked_match["x"], locked_match["y"] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255, 0, 0),
+                    2,
+                )
                         
             # Zeige das annotierte RGB-Bild
             # cv2.imshow('MediaPipe Hands with Depth', color_frame) # image publishen "normal"
