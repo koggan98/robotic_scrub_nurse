@@ -24,7 +24,6 @@ install(
     src/publisher/mir_publisher.py
     src/publisher/joint_states_publisher.py
     src/publisher/tool_selection.py
-    src/socket_mover/socket_mover.py
     src/moveit_mover/gripper_mover.py
     src/moveit_mover/gripper_opener_with_zeroer.py
   DESTINATION lib/${PROJECT_NAME}
