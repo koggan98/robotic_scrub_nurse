@@ -297,20 +297,23 @@ class HandPositionPublisher(Node):
                     camera_coords = self.transform_to_metric((locked_match["x"], locked_match["y"]), locked_match["z"])
                     if camera_coords is not None:
                         self.publish_hand_marker(camera_coords)
-                        point_in_world = self.transform_camera_to_world(camera_coords)
-                        if point_in_world is not None:
-                            hand_position = Pose()
-                            hand_position.position.x = float(point_in_world[0])
-                            hand_position.position.y = float(point_in_world[1])
-                            hand_position.position.z = float(point_in_world[2])
-                            hand_position.orientation.x = -0.63
-                            hand_position.orientation.y = 0.63
-                            hand_position.orientation.z = -0.321
-                            hand_position.orientation.w = 0.321
-                            self.publisher_.publish(hand_position)
-                            self.get_logger().info(
-                                f"Handposition veröffentlicht (Roboterframe): x={point_in_world[0]}, y={point_in_world[1]}, z={point_in_world[2]}"
-                            )
+                        if self.gesture_tracker.detect_double_open_close(
+                            locked_match["landmarks"], self.mp_tracker.mp_hands
+                        ):
+                            point_in_world = self.transform_camera_to_world(camera_coords)
+                            if point_in_world is not None:
+                                hand_position = Pose()
+                                hand_position.position.x = float(point_in_world[0])
+                                hand_position.position.y = float(point_in_world[1])
+                                hand_position.position.z = float(point_in_world[2])
+                                hand_position.orientation.x = -0.63
+                                hand_position.orientation.y = 0.63
+                                hand_position.orientation.z = -0.321
+                                hand_position.orientation.w = 0.321
+                                self.publisher_.publish(hand_position)
+                                self.get_logger().info(
+                                    f"Handposition veröffentlicht (Roboterframe): x={point_in_world[0]}, y={point_in_world[1]}, z={point_in_world[2]}"
+                                )
                 else:
                     self.get_logger().warn("Locked hand has no depth value; skipping publish.")
 
