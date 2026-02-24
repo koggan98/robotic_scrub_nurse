@@ -36,6 +36,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 
 ### Active Path (MoveIt-Centric)
 - Launch entry: `src/tracking_pkg/launch/loop_launch.py`.
+- Combined launch option: `src/tracking_pkg/launch/loop_with_moveit_launch.py` (includes `ur_moveit_config` RViz bringup + `loop_launch.py`).
 - Motion/handover core: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`.
 - Tool command flow uses `/tool_selection` and MoveIt planning.
 

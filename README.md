@@ -123,3 +123,18 @@ ros2 launch ur_simulation_gazebo ur_sim_control.launch.py
 For detailed step-by-step instructions on physical deployment, see **[Deployment Guide](deployment_guide.md)**.
 
 ---
+
+## Combined MoveIt + Tracking Launch
+
+If you want Adam-style startup (MoveIt RViz + tracking topics in one command), use:
+
+```bash
+ros2 launch tracking_pkg loop_with_moveit_launch.py ur_type:=ur3e
+```
+
+This launch starts `ur_moveit_config` without its default RViz and opens RViz with a preloaded config that already includes:
+- `/annotated_hand_image`
+- `/gesture_pose_marker`
+- `/hand_pose_marker`
+- `/hand_pose`
+- TF display (including frames such as `camera_frame` and `aruco_board_frame`)

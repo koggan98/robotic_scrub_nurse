@@ -23,7 +23,7 @@ The system consists of three main layers:
    - Motion execution
    - Force-guided release
 
-Each component runs in a separate terminal.
+Runtime is started across dedicated terminals; multiple components can be grouped in one launch file.
 
 ---
 
@@ -38,6 +38,7 @@ Required:
 - MoveIt 2
 - Universal Robots ROS 2 Driver
 - Intel RealSense SDK
+- ALSA utils (`aplay`) for handover sound playback
 
 ### Python Dependencies
 
@@ -81,12 +82,14 @@ Then, under `Installation` in the UR control panel, change the host IP according
 If scripts are not executable, grant permissions:
 
 ```bash
-chmod +x src/publisher/camera_publisher.py
-chmod +x src/publisher/frame_publisher.py
-chmod +x src/publisher/box_publisher.py
-chmod +x src/hand_tracker/hand_tracker.py
-chmod +x src/socket_mover/socket_mover.py
-chmod +x src/moveit_mover/gripper_mover.py
+chmod +x src/tracking_pkg/src/publisher/camera_publisher.py
+chmod +x src/tracking_pkg/src/publisher/frame_publisher.py
+chmod +x src/tracking_pkg/src/publisher/gesture_pose_publisher.py
+chmod +x src/tracking_pkg/src/hand_tracker/hand_tracker.py
+chmod +x src/tracking_pkg/src/moveit_mover/gripper_mover.py
+chmod +x src/tracking_pkg/src/moveit_mover/gripper_opener_with_zeroer.py
+chmod +x src/tracking_pkg/src/publisher/tool_selection.py
+chmod +x src/tracking_pkg/src/publisher/handover_sound_publisher.py
 ```
 
 ---
@@ -103,9 +106,21 @@ Set up the hardware according to the system setup:
 
 Start each component in a separate terminal, in the following order:
 
-### Terminal 1: Hardware Driver
+### Terminal 0 (once): Build + source workspace
 
 ```bash
+cd ~/robotic_scrub_nurse_ws
+colcon build --symlink-install
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+```
+
+### Terminal 1: UR Hardware Driver
+
+```bash
+cd ~/robotic_scrub_nurse_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
   ur_type:=ur3e \
   robot_ip:=192.168.12.10 \
@@ -116,21 +131,50 @@ Add `External Control` on the UR control panel and start the program.
 
 Activate the robotiq gripper.
 
-### Terminal 2: MoveIt Motion Planning
+### Terminal 2: Tool Selector
 
 ```bash
-ros2 launch ur_moveit_config ur_moveit.launch.py \
+cd ~/robotic_scrub_nurse_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run tracking_pkg tool_selection.py
+```
+
+### Terminal 3 (recommended): MoveIt + RViz + tracking loop
+
+This starts:
+- `ur_moveit_config` (without its default RViz)
+- RViz with preloaded tracking displays
+- `tracking_pkg/loop_launch.py` (camera, frames, hand tracker, loop mover, sound node, ...)
+
+```bash
+cd ~/robotic_scrub_nurse_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch tracking_pkg loop_with_moveit_launch.py \
   ur_type:=ur3e \
-  launch_rviz:=true
+  tracking_rviz:=true
 ```
 
-### Terminal 3: Tool Selector
+Optional: run the same command without RViz:
 
 ```bash
-ros2 run tracking_pkg tool_selection.py 
+ros2 launch tracking_pkg loop_with_moveit_launch.py \
+  ur_type:=ur3e \
+  tracking_rviz:=false
 ```
 
-### Terminal 4: Main Logic
+### Optional split mode
+
+Use this only if you intentionally want separate launches for MoveIt and tracking.
+
+Terminal A:
+
+```bash
+ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e launch_rviz:=true
+```
+
+Terminal B:
 
 ```bash
 ros2 launch tracking_pkg loop_launch.py

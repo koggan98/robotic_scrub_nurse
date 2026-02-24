@@ -38,6 +38,11 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(
+  DIRECTORY rviz
+  DESTINATION share/${PROJECT_NAME}
+)
+
 
 # Ziele definieren
 add_executable(moveit_mover src/moveit_mover/moveit_mover.cpp)
