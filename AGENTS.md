@@ -34,6 +34,7 @@ You are building a robotic scrub nurse in ROS2 Humble on Ubuntu 22.04 using the 
 - Any change to runtime path or topology must update `ARCHITECTURE.md`.
 - Any change to milestones, workstreams, or temporal scope must update `PLAN.md`.
 - Any change to contribution policy or repository rules must update `AGENTS.md`.
+- Relevant changes have to be updated to `README.md`.
 - Always use canonical uppercase doc names in links and mentions:
   - `AGENTS.md`
   - `ARCHITECTURE.md`
