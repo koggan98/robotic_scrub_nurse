@@ -221,6 +221,35 @@ class HandPositionPublisher(Node):
                 best_dist = dist
         return best
 
+    def _select_tracking_candidate(self, candidates, shaka_candidates, locked_match, now):
+        if len(candidates) == 1:
+            only_candidate = candidates[0]
+            if self.locked_hand_active:
+                self._update_locked(only_candidate, now)
+            else:
+                self._lock_to(only_candidate, now, "single hand detected")
+            return only_candidate
+
+        if self.locked_hand_active:
+            if shaka_candidates:
+                best_shaka = self._select_best_shaka(shaka_candidates)
+                if locked_match is None or best_shaka is not locked_match:
+                    self._lock_to(best_shaka, now, "other hand shaka")
+                    locked_match = best_shaka
+            else:
+                if locked_match:
+                    self._update_locked(locked_match, now)
+                elif now - self.last_seen_time > self.reacquire_max_dt:
+                    self._unlock("reacquire timeout")
+                    locked_match = None
+        else:
+            if shaka_candidates:
+                best_shaka = self._select_best_shaka(shaka_candidates)
+                self._lock_to(best_shaka, now, "shaka detected")
+                locked_match = best_shaka
+
+        return locked_match
+
         
     def run(self):
 
@@ -274,23 +303,9 @@ class HandPositionPublisher(Node):
                 locked_match = self._match_locked_hand(candidates)
 
             shaka_candidates = [c for c in candidates if c["is_shaka"]]
-
-            if self.locked_hand_active:
-                if shaka_candidates:
-                    best_shaka = self._select_best_shaka(shaka_candidates)
-                    if locked_match is None or best_shaka is not locked_match:
-                        self._lock_to(best_shaka, now, "other hand shaka")
-                        locked_match = best_shaka
-                else:
-                    if locked_match:
-                        self._update_locked(locked_match, now)
-                    elif now - self.last_seen_time > self.reacquire_max_dt:
-                        self._unlock("reacquire timeout")
-            else:
-                if shaka_candidates:
-                    best_shaka = self._select_best_shaka(shaka_candidates)
-                    self._lock_to(best_shaka, now, "shaka detected")
-                    locked_match = best_shaka
+            locked_match = self._select_tracking_candidate(
+                candidates, shaka_candidates, locked_match, now
+            )
 
             if self.locked_hand_active and locked_match:
                 if locked_match["z"] is not None:
