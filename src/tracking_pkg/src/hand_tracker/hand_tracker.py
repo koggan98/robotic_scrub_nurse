@@ -22,7 +22,7 @@ class HandPositionPublisher(Node):
         self.marker_publisher = self.create_publisher(Marker, 'hand_pose_marker', 10)
         
         self.bridge = CvBridge()
-        self.declare_parameter("max_num_hands", 2)
+        self.declare_parameter("max_num_hands", 10)
         self.declare_parameter("shaka_angle_threshold", 160.0)
         self.declare_parameter("reacquire_max_dt", 1.0)
         self.declare_parameter("reacquire_max_px", 60.0)
@@ -57,6 +57,10 @@ class HandPositionPublisher(Node):
         self.locked_hand_pixel = None
         self.locked_hand_depth = None
         self.last_seen_time = 0.0
+        self.last_marker_publish_time = 0.0
+        self.marker_publish_interval = 0.1
+        self.last_tf_warn_time = 0.0
+        self.tf_warn_interval = 2.0
 
         self.get_logger().info(f"Tracking Node initialized")
         self.waiting_for_images_logged = False # Flag für einmalige Ausgabe von "Warte auf RGB- und Tiefenbilder..."
@@ -104,37 +108,21 @@ class HandPositionPublisher(Node):
 
     def transform_camera_to_world(self, camera_coords):
         try:
-            # Warte auf die Transformationen
             trans_camera_to_board = self.tf_buffer.lookup_transform('aruco_board_frame', 'camera_frame', rclpy.time.Time())
-            self.get_logger().info(f"trans_camera_to_board: {trans_camera_to_board}")
-
             trans_board_to_world = self.tf_buffer.lookup_transform('world', 'aruco_board_frame', rclpy.time.Time())
-            self.get_logger().info(f"trans_board_to_world: {trans_board_to_world}")
-
-            # Transformationen in numpy-Matrizen umwandeln
             T_camera_to_board = self.transform_to_matrix(trans_camera_to_board)
             T_board_to_world = self.transform_to_matrix(trans_board_to_world)
-
-            # Gesamttransformation berechnen
             T_camera_to_robot_base = np.dot(T_board_to_world, T_camera_to_board)
-            self.get_logger().info(f"T_camera_to_robot_base: \n{T_camera_to_robot_base}")
-
-        except Exception as e:
-            self.get_logger().fatal("CRITICAL: No Aruco markers detected!")
-
-        try:
-            # Kamerakoordinaten in homogene Form bringen
             point_camera = np.array([camera_coords[0], camera_coords[1], camera_coords[2], 1])
-            self.get_logger().info(f"point_camera: {point_camera}")
-
-            # Punkt in Roboter-Base-Koordinaten transformieren
             point_robot = np.dot(T_camera_to_robot_base, point_camera)
-            self.get_logger().info(f"point_robot: {point_robot}")
-
             return point_robot[:3]  # Nur x, y, z zurückgeben
-
         except Exception as e:
-            self.get_logger().warn(f"Fehler beim Transformieren der Koordinaten: {e}")
+            now = time.time()
+            if now - self.last_tf_warn_time >= self.tf_warn_interval:
+                self.get_logger().warn(
+                    f"Skipping hand marker/pose publish because TF world <- aruco_board_frame <- camera_frame is unavailable: {e}"
+                )
+                self.last_tf_warn_time = now
             return None
 
 
@@ -156,7 +144,7 @@ class HandPositionPublisher(Node):
 
     def publish_hand_marker(self, position):
         marker = Marker()
-        marker.header.frame_id = 'camera_frame'  # Frame, in dem die Hand erkannt wird
+        marker.header.frame_id = 'world'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
@@ -311,11 +299,15 @@ class HandPositionPublisher(Node):
                 if locked_match["z"] is not None:
                     camera_coords = self.transform_to_metric((locked_match["x"], locked_match["y"]), locked_match["z"])
                     if camera_coords is not None:
-                        self.publish_hand_marker(camera_coords)
+                        point_in_world = self.transform_camera_to_world(camera_coords)
+                        if point_in_world is not None and (
+                            now - self.last_marker_publish_time >= self.marker_publish_interval
+                        ):
+                            self.publish_hand_marker(point_in_world)
+                            self.last_marker_publish_time = now
                         if self.gesture_tracker.detect_double_open_close(
                             locked_match["landmarks"], self.mp_tracker.mp_hands
                         ):
-                            point_in_world = self.transform_camera_to_world(camera_coords)
                             if point_in_world is not None:
                                 hand_position = Pose()
                                 hand_position.position.x = float(point_in_world[0])

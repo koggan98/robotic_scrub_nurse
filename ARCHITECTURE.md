@@ -54,13 +54,14 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 6. Loop mover attempts MoveIt handover planning:
    - on plan failure: publishes `/handover_event = reachability:unreachable_plan_failed`,
    - on plan success: executes handover without additional audio event.
-7. Sound publisher node subscribes to `/handover_event` and plays system audio (`aplay`) only for those two events.
-8. Gripper feedback resets the system for the next cycle.
+7. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
+8. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
+9. Gripper feedback resets the system for the next cycle.
 
 ## Current Constraints
 - MoveIt path is the only supported runtime path.
 - Reachability publish interface is intentionally minimal and only emits unreachable planning failures.
-- Audio feedback is intentionally minimal (gesture-detected + unreachable only).
+- Audio feedback is intentionally minimal (gesture-detected + unreachable only) but now uses queued playback so short back-to-back events are both audible.
 - No audio is emitted for hand poses received outside valid waiting state.
 - Target-hand selection is not yet generalized beyond current detection behavior.
 

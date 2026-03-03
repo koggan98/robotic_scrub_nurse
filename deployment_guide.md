@@ -48,7 +48,52 @@ pip install mediapipe pyrealsense2 tabulate
 
 ---
 
-## 3. Network Setup
+## 3. Required UR Description Overrides
+
+This project depends on two non-default `ur_description` overrides. Apply them before the first runtime start so the deployed robot model matches the tested thesis setup.
+
+The canonical replacement files are stored in this repository:
+
+- `~/robotic_scrub_nurse_ws/files/ur.urdf.xacro`
+- `~/robotic_scrub_nurse_ws/files/joint_limits.yaml`
+
+Recommended: back up the currently installed vendor files first.
+
+```bash
+sudo cp /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro \
+  /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro.bak
+
+sudo cp /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml \
+  /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml.bak
+```
+
+Then copy the project-specific overrides into the installed `ur_description` package:
+
+```bash
+sudo cp ~/robotic_scrub_nurse_ws/files/ur.urdf.xacro \
+  /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro
+
+sudo cp ~/robotic_scrub_nurse_ws/files/joint_limits.yaml \
+  /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
+```
+
+The two overrides are required for the active setup:
+
+- `ur.urdf.xacro` adds the project-specific tool cylinder to the UR description.
+- `joint_limits.yaml` applies the tested UR3e joint constraints used by this project.
+
+Optional verification:
+
+```bash
+ls -l /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro
+ls -l /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
+```
+
+Warning: these overrides modify installed `ur_description` files under `/opt/ros/humble`. Reapply them after ROS, `ur_description`, or UR driver updates, as package updates can overwrite them.
+
+---
+
+## 4. Network Setup
 
 The robot must be configured with a static IP address within the network settings.
 
@@ -77,7 +122,7 @@ Then, under `Installation` in the UR control panel, change the host IP according
 
 ---
 
-## 4. File Permissions
+## 5. File Permissions
 
 If scripts are not executable, grant permissions:
 
@@ -88,13 +133,14 @@ chmod +x src/tracking_pkg/src/publisher/gesture_pose_publisher.py
 chmod +x src/tracking_pkg/src/hand_tracker/hand_tracker.py
 chmod +x src/tracking_pkg/src/moveit_mover/gripper_mover.py
 chmod +x src/tracking_pkg/src/moveit_mover/gripper_opener_with_zeroer.py
+chmod +x src/tracking_pkg/src/moveit_mover/reclaim_controller.py
 chmod +x src/tracking_pkg/src/publisher/tool_selection.py
 chmod +x src/tracking_pkg/src/publisher/handover_sound_publisher.py
 ```
 
 ---
 
-## 5. Physical Setup
+## 6. Physical Setup
 
 Set up the hardware according to the system setup:
 
@@ -102,7 +148,7 @@ Set up the hardware according to the system setup:
 
 ---
 
-## 6. Startup Procedure
+## 7. Startup Procedure
 
 Start each component in a separate terminal, in the following order:
 

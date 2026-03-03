@@ -39,7 +39,7 @@ Core experimental package containing:
 
 - motion execution logic (MoveIt 2)
 - hand tracking integration (MediaPipe)
-- event-based handover audio feedback (`/handover_event` -> system speakers)
+- event-based handover audio feedback (`/handover_event` -> system speakers via `paplay`/`pw-play`/`aplay`)
 - tool selection workflows
 - scene and visualization helpers
 - RealSense camera integration
@@ -138,6 +138,8 @@ This launch starts `ur_moveit_config` without its default RViz and opens RViz wi
 - `/hand_pose_marker`
 - `/hand_pose`
 - TF display (including frames such as `camera_frame` and `aruco_board_frame`)
+
+During handover, the robot now holds briefly at the target pose before force-guided release sensing is enabled. Audio events are queued sequentially so the initial `gesture_detected` tone is not overwritten by a following `unreachable` tone.
 
 ## Loop Mover Profiles
 

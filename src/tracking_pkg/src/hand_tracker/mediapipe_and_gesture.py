@@ -4,7 +4,7 @@ import time
 import math
 
 class MediaPipeTracker:
-    def __init__(self, static_image_mode=False, max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5):
+    def __init__(self, static_image_mode=False, max_num_hands=10, min_detection_confidence=0.5, min_tracking_confidence=0.5):
         """Initialisiert MediaPipe Hands."""
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
@@ -31,7 +31,7 @@ class MediaPipeTracker:
 class HandGestureTracker:
     def __init__(
         self,
-        open_angle_threshold_deg=155.0,
+        open_angle_threshold_deg=120.0,
         open_min_extended_fingers=3,
         closed_max_extended_fingers=1,
     ):

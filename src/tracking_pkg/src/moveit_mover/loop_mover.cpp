@@ -67,6 +67,9 @@ public:
         this->declare_parameter("robot_description_kinematics.ur_manipulator.kinematics_solver", "kdl_kinematics_plugin/KDLKinematicsPlugin");
         this->declare_parameter("robot_description_kinematics.ur_manipulator.kinematics_solver_search_resolution", 0.005);
         this->declare_parameter("robot_description_kinematics.ur_manipulator.kinematics_solver_timeout", 0.05);
+        pre_release_dwell_seconds_ = std::max(0.0, this->declare_parameter("handover.pre_release_dwell_seconds", 0.35));
+        post_zeroer_settle_seconds_ = std::max(0.0, this->declare_parameter("handover.post_zeroer_settle_seconds", 0.05));
+        post_open_pause_seconds_ = std::max(0.0, this->declare_parameter("handover.post_open_pause_seconds", 1.0));
 
         try {
             declareConfigurationParameters();
@@ -159,6 +162,9 @@ private:
     double reclaim_post_close_wait_seconds_ = 1.0;
     double reclaim_dropoff_descend_distance_ = 0.05;
     double reclaim_post_open_pause_seconds_ = 1.0;
+    double pre_release_dwell_seconds_ = 0.35;
+    double post_zeroer_settle_seconds_ = 0.05;
+    double post_open_pause_seconds_ = 1.0;
 
     void declareConfigurationParameters() {
         this->declare_parameter<std::vector<std::string>>("tool_ids", std::vector<std::string>{});
@@ -653,12 +659,14 @@ private:
             last_handover_pose_ = target_pose;
             has_last_handover_pose_ = true;
             waiting_for_hand_pose_ = false;
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            RCLCPP_INFO(this->get_logger(), "Activating gripper sensing...");
+            hand_pose_received_ = true;
+            RCLCPP_INFO(this->get_logger(), "Reached handover pose, holding before release sensing.");
+            std::this_thread::sleep_for(std::chrono::duration<double>(pre_release_dwell_seconds_));
+            RCLCPP_INFO(this->get_logger(), "Activating gripper sensing after dwell.");
             publishGripperZeroer(true);
             waiting_for_gripper_done_ = true;
-            hand_pose_received_ = true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            std::this_thread::sleep_for(std::chrono::duration<double>(post_zeroer_settle_seconds_));
+            RCLCPP_INFO(this->get_logger(), "Waiting for gripper_done from force-guided release.");
         } else {
             publishHandoverEvent("reachability:unreachable_plan_failed");
             RCLCPP_ERROR(this->get_logger(), "Reachability decision: unreachable.");
@@ -694,8 +702,8 @@ private:
 
         if (!moveToPoseTarget(
                 dropoff_approach_pose,
-                0.6,
-                0.6,
+                0.7,
+                0.7,
                 "Reached reclaim dropoff approach pose.",
                 "Reclaim failed: dropoff approach pose is unreachable.")) {
             reclaim_in_progress_ = false;
@@ -709,8 +717,8 @@ private:
 
         if (!moveToPoseTarget(
                 dropoff_release_pose,
-                0.3,
-                0.3,
+                0.5,
+                0.5,
                 "Reached reclaim dropoff release pose.",
                 "Reclaim failed: dropoff release pose is unreachable.")) {
             reclaim_in_progress_ = false;
@@ -750,7 +758,9 @@ private:
             return;
         }
 
-        RCLCPP_INFO(this->get_logger(), "Gripper opened, returning to home.");
+        RCLCPP_INFO(this->get_logger(), "Gripper opened, holding before return to home.");
+        std::this_thread::sleep_for(std::chrono::duration<double>(post_open_pause_seconds_));
+        RCLCPP_INFO(this->get_logger(), "Returning to home after handover release pause.");
         moveToHomePositionUsingJoints();
         hand_pose_received_ = false;
         waiting_for_hand_pose_ = false;

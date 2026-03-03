@@ -108,7 +108,7 @@ class SocketControllerNode(Node):
         gripper_state = bool_msg.data
         if gripper_state:
             self.get_logger().info(f"Opening gripper")
-            self.ur_node.command_gripper(175, speed=255, force=1)
+            self.ur_node.command_gripper(150, speed=255, force=1)
         else:
             self.get_logger().info(f"Closing gripper")
             self.ur_node.command_gripper(250, speed=255, force=1)           

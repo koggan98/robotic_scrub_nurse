@@ -10,7 +10,7 @@ class ReclaimController(Node):
     def __init__(self):
         super().__init__("reclaim_controller")
 
-        self.declare_parameter("reclaim.force_threshold_newtons", 4.0)
+        self.declare_parameter("reclaim.force_threshold_newtons", 2.0)
         self.declare_parameter("reclaim.zero_delay_seconds", 0.5)
         self.declare_parameter("reclaim.close_position", 250)
         self.declare_parameter("reclaim.close_speed", 255)
