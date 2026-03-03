@@ -138,3 +138,16 @@ This launch starts `ur_moveit_config` without its default RViz and opens RViz wi
 - `/hand_pose_marker`
 - `/hand_pose`
 - TF display (including frames such as `camera_frame` and `aruco_board_frame`)
+
+## Loop Mover Profiles
+
+`loop_mover` now loads its tool pick poses, handover orientations, offsets, and joint presets from:
+
+- `src/tracking_pkg/config/loop_mover_profiles.yaml`
+
+The `/tool_selection` interface is unchanged:
+
+- `"0"` resets the system
+- `"1"` to `"6"` select the configured tool profiles
+
+After changing the YAML values, restart the launch so `loop_mover` reloads the updated parameters.

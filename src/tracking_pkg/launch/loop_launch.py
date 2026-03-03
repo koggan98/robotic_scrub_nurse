@@ -1,6 +1,8 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import TimerAction
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     return LaunchDescription([
@@ -48,7 +50,12 @@ def generate_launch_description():
                 package='tracking_pkg',
                 executable='loop_mover', 
                 name='loop_mover',
-                output='screen'
+                output='screen',
+                parameters=[
+                    PathJoinSubstitution(
+                        [FindPackageShare('tracking_pkg'), 'config', 'loop_mover_profiles.yaml']
+                    )
+                ]
                 )
             ]
         ),
