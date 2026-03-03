@@ -29,31 +29,35 @@ class MediaPipeTracker:
         return frame
 
 class HandGestureTracker:
-    def __init__(self):
+    def __init__(
+        self,
+        open_angle_threshold_deg=155.0,
+        open_min_extended_fingers=3,
+        closed_max_extended_fingers=1,
+    ):
         self.last_state = None  # Zuletzt erkannter Zustand ('open' oder 'closed')
         self.transition_times = []  # Zeiten, zu denen Zustandsänderungen erkannt wurden
+        self.open_angle_threshold_deg = open_angle_threshold_deg
+        self.open_min_extended_fingers = open_min_extended_fingers
+        self.closed_max_extended_fingers = closed_max_extended_fingers
 
     def is_hand_open(self, hand_landmarks, mp_hands):
-        """Überprüft, ob die Hand offen ist anhand des x wertes der fingerspitzen zur fingerbasis (waagerechte im bild)."""
-        fingers_open = []
-        for finger in [mp_hands.HandLandmark.THUMB_TIP, mp_hands.HandLandmark.INDEX_FINGER_TIP,
-                       mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_TIP,
-                       mp_hands.HandLandmark.PINKY_TIP]:
-            fingertip = hand_landmarks.landmark[finger]
-            finger_base = hand_landmarks.landmark[finger - 2]
-            fingers_open.append(fingertip.x < finger_base.x)
-        return sum(fingers_open) >= 4
+        """Kompatibler Wrapper: offene Hand wird orientierungsrobust über Fingerextension erkannt."""
+        return self.classify_hand_state(hand_landmarks, mp_hands) == "open"
 
     def detect_double_open_close(self, hand_landmarks, mp_hands):
         """Erkennt, ob die Hand zwei Mal nacheinander geschlossen und geöffnet wurde."""
-        current_state = "open" if self.is_hand_open(hand_landmarks, mp_hands) else "closed"
+        current_state = self.classify_hand_state(hand_landmarks, mp_hands)
         current_time = time.time()
+
+        self.transition_times = [t for t in self.transition_times if current_time - t <= 1]
+
+        if current_state == "neutral":
+            return False
 
         if current_state != self.last_state:
             self.transition_times.append(current_time)
             self.last_state = current_state
-
-        self.transition_times = [t for t in self.transition_times if current_time - t <= 1]
 
         if len(self.transition_times) >= 4:
             self.transition_times = []
@@ -102,6 +106,24 @@ class HandGestureTracker:
         else:
             return False
         return angle >= angle_threshold_deg
+
+    def _count_extended_non_thumb_fingers(self, hand_landmarks, mp_hands, angle_threshold_deg):
+        extended_count = 0
+        for finger in ["index", "middle", "ring", "pinky"]:
+            if self.is_finger_extended(hand_landmarks, mp_hands, finger, angle_threshold_deg):
+                extended_count += 1
+        return extended_count
+
+    def classify_hand_state(self, hand_landmarks, mp_hands):
+        extended_count = self._count_extended_non_thumb_fingers(
+            hand_landmarks, mp_hands, self.open_angle_threshold_deg
+        )
+
+        if extended_count >= self.open_min_extended_fingers:
+            return "open"
+        if extended_count <= self.closed_max_extended_fingers:
+            return "closed"
+        return "neutral"
 
     def is_shaka(self, hand_landmarks, mp_hands, angle_threshold_deg):
         thumb = self.is_finger_extended(hand_landmarks, mp_hands, "thumb", angle_threshold_deg)
