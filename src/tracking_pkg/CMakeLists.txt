@@ -29,6 +29,7 @@ install(
     src/publisher/handover_sound_publisher.py
     src/moveit_mover/gripper_mover.py
     src/moveit_mover/gripper_opener_with_zeroer.py
+    src/moveit_mover/reclaim_controller.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -5,6 +5,10 @@ from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
+    profile_config = PathJoinSubstitution(
+        [FindPackageShare('tracking_pkg'), 'config', 'loop_mover_profiles.yaml']
+    )
+
     return LaunchDescription([
         Node(
             package='tracking_pkg',
@@ -34,7 +38,15 @@ def generate_launch_description():
             package='tracking_pkg',
             executable='gripper_opener_with_zeroer.py', 
             name='gripper_opener_with_zeroer',
-            output='screen'
+            output='screen',
+            parameters=[profile_config]
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='reclaim_controller.py',
+            name='reclaim_controller',
+            output='screen',
+            parameters=[profile_config]
         ),
         Node(
             package='tracking_pkg',
@@ -51,11 +63,7 @@ def generate_launch_description():
                 executable='loop_mover', 
                 name='loop_mover',
                 output='screen',
-                parameters=[
-                    PathJoinSubstitution(
-                        [FindPackageShare('tracking_pkg'), 'config', 'loop_mover_profiles.yaml']
-                    )
-                ]
+                parameters=[profile_config]
                 )
             ]
         ),

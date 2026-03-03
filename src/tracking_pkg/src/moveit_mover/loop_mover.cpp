@@ -8,6 +8,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -98,10 +99,16 @@ public:
             "/joint_state_buffered",
             10,
             std::bind(&HandPositionFollower::jointStateBufferedCallback, this, std::placeholders::_1));
+        // Ruecknahme-Status abonnieren
+        gripper_reclaim_done_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/gripper_reclaim_done",
+            10,
+            std::bind(&HandPositionFollower::reclaimDoneCallback, this, std::placeholders::_1));
 
         // Publisher initialisieren
         gripper_mover_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
         gripper_zeroer_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
+        gripper_reclaim_trigger_publisher_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_reclaim_trigger", 10);
         request_joint_state_ = this->create_publisher<std_msgs::msg::Bool>("/request_joint_state", 10);
         handover_event_publisher_ = this->create_publisher<std_msgs::msg::String>("/handover_event", 10);
 
@@ -132,7 +139,10 @@ private:
     geometry_msgs::msg::Quaternion handover_orientation_;
     geometry_msgs::msg::Pose hand_pose_;
     geometry_msgs::msg::Pose hand_pose_with_offset_;
+    geometry_msgs::msg::Pose last_handover_pose_;
     geometry_msgs::msg::Vector3 hand_offset_;
+    geometry_msgs::msg::Point reclaim_dropoff_position_;
+    geometry_msgs::msg::Quaternion reclaim_dropoff_orientation_;
     sensor_msgs::msg::JointState latest_joint_state_;
     ToolProfile active_tool_profile_;
     MotionProfiles motion_profiles_;
@@ -140,9 +150,15 @@ private:
     bool hand_pose_received_ = false;
     bool waiting_for_hand_pose_ = false;
     bool waiting_for_gripper_done_ = false;
+    bool waiting_for_reclaim_done_ = false;
     bool tool_has_been_picked_up_ = false;
     bool received_joint_state_ = false;
     bool configuration_loaded_ = false;
+    bool has_last_handover_pose_ = false;
+    bool reclaim_in_progress_ = false;
+    double reclaim_post_close_wait_seconds_ = 1.0;
+    double reclaim_dropoff_descend_distance_ = 0.05;
+    double reclaim_post_open_pause_seconds_ = 1.0;
 
     void declareConfigurationParameters() {
         this->declare_parameter<std::vector<std::string>>("tool_ids", std::vector<std::string>{});
@@ -152,6 +168,16 @@ private:
         this->declare_parameter("motion_profiles.long_scissor.elbow_target", std::numeric_limits<double>::quiet_NaN());
         this->declare_parameter("motion_profiles.long_scissor.elbow_tolerance_above", std::numeric_limits<double>::quiet_NaN());
         this->declare_parameter("motion_profiles.long_scissor.elbow_tolerance_below", std::numeric_limits<double>::quiet_NaN());
+        this->declare_parameter<std::vector<double>>("reclaim.dropoff_position", std::vector<double>{});
+        this->declare_parameter<std::vector<double>>("reclaim.dropoff_orientation", std::vector<double>{});
+        this->declare_parameter("reclaim.force_threshold_newtons", 2.0);
+        this->declare_parameter("reclaim.zero_delay_seconds", 0.5);
+        this->declare_parameter("reclaim.close_position", 250);
+        this->declare_parameter("reclaim.close_speed", 255);
+        this->declare_parameter("reclaim.close_force", 1);
+        this->declare_parameter("reclaim.post_close_wait_seconds", 1.0);
+        this->declare_parameter("reclaim.dropoff_descend_distance", 0.05);
+        this->declare_parameter("reclaim.post_open_pause_seconds", 1.0);
 
         std::vector<std::string> tool_ids;
         this->get_parameter("tool_ids", tool_ids);
@@ -221,6 +247,9 @@ private:
                 loaded_motion_profiles.long_scissor_elbow_tolerance_below)) {
             return false;
         }
+        if (!loadReclaimConfiguration()) {
+            return false;
+        }
 
         for (const std::string &tool_id : tool_ids) {
             ToolProfile profile;
@@ -285,6 +314,51 @@ private:
             out_profile.lift_height = lift_height;
         } catch (const std::exception &ex) {
             RCLCPP_ERROR(this->get_logger(), "Invalid tool profile for tool id '%s': %s", tool_id.c_str(), ex.what());
+            return false;
+        }
+
+        return true;
+    }
+
+    bool loadReclaimConfiguration() {
+        std::vector<double> reclaim_dropoff_position;
+        if (!getDoubleArrayParameter("reclaim.dropoff_position", 3, reclaim_dropoff_position)) {
+            return false;
+        }
+
+        std::vector<double> reclaim_dropoff_orientation;
+        if (!getDoubleArrayParameter("reclaim.dropoff_orientation", 4, reclaim_dropoff_orientation)) {
+            return false;
+        }
+
+        if (!getDoubleParameter("reclaim.post_open_pause_seconds", reclaim_post_open_pause_seconds_)) {
+            return false;
+        }
+        if (!getDoubleParameter("reclaim.post_close_wait_seconds", reclaim_post_close_wait_seconds_)) {
+            return false;
+        }
+        if (!getDoubleParameter("reclaim.dropoff_descend_distance", reclaim_dropoff_descend_distance_)) {
+            return false;
+        }
+
+        if (reclaim_post_open_pause_seconds_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.post_open_pause_seconds must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_post_close_wait_seconds_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.post_close_wait_seconds must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_dropoff_descend_distance_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.dropoff_descend_distance must be >= 0.0.");
+            return false;
+        }
+
+        try {
+            reclaim_dropoff_position_ = pointFromArray(reclaim_dropoff_position);
+            reclaim_dropoff_orientation_ = quaternionFromArray(reclaim_dropoff_orientation);
+        } catch (const std::exception &ex) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid reclaim configuration: %s", ex.what());
             return false;
         }
 
@@ -381,6 +455,60 @@ private:
         handover_orientation_ = profile.handover_orientation;
     }
 
+    bool moveToPoseTarget(
+        const geometry_msgs::msg::Pose &target_pose,
+        double velocity_scale,
+        double acceleration_scale,
+        const char *success_log,
+        const char *failure_log) {
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(velocity_scale);
+        move_group_->setMaxAccelerationScalingFactor(acceleration_scale);
+        move_group_->setPoseTarget(target_pose);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
+            return false;
+        }
+
+        if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
+            return false;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "%s", success_log);
+        return true;
+    }
+
+    void publishGripperReclaimTrigger(bool active) {
+        auto msg = std_msgs::msg::Bool();
+        msg.data = active;
+        gripper_reclaim_trigger_publisher_->publish(msg);
+    }
+
+    void startReclaimSequence() {
+        publishGripperMover(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        if (!moveToPoseTarget(
+                last_handover_pose_,
+                0.6,
+                0.6,
+                "Reached stored handover pose for reclaim.",
+                "Action rejected: reclaim start pose is unreachable.")) {
+            reclaim_in_progress_ = false;
+            waiting_for_reclaim_done_ = false;
+            publishGripperReclaimTrigger(false);
+            return;
+        }
+
+        reclaim_in_progress_ = true;
+        waiting_for_reclaim_done_ = true;
+        publishGripperReclaimTrigger(true);
+        RCLCPP_INFO(this->get_logger(), "Action accepted: reclaim started at last handover pose.");
+    }
+
     void handPositionCallback(const geometry_msgs::msg::Pose::SharedPtr msg) {
         if (!waiting_for_hand_pose_) {
             RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but system is not waiting for a gesture.");
@@ -410,9 +538,12 @@ private:
             hand_pose_received_ = false;
             waiting_for_hand_pose_ = false;
             waiting_for_gripper_done_ = false;
+            waiting_for_reclaim_done_ = false;
             tool_has_been_picked_up_ = false;
+            reclaim_in_progress_ = false;
             publishGripperMover(true);
             publishGripperZeroer(false);
+            publishGripperReclaimTrigger(false);
 
             if (move_group_ != nullptr && configuration_loaded_) {
                 moveToHomePositionUsingJoints();
@@ -431,6 +562,31 @@ private:
 
         if (move_group_ == nullptr) {
             RCLCPP_WARN(this->get_logger(), "Action rejected: tool command '%s' received before MoveGroupInterface initialization.", cmd.c_str());
+            return;
+        }
+
+        if (reclaim_in_progress_) {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: reclaim is already in progress.");
+            return;
+        }
+
+        if (cmd == "9") {
+            if (waiting_for_hand_pose_ || waiting_for_gripper_done_) {
+                RCLCPP_WARN(this->get_logger(), "Action rejected: reclaim requested while another handover action is still active.");
+                return;
+            }
+
+            if (!has_last_handover_pose_) {
+                RCLCPP_WARN(this->get_logger(), "Action rejected: reclaim requested but no stored handover pose is available.");
+                return;
+            }
+
+            startReclaimSequence();
+            return;
+        }
+
+        if (waiting_for_gripper_done_) {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: still waiting for gripper completion from the previous handover.");
             return;
         }
 
@@ -488,7 +644,14 @@ private:
         if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_INFO(this->get_logger(), "Reachability decision: reachable.");
             RCLCPP_INFO(this->get_logger(), "Moving above hand...");
-            move_group_->execute(plan);
+            if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+                publishHandoverEvent("reachability:unreachable_execution_failed");
+                RCLCPP_ERROR(this->get_logger(), "Reachability decision: unreachable.");
+                RCLCPP_ERROR(this->get_logger(), "Execution to above hand failed.");
+                return;
+            }
+            last_handover_pose_ = target_pose;
+            has_last_handover_pose_ = true;
             waiting_for_hand_pose_ = false;
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             RCLCPP_INFO(this->get_logger(), "Activating gripper sensing...");
@@ -506,15 +669,94 @@ private:
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tool_selection_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_done_sub_;
 
-    void gripperDoneCallback(const std_msgs::msg::Bool::SharedPtr msg) {
-        if (msg->data) {
-            RCLCPP_INFO(this->get_logger(), "Gripper opened, returning to home.");
-            moveToHomePositionUsingJoints();
-            hand_pose_received_ = false;
-            waiting_for_hand_pose_ = false;
-            tool_has_been_picked_up_ = false;
-            RCLCPP_INFO(this->get_logger(), "Ready for next tool command.");
+    void reclaimDoneCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        if (!msg->data) {
+            return;
         }
+
+        if (!reclaim_in_progress_ || !waiting_for_reclaim_done_) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring reclaim completion because no reclaim sequence is active.");
+            return;
+        }
+
+        publishGripperReclaimTrigger(false);
+        waiting_for_reclaim_done_ = false;
+        tool_has_been_picked_up_ = true;
+        RCLCPP_INFO(this->get_logger(), "Reclaim gripper close acknowledged.");
+        std::this_thread::sleep_for(std::chrono::duration<double>(reclaim_post_close_wait_seconds_));
+
+        geometry_msgs::msg::Pose dropoff_approach_pose;
+        dropoff_approach_pose.position = reclaim_dropoff_position_;
+        dropoff_approach_pose.orientation = reclaim_dropoff_orientation_;
+
+        geometry_msgs::msg::Pose dropoff_release_pose = dropoff_approach_pose;
+        dropoff_release_pose.position.z -= reclaim_dropoff_descend_distance_;
+
+        if (!moveToPoseTarget(
+                dropoff_approach_pose,
+                0.6,
+                0.6,
+                "Reached reclaim dropoff approach pose.",
+                "Reclaim failed: dropoff approach pose is unreachable.")) {
+            reclaim_in_progress_ = false;
+            waiting_for_reclaim_done_ = false;
+            waiting_for_hand_pose_ = false;
+            waiting_for_gripper_done_ = false;
+            hand_pose_received_ = false;
+            tool_has_been_picked_up_ = false;
+            return;
+        }
+
+        if (!moveToPoseTarget(
+                dropoff_release_pose,
+                0.3,
+                0.3,
+                "Reached reclaim dropoff release pose.",
+                "Reclaim failed: dropoff release pose is unreachable.")) {
+            reclaim_in_progress_ = false;
+            waiting_for_reclaim_done_ = false;
+            waiting_for_hand_pose_ = false;
+            waiting_for_gripper_done_ = false;
+            hand_pose_received_ = false;
+            tool_has_been_picked_up_ = false;
+            return;
+        }
+
+        publishGripperMover(true);
+        std::this_thread::sleep_for(std::chrono::duration<double>(reclaim_post_open_pause_seconds_));
+        moveToHomePositionUsingJoints();
+
+        reclaim_in_progress_ = false;
+        waiting_for_reclaim_done_ = false;
+        tool_has_been_picked_up_ = false;
+        waiting_for_hand_pose_ = false;
+        waiting_for_gripper_done_ = false;
+        hand_pose_received_ = false;
+        RCLCPP_INFO(this->get_logger(), "Reclaim complete: returned to home.");
+    }
+
+    void gripperDoneCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        if (!msg->data) {
+            return;
+        }
+
+        if (reclaim_in_progress_) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring /gripper_done while reclaim is active.");
+            return;
+        }
+
+        if (!waiting_for_gripper_done_) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring /gripper_done because no normal handover is waiting for gripper feedback.");
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Gripper opened, returning to home.");
+        moveToHomePositionUsingJoints();
+        hand_pose_received_ = false;
+        waiting_for_hand_pose_ = false;
+        waiting_for_gripper_done_ = false;
+        tool_has_been_picked_up_ = false;
+        RCLCPP_INFO(this->get_logger(), "Ready for next tool command.");
     }
 
     void jointStateBufferedCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
@@ -928,9 +1170,11 @@ private:
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_mover_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_zeroer_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_reclaim_trigger_publisher_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_buffered_sub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr request_joint_state_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_event_publisher_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_reclaim_done_sub_;
 };
 
 int main(int argc, char **argv) {

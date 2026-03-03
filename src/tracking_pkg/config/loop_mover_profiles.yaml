@@ -50,3 +50,27 @@ loop_mover:
     "motion_profiles.long_scissor.elbow_target": 0.8042477
     "motion_profiles.long_scissor.elbow_tolerance_above": 0.7853
     "motion_profiles.long_scissor.elbow_tolerance_below": 0.7853
+    
+    "reclaim.dropoff_position": [-0.12, 0.30, 0.08]
+    "reclaim.dropoff_orientation": [-0.7071, 0.7071, 0.0, 0.0]
+    "reclaim.force_threshold_newtons": 4.0
+    "reclaim.zero_delay_seconds": 0.5
+    "reclaim.close_position": 250
+    "reclaim.close_speed": 255
+    "reclaim.close_force": 1
+    "reclaim.post_close_wait_seconds": 1.0
+    "reclaim.dropoff_descend_distance": 0.05
+    "reclaim.post_open_pause_seconds": 1.0
+
+reclaim_controller:
+  ros__parameters:
+    "reclaim.force_threshold_newtons": 4.0
+    "reclaim.zero_delay_seconds": 0.5
+    "reclaim.close_position": 250
+    "reclaim.close_speed": 255
+    "reclaim.close_force": 1
+
+gripper_opener_with_zeroer:
+  ros__parameters:
+    "reclaim.close_speed": 255
+    "reclaim.close_force": 1

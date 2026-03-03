@@ -14,7 +14,7 @@ import socket
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import WrenchStamped
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Int32
 
 
 class URCommand:
@@ -76,9 +76,14 @@ class SocketControllerNode(Node):
         self.gripper_port = 63352
         self.ur_node = URCommand(self.robot_ip, self.robot_command_port, self.gripper_port)
         self.get_logger().info("Socket Mover Node initialized")
+        self.declare_parameter("reclaim.close_speed", 255)
+        self.declare_parameter("reclaim.close_force", 1)
+        self.reclaim_close_speed = int(self.get_parameter("reclaim.close_speed").value)
+        self.reclaim_close_force = int(self.get_parameter("reclaim.close_force").value)
 
         # publisher für gripper-status
         self.status_publisher = self.create_publisher(Bool, '/gripper_done', 10)
+        self.gripper_position_done_publisher = self.create_publisher(Bool, '/gripper_position_done', 10)
 
         # Offsets für Kraft und Drehmoment
         self.force_offset = None
@@ -95,6 +100,8 @@ class SocketControllerNode(Node):
 
         # Subscriber für den Gripper-Zeroer
         self.subscription3 = self.create_subscription(Bool, '/gripper_zeroer', self.gripper_zeroer_callback, 10)
+        # Subscriber für explizite Positionskommandos
+        self.subscription4 = self.create_subscription(Int32, '/gripper_position_command', self.gripper_position_callback, 10)
 
     def gripper_mover_callback(self, bool_msg):
         # Extrahiere bool aus nachricht
@@ -113,6 +120,24 @@ class SocketControllerNode(Node):
         self.get_logger().info(f"Aktivitätsstatus: {'Aktiv' if self.zeroer_active_ else 'Inaktiv'}")
         if self.zeroer_active_:
             self.reset_force_offset()
+
+    def gripper_position_callback(self, position_msg):
+        position = int(position_msg.data)
+        if not 0 <= position <= 255:
+            self.get_logger().error(f"Invalid reclaim gripper position: {position}")
+            return
+
+        self.get_logger().info(f"Moving gripper to reclaim position {position}")
+        self.ur_node.command_gripper(
+            position,
+            speed=self.reclaim_close_speed,
+            force=self.reclaim_close_force,
+        )
+
+        done_msg = Bool()
+        done_msg.data = True
+        self.gripper_position_done_publisher.publish(done_msg)
+        self.get_logger().info("Published reclaim gripper position completion.")
 
     def force_callback(self, msg):
         if not self.zeroer_active_:

@@ -149,5 +149,8 @@ The `/tool_selection` interface is unchanged:
 
 - `"0"` resets the system
 - `"1"` to `"6"` select the configured tool profiles
+- `"9"` starts the reclaim workflow from the last successful handover pose
 
-After changing the YAML values, restart the launch so `loop_mover` reloads the updated parameters.
+The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), and reclaim gripper close parameters. The dropoff sequence now uses a two-step motion: approach the configured pose, lower by `0.05 m`, then open the gripper.
+
+After changing the YAML values, restart the launch so `loop_mover`, `gripper_opener_with_zeroer`, and `reclaim_controller` reload the updated parameters.
