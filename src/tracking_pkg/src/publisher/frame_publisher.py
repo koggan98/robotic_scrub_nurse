@@ -58,6 +58,8 @@ class ArucoBoard(Node):
         # TF-Broadcaster für statisches Publizieren
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         self.camera_frame_published = False  # Statusvariable für einmaliges Publizieren
+        self.publish_aruco_board_frame()
+        self.get_logger().info("Static TF published: base -> aruco_board_frame")
 
 
     
@@ -117,9 +119,6 @@ class ArucoBoard(Node):
                     self.camera_frame_published = True
                     self.get_logger().info("Static camera_frame published relative to aruco_board_frame.")
 
-                # Publiziere statische TF für aruco_board_frame
-                self.publish_aruco_board_frame()
-
                 # Zeichne die Board-Achse
                 cv2.drawFrameAxes(color_frame, self.camera_matrix, self.dist_coeffs, rvec, tvec, 0.1)
 
@@ -175,8 +174,7 @@ class ArucoBoard(Node):
         static_transform.transform.rotation.z = 0.0
         static_transform.transform.rotation.w = 1.0
         
-        self.tf_broadcaster.sendTransform(static_transform)
-        # self.get_logger().info("Published static TF for aruco_board_frame relative to robot_base")
+        self.static_tf_broadcaster.sendTransform(static_transform)
 
 
 def main(args=None):

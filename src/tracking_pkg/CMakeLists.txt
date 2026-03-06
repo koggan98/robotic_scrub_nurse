@@ -23,6 +23,7 @@ install(
     src/publisher/camera_publisher.py
     src/publisher/frame_publisher.py
     src/publisher/gesture_pose_publisher.py
+    src/publisher/annotated_image_viewer.py
     src/publisher/mir_publisher.py
     src/publisher/joint_states_publisher.py
     src/publisher/tool_selection.py

@@ -136,10 +136,10 @@ socket_mover:
     "rtde.use_external_control": false
     "rtde.input_pose_frame_rotation_rpy": [0.0, 0.0, 3.141592653589793]
     "rtde.tcp_pose": [0.0, 0.0, 0.235, 0.0, 0.0, 0.0]
-    "motion.max_joint_speed": 1.05
-    "motion.max_joint_acceleration": 1.4
-    "motion.max_linear_speed": 0.25
-    "motion.max_linear_acceleration": 1.2
+    "motion.max_joint_speed": 1.8
+    "motion.max_joint_acceleration": 2.5
+    "motion.max_linear_speed": 0.4
+    "motion.max_linear_acceleration": 1.8
 
 reclaim_controller:
   ros__parameters:

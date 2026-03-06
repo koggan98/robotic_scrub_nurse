@@ -222,11 +222,18 @@ source install/setup.bash
 ros2 launch tracking_pkg web_socket_launch.py
 ```
 
+Optional: disable the annotated hand image window if you do not want the lightweight annotated image viewer:
+
+```bash
+ros2 launch tracking_pkg web_socket_launch.py show_annotated_feed:=false
+```
+
 `socket_mover` loads tool, orientation, handover, and reclaim parameters from:
 
 - `src/tracking_pkg/config/loop_mover_profiles.yaml` (`socket_mover.ros__parameters`)
 
 The socket runtime also applies `rtde.input_pose_frame_rotation_rpy` before Cartesian RTDE motions. The default is `[0.0, 0.0, pi]`, which compensates for the UR `base_link` to controller `base` rotation and keeps the existing MoveIt-calibrated tool coordinates consistent.
+The launch also injects a static `world -> base` TF so hand tracking keeps working after MoveIt is removed from the runtime path.
 
 ### Optional split mode
 

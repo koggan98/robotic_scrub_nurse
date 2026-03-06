@@ -164,13 +164,13 @@ class SocketMover(Node):
         self.tcp_pose = [float(v) for v in tcp_pose]
 
     def _declare_motion_limits(self) -> None:
-        self.max_joint_speed = float(self.declare_parameter("motion.max_joint_speed", 1.05).value)
+        self.max_joint_speed = float(self.declare_parameter("motion.max_joint_speed", 1.80).value)
         self.max_joint_acceleration = float(
-            self.declare_parameter("motion.max_joint_acceleration", 1.40).value
+            self.declare_parameter("motion.max_joint_acceleration", 2.50).value
         )
-        self.max_linear_speed = float(self.declare_parameter("motion.max_linear_speed", 0.25).value)
+        self.max_linear_speed = float(self.declare_parameter("motion.max_linear_speed", 0.40).value)
         self.max_linear_acceleration = float(
-            self.declare_parameter("motion.max_linear_acceleration", 1.20).value
+            self.declare_parameter("motion.max_linear_acceleration", 1.80).value
         )
 
     def _declare_configuration_parameters(self) -> None:

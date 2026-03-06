@@ -45,6 +45,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Motion/handover core: `src/tracking_pkg/src/socket_mover/socket_mover.py`.
 - IK is computed by the robot controller through `ur_rtde` (`moveJ_IK`), with reachability prechecks in the node.
 - Tool command flow remains `/tool_selection` compatible with the MoveIt path.
+- The socket launch injects a static `world -> base` TF so tracking stays compatible without MoveIt, and it can open `/annotated_hand_image` directly through a local lightweight viewer node.
 
 ## High-Level Active ROS Flow
 1. Camera node publishes RGB/depth/camera parameters.

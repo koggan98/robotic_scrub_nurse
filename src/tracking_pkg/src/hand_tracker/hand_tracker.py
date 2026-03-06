@@ -22,17 +22,22 @@ class HandPositionPublisher(Node):
         self.marker_publisher = self.create_publisher(Marker, 'hand_pose_marker', 10)
         
         self.bridge = CvBridge()
-        self.declare_parameter("max_num_hands", 10)
+        self.declare_parameter("max_num_hands", 2)
         self.declare_parameter("shaka_angle_threshold", 160.0)
         self.declare_parameter("reacquire_max_dt", 1.0)
         self.declare_parameter("reacquire_max_px", 60.0)
         self.declare_parameter("reacquire_max_dz", 0.15)
+        self.declare_parameter("annotated_image_max_hz", 12.0)
 
         self.max_num_hands = int(self.get_parameter("max_num_hands").value)
         self.shaka_angle_threshold = float(self.get_parameter("shaka_angle_threshold").value)
         self.reacquire_max_dt = float(self.get_parameter("reacquire_max_dt").value)
         self.reacquire_max_px = float(self.get_parameter("reacquire_max_px").value)
         self.reacquire_max_dz = float(self.get_parameter("reacquire_max_dz").value)
+        annotated_image_max_hz = float(self.get_parameter("annotated_image_max_hz").value)
+        self.annotated_image_publish_interval = (
+            0.0 if annotated_image_max_hz <= 0.0 else 1.0 / annotated_image_max_hz
+        )
 
         self.mp_tracker = MediaPipeTracker(max_num_hands=self.max_num_hands)
         self.gesture_tracker = HandGestureTracker()
@@ -61,6 +66,7 @@ class HandPositionPublisher(Node):
         self.marker_publish_interval = 0.1
         self.last_tf_warn_time = 0.0
         self.tf_warn_interval = 2.0
+        self.last_annotated_image_publish_time = 0.0
 
         self.get_logger().info(f"Tracking Node initialized")
         self.waiting_for_images_logged = False # Flag für einmalige Ausgabe von "Warte auf RGB- und Tiefenbilder..."
@@ -338,10 +344,15 @@ class HandPositionPublisher(Node):
                         
             # Zeige das annotierte RGB-Bild
             # cv2.imshow('MediaPipe Hands with Depth', color_frame) # image publishen "normal"
-            ros_image = self.bridge.cv2_to_imgmsg(color_frame, encoding='bgr8')
-            ros_image.header.stamp = self.get_clock().now().to_msg()
-            ros_image.header.frame_id = "camera_frame"
-            self.annotated_image_publisher.publish(ros_image)
+            if (
+                self.annotated_image_publish_interval == 0.0
+                or now - self.last_annotated_image_publish_time >= self.annotated_image_publish_interval
+            ):
+                ros_image = self.bridge.cv2_to_imgmsg(color_frame, encoding='bgr8')
+                ros_image.header.stamp = self.get_clock().now().to_msg()
+                ros_image.header.frame_id = "camera_frame"
+                self.annotated_image_publisher.publish(ros_image)
+                self.last_annotated_image_publish_time = now
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
