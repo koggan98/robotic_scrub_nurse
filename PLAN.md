@@ -9,7 +9,7 @@
 ## Summary
 This roadmap keeps the core thesis streams intact while enforcing:
 - hybrid Ubuntu runtime with optional Mac-over-SSH operation,
-- deferred direct-control path (`socket_mover`),
+- available direct-control alternative path (`socket_mover` with `ur_rtde`),
 - policy-aligned execution and logging standards defined in `AGENTS.md`.
 
 ## Workstreams
@@ -48,10 +48,10 @@ This roadmap keeps the core thesis streams intact while enforcing:
 - Provide SSH-friendly operator command variants where relevant.
 - Keep development host vs runtime host separation explicit.
 
-## Cross-Cutting Item 2: Direct Control Path (Deferred)
-- `socket_mover` remains dormant/deferred.
-- Decision gate: activate only after external IK/planner scope is explicitly approved.
-- Until gate approval, runtime behavior remains MoveIt-centric (see `ARCHITECTURE.md`).
+## Cross-Cutting Item 2: Direct Control Path (Alternative Runtime)
+- `socket_mover` is implemented as a MoveIt-free alternative runtime path.
+- IK/planning is externalized to the UR controller via `ur_rtde`.
+- MoveIt runtime remains available and primary for thesis baseline comparisons.
 
 ## Milestones
 
@@ -89,10 +89,10 @@ This roadmap keeps the core thesis streams intact while enforcing:
   - consolidated experiment and benchmark outputs,
   - thesis-ready artifact set (architecture, policy alignment, roadmap completion).
 
-## Deferred Decision Gate: `socket_mover`
-- Gate question: is IK/planning intentionally moved outside MoveIt scope?
-- If `No`: keep `socket_mover` dormant.
-- If `Yes`: require explicit design/safety/logging review before activation.
+## Decision State: `socket_mover`
+- IK/planning is intentionally moved outside MoveIt for the socket runtime path.
+- Current mode: implemented as alternative path, not removed from scope.
+- Ongoing requirement: keep safety/logging behavior aligned between MoveIt and socket runtimes.
 
 ## Interfaces and Types
 - Implemented runtime interface:

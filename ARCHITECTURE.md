@@ -40,10 +40,11 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Motion/handover core: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`.
 - Tool command flow uses `/tool_selection` and MoveIt planning.
 
-### Dormant Path (Direct URScript Option)
-- `src/tracking_pkg/src/socket_mover/socket_mover.py` and related `socket_mover` components.
-- Current state: dormant/deferred (not active runtime path).
-- Potential future use: only if IK/planning is externalized beyond MoveIt.
+### Alternative Path (Socket + RTDE, MoveIt-free)
+- Launch entry: `src/tracking_pkg/launch/web_socket_launch.py`.
+- Motion/handover core: `src/tracking_pkg/src/socket_mover/socket_mover.py`.
+- IK is computed by the robot controller through `ur_rtde` (`moveJ_IK`), with reachability prechecks in the node.
+- Tool command flow remains `/tool_selection` compatible with the MoveIt path.
 
 ## High-Level Active ROS Flow
 1. Camera node publishes RGB/depth/camera parameters.
@@ -59,7 +60,8 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 9. Gripper feedback resets the system for the next cycle.
 
 ## Current Constraints
-- MoveIt path is the only supported runtime path.
+- MoveIt path remains the primary thesis runtime path.
+- Socket path is implemented as an alternative runtime path and requires `ur_rtde` plus direct robot RTDE access.
 - Reachability publish interface is intentionally minimal and only emits unreachable planning failures.
 - Audio feedback is intentionally minimal (gesture-detected + unreachable only) but now uses queued playback so short back-to-back events are both audible.
 - No audio is emitted for hand poses received outside valid waiting state.

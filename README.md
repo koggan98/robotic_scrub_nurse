@@ -84,6 +84,7 @@ Official UR simulation environment included as a git submodule for testing and d
 
 - **ROS 2 Humble**: Core robotics framework
 - **MoveIt 2**: Motion planning
+- **ur_rtde**: Direct UR RTDE motion interface for the socket runtime path
 - **Intel RealSense SDK**: Camera integration
 - **MediaPipe**: Hand tracking and pose estimation
 - **ALSA utils (`aplay`)**: runtime speaker playback for handover events
@@ -91,7 +92,7 @@ Official UR simulation environment included as a git submodule for testing and d
 ### Python Packages
 
 ```bash
-pip install mediapipe pyrealsense2 tabulate
+pip install mediapipe pyrealsense2 tabulate ur_rtde
 ```
 
 ---
@@ -156,3 +157,15 @@ The `/tool_selection` interface is unchanged:
 The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), and reclaim gripper close parameters. The dropoff sequence now uses a two-step motion: approach the configured pose, lower by `0.05 m`, then open the gripper.
 
 After changing the YAML values, restart the launch so `loop_mover`, `gripper_opener_with_zeroer`, and `reclaim_controller` reload the updated parameters.
+
+## Socket RTDE Launch (MoveIt-free)
+
+The new socket runtime path uses `ur_rtde` (controller-side IK) and keeps the same tool-selection and handover topic logic as `loop_mover`.
+
+```bash
+ros2 launch tracking_pkg web_socket_launch.py
+```
+
+This path reads tool/reclaim/orientation parameters from `src/tracking_pkg/config/loop_mover_profiles.yaml` under `socket_mover.ros__parameters`.
+
+By default, the socket path rotates incoming Cartesian pose targets by `pi` around Z before sending them to the UR controller. This matches the UR `base_link -> base` frame difference used by the controller and keeps the Cartesian targets aligned with the existing MoveIt-tuned coordinates.

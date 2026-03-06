@@ -43,7 +43,7 @@ Required:
 ### Python Dependencies
 
 ```bash
-pip install mediapipe pyrealsense2 tabulate
+pip install mediapipe pyrealsense2 tabulate ur_rtde
 ```
 
 ---
@@ -210,6 +210,23 @@ ros2 launch tracking_pkg loop_with_moveit_launch.py \
   ur_type:=ur3e \
   tracking_rviz:=false
 ```
+
+### Terminal 3 (alternative): Socket + RTDE runtime (MoveIt-free)
+
+This launch replaces `loop_mover` with `socket_mover` and uses `ur_rtde` for motion execution with controller-side IK.
+
+```bash
+cd ~/robotic_scrub_nurse_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch tracking_pkg web_socket_launch.py
+```
+
+`socket_mover` loads tool, orientation, handover, and reclaim parameters from:
+
+- `src/tracking_pkg/config/loop_mover_profiles.yaml` (`socket_mover.ros__parameters`)
+
+The socket runtime also applies `rtde.input_pose_frame_rotation_rpy` before Cartesian RTDE motions. The default is `[0.0, 0.0, pi]`, which compensates for the UR `base_link` to controller `base` rotation and keeps the existing MoveIt-calibrated tool coordinates consistent.
 
 ### Optional split mode
 

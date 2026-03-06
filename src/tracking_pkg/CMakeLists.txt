@@ -30,6 +30,7 @@ install(
     src/moveit_mover/gripper_mover.py
     src/moveit_mover/gripper_opener_with_zeroer.py
     src/moveit_mover/reclaim_controller.py
+    src/socket_mover/socket_mover.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

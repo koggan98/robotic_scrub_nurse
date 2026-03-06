@@ -1,12 +1,19 @@
 from launch import LaunchDescription
-from launch_ros.actions import Node
 from launch.actions import TimerAction
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
 
 def generate_launch_description():
+    profile_config = PathJoinSubstitution(
+        [FindPackageShare('tracking_pkg'), 'config', 'loop_mover_profiles.yaml']
+    )
+
     return LaunchDescription([
         Node(
             package='tracking_pkg',
-            executable='camera_publisher.py', 
+            executable='camera_publisher.py',
             name='camera_publisher',
             output='screen'
         ),
@@ -18,32 +25,57 @@ def generate_launch_description():
         ),
         Node(
             package='tracking_pkg',
-            executable='gesture_pose_publisher.py', 
+            executable='gesture_pose_publisher.py',
             name='gesture_pose_marker',
             output='screen'
         ),
         Node(
             package='tracking_pkg',
-            executable='hand_tracker.py', 
+            executable='hand_tracker.py',
             name='hand_tracker',
             output='screen'
         ),
-        # Verzögerter Start der socket_mover-Node um 5 Sekunden
+        Node(
+            package='tracking_pkg',
+            executable='gripper_opener_with_zeroer.py',
+            name='gripper_opener_with_zeroer',
+            output='screen',
+            parameters=[profile_config]
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='reclaim_controller.py',
+            name='reclaim_controller',
+            output='screen',
+            parameters=[profile_config]
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='handover_sound_publisher.py',
+            name='handover_sound_publisher',
+            output='screen'
+        ),
         TimerAction(
-            period=0.5,  # Verzögerung in Sekunden
+            period=5.0,
             actions=[
                 Node(
                     package='tracking_pkg',
                     executable='socket_mover.py',
                     name='socket_mover',
-                    output='screen'
+                    output='screen',
+                    parameters=[profile_config]
                 )
             ]
         ),
-        Node(
-            package='tracking_pkg',
-            executable='box_publisher.py', 
-            name='box_publisher',
-            output='screen'
+        TimerAction(
+            period=5.0,
+            actions=[
+                Node(
+                    package='tracking_pkg',
+                    executable='mir_publisher.py',
+                    name='mir_publisher',
+                    output='screen'
+                )
+            ]
         )
     ])

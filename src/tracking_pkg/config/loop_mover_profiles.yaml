@@ -65,6 +65,82 @@ loop_mover:
     "reclaim.dropoff_descend_distance": 0.15
     "reclaim.post_open_pause_seconds": 1.0
 
+socket_mover:
+  ros__parameters:
+    tool_ids: ["1", "2", "3", "4", "5", "6"]
+
+    "tool_profiles.1.strategy": "standard"
+    "tool_profiles.1.pick_position": [0.07, -0.381, 0.025]
+    "tool_profiles.1.pick_orientation": [-0.7071, 0.7071, 0.0, 0.0]
+    "tool_profiles.1.hand_offset": [0.02, 0.0, 0.05]
+    "tool_profiles.1.handover_orientation": [-0.63, 0.63, -0.321, 0.321]
+    "tool_profiles.1.lift_height": 0.1
+
+    "tool_profiles.2.strategy": "hammer_cartesian"
+    "tool_profiles.2.pick_position": [0.131, -0.345, 0.0]
+    "tool_profiles.2.pick_orientation": [0.0, 1.0, 0.0, 0.0]
+    "tool_profiles.2.hand_offset": [-0.08, 0.0, 0.05]
+    "tool_profiles.2.handover_orientation": [-0.63, 0.63, -0.321, 0.321]
+    "tool_profiles.2.lift_height": 0.1
+
+    "tool_profiles.3.strategy": "long_scissor"
+    "tool_profiles.3.pick_position": [0.035, -0.47, 0.03]
+    "tool_profiles.3.pick_orientation": [0.0, 1.0, 0.0, 0.0]
+    "tool_profiles.3.hand_offset": [-0.05, 0.0, 0.02]
+    "tool_profiles.3.handover_orientation": [0.5, -0.5, 0.5, -0.5]
+    "tool_profiles.3.lift_height": 0.1
+
+    "tool_profiles.4.strategy": "standard"
+    "tool_profiles.4.pick_position": [-0.03, -0.33, 0.03]
+    "tool_profiles.4.pick_orientation": [-0.7071, 0.7071, 0.0, 0.0]
+    "tool_profiles.4.hand_offset": [0.0, 0.05, 0.05]
+    "tool_profiles.4.handover_orientation": [0.0, 0.891, 0.0, 0.454]
+    "tool_profiles.4.lift_height": 0.1
+
+    "tool_profiles.5.strategy": "standard"
+    "tool_profiles.5.pick_position": [-0.03, -0.33, 0.03]
+    "tool_profiles.5.pick_orientation": [0.7071, 0.7071, 0.0, 0.0]
+    "tool_profiles.5.hand_offset": [0.0, -0.05, 0.05]
+    "tool_profiles.5.handover_orientation": [0.0, 0.891, 0.0, 0.454]
+    "tool_profiles.5.lift_height": 0.1
+
+    "tool_profiles.6.strategy": "retractor_cartesian"
+    "tool_profiles.6.pick_position": [0.1265, -0.39, 0.015]
+    "tool_profiles.6.pick_orientation": [1.0, 0.0, 0.0, 0.0]
+    "tool_profiles.6.hand_offset": [-0.07, 0.0, 0.07]
+    "tool_profiles.6.handover_orientation": [-0.63, 0.63, -0.321, 0.321]
+    "tool_profiles.6.lift_height": 0.15
+
+    "motion_profiles.home_joints": [0.0, -2.486, 1.227, -1.294, -1.5707963267948966, 0.0]
+    "motion_profiles.long_scissor.over_joints": [-1.80589, -1.46608, 1.51407, -1.98042, -1.534842, -0.205774]
+    "motion_profiles.long_scissor.after_joints": [-1.79943, -1.33028, 1.62385, -2.12720, -1.55281, -0.205774]
+    "motion_profiles.long_scissor.elbow_target": 0.8042477
+    "motion_profiles.long_scissor.elbow_tolerance_above": 0.7853
+    "motion_profiles.long_scissor.elbow_tolerance_below": 0.7853
+    "handover.pre_release_dwell_seconds": 0.3
+    "handover.post_zeroer_settle_seconds": 0.0
+    "handover.post_open_pause_seconds": 1.0
+
+    "reclaim.dropoff_position": [-0.25, 0.28, 0.18]
+    "reclaim.dropoff_orientation": [-0.7071, 0.7071, 0.0, 0.0]
+    "reclaim.force_threshold_newtons": 2.0
+    "reclaim.zero_delay_seconds": 0.5
+    "reclaim.close_position": 250
+    "reclaim.close_speed": 200
+    "reclaim.close_force": 1
+    "reclaim.post_close_wait_seconds": 1.0
+    "reclaim.dropoff_descend_distance": 0.15
+    "reclaim.post_open_pause_seconds": 1.0
+
+    "rtde.robot_ip": "192.168.12.10"
+    "rtde.use_external_control": false
+    "rtde.input_pose_frame_rotation_rpy": [0.0, 0.0, 3.141592653589793]
+    "rtde.tcp_pose": [0.0, 0.0, 0.235, 0.0, 0.0, 0.0]
+    "motion.max_joint_speed": 1.05
+    "motion.max_joint_acceleration": 1.4
+    "motion.max_linear_speed": 0.25
+    "motion.max_linear_acceleration": 1.2
+
 reclaim_controller:
   ros__parameters:
     "reclaim.force_threshold_newtons": 2.0
