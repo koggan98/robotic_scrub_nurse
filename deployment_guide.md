@@ -234,6 +234,7 @@ ros2 launch tracking_pkg web_socket_launch.py show_annotated_feed:=false
 
 The socket runtime also applies `rtde.input_pose_frame_rotation_rpy` before Cartesian RTDE motions. The default is `[0.0, 0.0, pi]`, which compensates for the UR `base_link` to controller `base` rotation and keeps the existing MoveIt-calibrated tool coordinates consistent.
 The launch also injects a static `world -> base` TF so hand tracking keeps working after MoveIt is removed from the runtime path.
+Handover release and reclaim sensing are read directly from RTDE TCP force data, so this launch does not require a parallel `ur_robot_driver` process.
 
 ### Optional split mode
 

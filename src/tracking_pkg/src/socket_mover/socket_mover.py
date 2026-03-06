@@ -9,8 +9,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 
 try:
     from rtde_control import RTDEControlInterface as RTDEControl
@@ -47,6 +46,16 @@ class MotionProfiles:
     long_scissor_elbow_tolerance_below: float
 
 
+@dataclass
+class ForceSensingConfig:
+    axis_threshold_newtons: float
+    force_norm_threshold_newtons: float
+    torque_norm_threshold_newton_meters: float
+    zero_delay_seconds: float
+    poll_rate_hz: float
+    debug_log_interval_seconds: float
+
+
 class SocketMover(Node):
     def __init__(self) -> None:
         super().__init__("socket_mover")
@@ -56,9 +65,6 @@ class SocketMover(Node):
 
         self.pre_release_dwell_seconds = max(
             0.0, self.declare_parameter("handover.pre_release_dwell_seconds", 0.35).value
-        )
-        self.post_zeroer_settle_seconds = max(
-            0.0, self.declare_parameter("handover.post_zeroer_settle_seconds", 0.05).value
         )
         self.post_open_pause_seconds = max(
             0.0, self.declare_parameter("handover.post_open_pause_seconds", 1.0).value
@@ -89,11 +95,10 @@ class SocketMover(Node):
         self.waiting_for_gripper_done = False
         self.waiting_for_reclaim_done = False
         self.tool_has_been_picked_up = False
-        self.received_joint_state = False
         self.has_last_handover_pose = False
         self.reclaim_in_progress = False
-
-        self.latest_joint_state = JointState()
+        self.handover_force_config: Optional[ForceSensingConfig] = None
+        self.reclaim_force_config: Optional[ForceSensingConfig] = None
 
         self._declare_configuration_parameters()
         self.configuration_loaded = self._load_configuration()
@@ -110,29 +115,9 @@ class SocketMover(Node):
             self._hand_pose_callback,
             10,
         )
-        self.gripper_done_sub = self.create_subscription(
-            Bool,
-            "/gripper_done",
-            self._gripper_done_callback,
-            10,
-        )
-        self.gripper_reclaim_done_sub = self.create_subscription(
-            Bool,
-            "/gripper_reclaim_done",
-            self._reclaim_done_callback,
-            10,
-        )
-        self.joint_state_buffered_sub = self.create_subscription(
-            JointState,
-            "/joint_state_buffered",
-            self._joint_state_buffered_callback,
-            10,
-        )
 
         self.gripper_mover_pub = self.create_publisher(Bool, "/gripper_mover", 10)
-        self.gripper_zeroer_pub = self.create_publisher(Bool, "/gripper_zeroer", 10)
-        self.gripper_reclaim_trigger_pub = self.create_publisher(Bool, "/gripper_reclaim_trigger", 10)
-        self.request_joint_state_pub = self.create_publisher(Bool, "/request_joint_state", 10)
+        self.gripper_position_command_pub = self.create_publisher(Int32, "/gripper_position_command", 10)
         self.handover_event_pub = self.create_publisher(String, "/handover_event", 10)
 
         self.rtde_control = None
@@ -191,13 +176,22 @@ class SocketMover(Node):
         self.declare_parameter(
             "motion_profiles.long_scissor.elbow_tolerance_below", float("nan")
         )
+        self.declare_parameter("handover.force_axis_threshold_newtons", 2.0)
+        self.declare_parameter("handover.force_norm_threshold_newtons", 2.0)
+        self.declare_parameter("handover.torque_norm_threshold_newton_meters", 0.12)
+        self.declare_parameter("handover.zero_delay_seconds", 0.0)
+        self.declare_parameter("handover.force_poll_rate_hz", 50.0)
+        self.declare_parameter("handover.force_debug_log_interval_seconds", 1.0)
         self.declare_parameter("reclaim.dropoff_position", Parameter.Type.DOUBLE_ARRAY)
         self.declare_parameter(
             "reclaim.dropoff_orientation",
             Parameter.Type.DOUBLE_ARRAY,
         )
         self.declare_parameter("reclaim.force_threshold_newtons", 2.0)
+        self.declare_parameter("reclaim.force_norm_threshold_newtons", 2.0)
+        self.declare_parameter("reclaim.torque_norm_threshold_newton_meters", 0.12)
         self.declare_parameter("reclaim.zero_delay_seconds", 0.5)
+        self.declare_parameter("reclaim.force_poll_rate_hz", 50.0)
         self.declare_parameter("reclaim.close_position", 250)
         self.declare_parameter("reclaim.close_speed", 255)
         self.declare_parameter("reclaim.close_force", 1)
@@ -274,6 +268,9 @@ class SocketMover(Node):
             long_scissor_elbow_tolerance_below=long_scissor_elbow_tolerance_below,
         )
 
+        if not self._load_handover_force_configuration():
+            return False
+
         if not self._load_reclaim_configuration():
             return False
 
@@ -288,6 +285,53 @@ class SocketMover(Node):
         self.tool_profiles = loaded_tool_profiles
         self.get_logger().info(
             f"Loaded {len(self.tool_profiles)} tool profiles from ROS2 parameters."
+        )
+        return True
+
+    def _load_handover_force_configuration(self) -> bool:
+        axis_threshold = self._get_double_parameter("handover.force_axis_threshold_newtons")
+        force_norm_threshold = self._get_double_parameter("handover.force_norm_threshold_newtons")
+        torque_norm_threshold = self._get_double_parameter(
+            "handover.torque_norm_threshold_newton_meters"
+        )
+        zero_delay_seconds = self._get_double_parameter("handover.zero_delay_seconds")
+        poll_rate_hz = self._get_double_parameter("handover.force_poll_rate_hz")
+        debug_log_interval_seconds = self._get_double_parameter(
+            "handover.force_debug_log_interval_seconds"
+        )
+
+        if (
+            axis_threshold is None
+            or force_norm_threshold is None
+            or torque_norm_threshold is None
+            or zero_delay_seconds is None
+            or poll_rate_hz is None
+            or debug_log_interval_seconds is None
+        ):
+            return False
+
+        if axis_threshold <= 0.0 or force_norm_threshold <= 0.0 or torque_norm_threshold <= 0.0:
+            self.get_logger().error("Handover force thresholds must be > 0.0.")
+            return False
+        if zero_delay_seconds < 0.0:
+            self.get_logger().error("Parameter handover.zero_delay_seconds must be >= 0.0.")
+            return False
+        if poll_rate_hz <= 0.0:
+            self.get_logger().error("Parameter handover.force_poll_rate_hz must be > 0.0.")
+            return False
+        if debug_log_interval_seconds < 0.0:
+            self.get_logger().error(
+                "Parameter handover.force_debug_log_interval_seconds must be >= 0.0."
+            )
+            return False
+
+        self.handover_force_config = ForceSensingConfig(
+            axis_threshold_newtons=axis_threshold,
+            force_norm_threshold_newtons=force_norm_threshold,
+            torque_norm_threshold_newton_meters=torque_norm_threshold,
+            zero_delay_seconds=zero_delay_seconds,
+            poll_rate_hz=poll_rate_hz,
+            debug_log_interval_seconds=debug_log_interval_seconds,
         )
         return True
 
@@ -334,6 +378,17 @@ class SocketMover(Node):
         )
 
     def _load_reclaim_configuration(self) -> bool:
+        reclaim_force_threshold_newtons = self._get_double_parameter(
+            "reclaim.force_threshold_newtons"
+        )
+        reclaim_force_norm_threshold_newtons = self._get_double_parameter(
+            "reclaim.force_norm_threshold_newtons"
+        )
+        reclaim_torque_norm_threshold_newton_meters = self._get_double_parameter(
+            "reclaim.torque_norm_threshold_newton_meters"
+        )
+        reclaim_zero_delay_seconds = self._get_double_parameter("reclaim.zero_delay_seconds")
+        reclaim_force_poll_rate_hz = self._get_double_parameter("reclaim.force_poll_rate_hz")
         reclaim_dropoff_position = self._get_double_array_parameter("reclaim.dropoff_position", 3)
         reclaim_dropoff_orientation = self._get_double_array_parameter(
             "reclaim.dropoff_orientation", 4
@@ -349,7 +404,12 @@ class SocketMover(Node):
         )
 
         if (
-            reclaim_dropoff_position is None
+            reclaim_force_threshold_newtons is None
+            or reclaim_force_norm_threshold_newtons is None
+            or reclaim_torque_norm_threshold_newton_meters is None
+            or reclaim_zero_delay_seconds is None
+            or reclaim_force_poll_rate_hz is None
+            or reclaim_dropoff_position is None
             or reclaim_dropoff_orientation is None
             or reclaim_post_open_pause_seconds is None
             or reclaim_post_close_wait_seconds is None
@@ -366,12 +426,36 @@ class SocketMover(Node):
         if reclaim_dropoff_descend_distance < 0.0:
             self.get_logger().error("Parameter reclaim.dropoff_descend_distance must be >= 0.0.")
             return False
+        if (
+            reclaim_force_threshold_newtons <= 0.0
+            or reclaim_force_norm_threshold_newtons <= 0.0
+            or reclaim_torque_norm_threshold_newton_meters <= 0.0
+        ):
+            self.get_logger().error("Reclaim force thresholds must be > 0.0.")
+            return False
+        if reclaim_zero_delay_seconds < 0.0:
+            self.get_logger().error("Parameter reclaim.zero_delay_seconds must be >= 0.0.")
+            return False
+        if reclaim_force_poll_rate_hz <= 0.0:
+            self.get_logger().error("Parameter reclaim.force_poll_rate_hz must be > 0.0.")
+            return False
 
         self.reclaim_dropoff_position = reclaim_dropoff_position
         self.reclaim_dropoff_orientation = reclaim_dropoff_orientation
         self.reclaim_post_open_pause_seconds = reclaim_post_open_pause_seconds
         self.reclaim_post_close_wait_seconds = reclaim_post_close_wait_seconds
         self.reclaim_dropoff_descend_distance = reclaim_dropoff_descend_distance
+        debug_interval_seconds = 1.0
+        if self.handover_force_config is not None:
+            debug_interval_seconds = self.handover_force_config.debug_log_interval_seconds
+        self.reclaim_force_config = ForceSensingConfig(
+            axis_threshold_newtons=reclaim_force_threshold_newtons,
+            force_norm_threshold_newtons=reclaim_force_norm_threshold_newtons,
+            torque_norm_threshold_newton_meters=reclaim_torque_norm_threshold_newton_meters,
+            zero_delay_seconds=reclaim_zero_delay_seconds,
+            poll_rate_hz=reclaim_force_poll_rate_hz,
+            debug_log_interval_seconds=debug_interval_seconds,
+        )
         return True
 
     def _get_double_array_parameter(self, name: str, expected_size: int) -> Optional[List[float]]:
@@ -623,6 +707,134 @@ class SocketMover(Node):
             self.get_logger().warn(f"Failed to read current joint state from RTDE receive: {exc}")
         return None
 
+    def _get_actual_tcp_force(self) -> Optional[List[float]]:
+        if self.rtde_receive is None:
+            return None
+
+        get_force_fn = getattr(self.rtde_receive, "getActualTCPForce", None)
+        if get_force_fn is None:
+            self.get_logger().error("RTDE receive interface does not provide getActualTCPForce().")
+            return None
+
+        try:
+            wrench = get_force_fn()
+        except Exception as exc:
+            self.get_logger().error(f"Failed to read current TCP force from RTDE receive: {exc}")
+            return None
+
+        if not isinstance(wrench, list) or len(wrench) != 6:
+            self.get_logger().error(
+                f"RTDE getActualTCPForce() returned invalid data: {wrench!r}"
+            )
+            return None
+
+        return [float(v) for v in wrench]
+
+    @staticmethod
+    def _force_triggered(delta_wrench: List[float], config: ForceSensingConfig) -> bool:
+        force_norm = math.sqrt(
+            delta_wrench[0] * delta_wrench[0]
+            + delta_wrench[1] * delta_wrench[1]
+            + delta_wrench[2] * delta_wrench[2]
+        )
+        torque_norm = math.sqrt(
+            delta_wrench[3] * delta_wrench[3]
+            + delta_wrench[4] * delta_wrench[4]
+            + delta_wrench[5] * delta_wrench[5]
+        )
+        return (
+            abs(delta_wrench[0]) > config.axis_threshold_newtons
+            or abs(delta_wrench[1]) > config.axis_threshold_newtons
+            or abs(delta_wrench[2]) > config.axis_threshold_newtons
+            or force_norm > config.force_norm_threshold_newtons
+            or torque_norm > config.torque_norm_threshold_newton_meters
+        )
+
+    def _wait_for_force_trigger(
+        self,
+        label: str,
+        config: Optional[ForceSensingConfig],
+    ) -> bool:
+        if config is None:
+            self.get_logger().error(f"{label}: force sensing configuration is unavailable.")
+            return False
+        if not self._is_rtde_ready():
+            return False
+
+        self.get_logger().info(
+            "%s armed. Waiting %.2f s before capturing baseline."
+            % (label, config.zero_delay_seconds)
+        )
+
+        baseline_wrench: Optional[List[float]] = None
+        armed_time = time.time()
+        last_debug_log_time = 0.0
+        poll_sleep_seconds = max(0.001, 1.0 / config.poll_rate_hz)
+
+        while rclpy.ok():
+            if time.time() - armed_time < config.zero_delay_seconds:
+                time.sleep(poll_sleep_seconds)
+                continue
+
+            current_wrench = self._get_actual_tcp_force()
+            if current_wrench is None:
+                self.get_logger().error(f"{label}: RTDE force read failed, aborting action.")
+                return False
+
+            if baseline_wrench is None:
+                baseline_wrench = current_wrench
+                self.get_logger().info(f"{label}: baseline captured.")
+                time.sleep(poll_sleep_seconds)
+                continue
+
+            delta_wrench = [
+                current_wrench[index] - baseline_wrench[index] for index in range(6)
+            ]
+            force_norm = math.sqrt(
+                delta_wrench[0] * delta_wrench[0]
+                + delta_wrench[1] * delta_wrench[1]
+                + delta_wrench[2] * delta_wrench[2]
+            )
+            torque_norm = math.sqrt(
+                delta_wrench[3] * delta_wrench[3]
+                + delta_wrench[4] * delta_wrench[4]
+                + delta_wrench[5] * delta_wrench[5]
+            )
+
+            now = time.time()
+            if (
+                config.debug_log_interval_seconds > 0.0
+                and now - last_debug_log_time >= config.debug_log_interval_seconds
+            ):
+                self.get_logger().info(
+                    "%s active: dF=(%.2f, %.2f, %.2f) |dF|=%.2f N, "
+                    "dT=(%.3f, %.3f, %.3f) |dT|=%.3f Nm"
+                    % (
+                        label,
+                        delta_wrench[0],
+                        delta_wrench[1],
+                        delta_wrench[2],
+                        force_norm,
+                        delta_wrench[3],
+                        delta_wrench[4],
+                        delta_wrench[5],
+                        torque_norm,
+                    )
+                )
+                last_debug_log_time = now
+
+            if self._force_triggered(delta_wrench, config):
+                self.get_logger().info(
+                    "%s accepted: force trigger detected (|dF|=%.2f N, |dT|=%.3f Nm)."
+                    % (label, force_norm, torque_norm)
+                )
+                return True
+
+            time.sleep(poll_sleep_seconds)
+
+        self.get_logger().warn(f"{label}: force sensing cancelled because ROS is shutting down.")
+        return False
+
     def _ik_has_solution(self, ur_pose: List[float], qnear: Optional[List[float]]) -> bool:
         if self.rtde_control is None:
             return False
@@ -862,21 +1074,10 @@ class SocketMover(Node):
         msg.data = open_gripper
         self.gripper_mover_pub.publish(msg)
 
-    def publish_gripper_zeroer(self, active: bool) -> None:
-        msg = Bool()
-        msg.data = active
-        self.gripper_zeroer_pub.publish(msg)
-
-    def publish_gripper_reclaim_trigger(self, active: bool) -> None:
-        msg = Bool()
-        msg.data = active
-        self.gripper_reclaim_trigger_pub.publish(msg)
-
-    def publish_request_joint_state(self, trigger: bool) -> None:
-        msg = Bool()
-        msg.data = trigger
-        self.request_joint_state_pub.publish(msg)
-        self.get_logger().info("Published joint state request.")
+    def publish_gripper_position_command(self, position: int) -> None:
+        msg = Int32()
+        msg.data = int(position)
+        self.gripper_position_command_pub.publish(msg)
 
     def publish_handover_event(self, event_name: str) -> None:
         msg = String()
@@ -933,13 +1134,77 @@ class SocketMover(Node):
         ):
             self.reclaim_in_progress = False
             self.waiting_for_reclaim_done = False
-            self.publish_gripper_reclaim_trigger(False)
             return
 
         self.reclaim_in_progress = True
         self.waiting_for_reclaim_done = True
-        self.publish_gripper_reclaim_trigger(True)
         self.get_logger().info("Action accepted: reclaim started at last handover pose.")
+
+        if not self._wait_for_force_trigger("Reclaim close sensing", self.reclaim_force_config):
+            self.reclaim_in_progress = False
+            self.waiting_for_reclaim_done = False
+            self.get_logger().error("Reclaim aborted: RTDE force sensing failed.")
+            return
+
+        reclaim_close_position = self.get_parameter("reclaim.close_position").value
+        self.publish_gripper_position_command(int(reclaim_close_position))
+        self.tool_has_been_picked_up = True
+        self.get_logger().info("Reclaim accepted: close command published to gripper.")
+        time.sleep(self.reclaim_post_close_wait_seconds)
+
+        dropoff_approach_pose = self._create_pose(
+            self.reclaim_dropoff_position,
+            self.reclaim_dropoff_orientation,
+        )
+
+        dropoff_release_position = list(self.reclaim_dropoff_position)
+        dropoff_release_position[2] -= self.reclaim_dropoff_descend_distance
+        dropoff_release_pose = self._create_pose(
+            dropoff_release_position,
+            self.reclaim_dropoff_orientation,
+        )
+
+        if not self.move_to_pose_target(
+            dropoff_approach_pose,
+            0.7,
+            0.7,
+            "Reached reclaim dropoff approach pose.",
+            "Reclaim failed: dropoff approach pose is unreachable.",
+        ):
+            self.reclaim_in_progress = False
+            self.waiting_for_reclaim_done = False
+            self.waiting_for_hand_pose = False
+            self.waiting_for_gripper_done = False
+            self.hand_pose_received = False
+            self.tool_has_been_picked_up = False
+            return
+
+        if not self.move_to_pose_target(
+            dropoff_release_pose,
+            0.5,
+            0.5,
+            "Reached reclaim dropoff release pose.",
+            "Reclaim failed: dropoff release pose is unreachable.",
+        ):
+            self.reclaim_in_progress = False
+            self.waiting_for_reclaim_done = False
+            self.waiting_for_hand_pose = False
+            self.waiting_for_gripper_done = False
+            self.hand_pose_received = False
+            self.tool_has_been_picked_up = False
+            return
+
+        self.publish_gripper_mover(True)
+        time.sleep(self.reclaim_post_open_pause_seconds)
+        self.move_to_home_position_using_joints()
+
+        self.reclaim_in_progress = False
+        self.waiting_for_reclaim_done = False
+        self.tool_has_been_picked_up = False
+        self.waiting_for_hand_pose = False
+        self.waiting_for_gripper_done = False
+        self.hand_pose_received = False
+        self.get_logger().info("Reclaim complete: returned to home.")
 
     def perform_handover_to_hand_pose(self) -> None:
         target_pose = Pose()
@@ -985,11 +1250,23 @@ class SocketMover(Node):
 
         self.get_logger().info("Reached handover pose, holding before release sensing.")
         time.sleep(self.pre_release_dwell_seconds)
-        self.get_logger().info("Activating gripper sensing after dwell.")
-        self.publish_gripper_zeroer(True)
         self.waiting_for_gripper_done = True
-        time.sleep(self.post_zeroer_settle_seconds)
-        self.get_logger().info("Waiting for gripper_done from force-guided release.")
+        if not self._wait_for_force_trigger("Handover release sensing", self.handover_force_config):
+            self.waiting_for_gripper_done = False
+            self.get_logger().error("Handover release sensing aborted.")
+            return
+
+        self.get_logger().info("Handover accepted: opening gripper after RTDE force trigger.")
+        self.publish_gripper_mover(True)
+        time.sleep(self.post_open_pause_seconds)
+        self.get_logger().info("Returning to home after handover release pause.")
+        self.move_to_home_position_using_joints()
+
+        self.hand_pose_received = False
+        self.waiting_for_hand_pose = False
+        self.waiting_for_gripper_done = False
+        self.tool_has_been_picked_up = False
+        self.get_logger().info("Ready for next tool command.")
 
     def _reset_state_flags(self) -> None:
         self.hand_pose_received = False
@@ -1006,8 +1283,6 @@ class SocketMover(Node):
             self.get_logger().warn("RESETTING SYSTEM STATE MANUALLY.")
             self._reset_state_flags()
             self.publish_gripper_mover(True)
-            self.publish_gripper_zeroer(False)
-            self.publish_gripper_reclaim_trigger(False)
 
             if self.configuration_loaded and self._is_rtde_ready():
                 self.move_to_home_position_using_joints()
@@ -1118,106 +1393,6 @@ class SocketMover(Node):
             "Gesture detected from hand pose message, proceeding with handover..."
         )
         self.perform_handover_to_hand_pose()
-
-    def _reclaim_done_callback(self, msg: Bool) -> None:
-        if not msg.data:
-            return
-
-        if not self.reclaim_in_progress or not self.waiting_for_reclaim_done:
-            self.get_logger().warn(
-                "Ignoring reclaim completion because no reclaim sequence is active."
-            )
-            return
-
-        self.publish_gripper_reclaim_trigger(False)
-        self.waiting_for_reclaim_done = False
-        self.tool_has_been_picked_up = True
-        self.get_logger().info("Reclaim gripper close acknowledged.")
-        time.sleep(self.reclaim_post_close_wait_seconds)
-
-        dropoff_approach_pose = self._create_pose(
-            self.reclaim_dropoff_position,
-            self.reclaim_dropoff_orientation,
-        )
-
-        dropoff_release_position = list(self.reclaim_dropoff_position)
-        dropoff_release_position[2] -= self.reclaim_dropoff_descend_distance
-        dropoff_release_pose = self._create_pose(
-            dropoff_release_position,
-            self.reclaim_dropoff_orientation,
-        )
-
-        if not self.move_to_pose_target(
-            dropoff_approach_pose,
-            0.7,
-            0.7,
-            "Reached reclaim dropoff approach pose.",
-            "Reclaim failed: dropoff approach pose is unreachable.",
-        ):
-            self.reclaim_in_progress = False
-            self.waiting_for_reclaim_done = False
-            self.waiting_for_hand_pose = False
-            self.waiting_for_gripper_done = False
-            self.hand_pose_received = False
-            self.tool_has_been_picked_up = False
-            return
-
-        if not self.move_to_pose_target(
-            dropoff_release_pose,
-            0.5,
-            0.5,
-            "Reached reclaim dropoff release pose.",
-            "Reclaim failed: dropoff release pose is unreachable.",
-        ):
-            self.reclaim_in_progress = False
-            self.waiting_for_reclaim_done = False
-            self.waiting_for_hand_pose = False
-            self.waiting_for_gripper_done = False
-            self.hand_pose_received = False
-            self.tool_has_been_picked_up = False
-            return
-
-        self.publish_gripper_mover(True)
-        time.sleep(self.reclaim_post_open_pause_seconds)
-        self.move_to_home_position_using_joints()
-
-        self.reclaim_in_progress = False
-        self.waiting_for_reclaim_done = False
-        self.tool_has_been_picked_up = False
-        self.waiting_for_hand_pose = False
-        self.waiting_for_gripper_done = False
-        self.hand_pose_received = False
-        self.get_logger().info("Reclaim complete: returned to home.")
-
-    def _gripper_done_callback(self, msg: Bool) -> None:
-        if not msg.data:
-            return
-
-        if self.reclaim_in_progress:
-            self.get_logger().warn("Ignoring /gripper_done while reclaim is active.")
-            return
-
-        if not self.waiting_for_gripper_done:
-            self.get_logger().warn(
-                "Ignoring /gripper_done because no normal handover is waiting for gripper feedback."
-            )
-            return
-
-        self.get_logger().info("Gripper opened, holding before return to home.")
-        time.sleep(self.post_open_pause_seconds)
-        self.get_logger().info("Returning to home after handover release pause.")
-        self.move_to_home_position_using_joints()
-
-        self.hand_pose_received = False
-        self.waiting_for_hand_pose = False
-        self.waiting_for_gripper_done = False
-        self.tool_has_been_picked_up = False
-        self.get_logger().info("Ready for next tool command.")
-
-    def _joint_state_buffered_callback(self, msg: JointState) -> None:
-        self.latest_joint_state = msg
-        self.received_joint_state = True
-        self.get_logger().info("Received joint_state from Python relay.")
 
     def grab_tool(self, x: float, y: float, z: float) -> None:
         self.get_logger().info(f"Moving to object at x={x:.2f} y={y:.2f} z={z:.2f}")

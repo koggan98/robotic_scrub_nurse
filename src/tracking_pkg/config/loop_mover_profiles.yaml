@@ -118,13 +118,21 @@ socket_mover:
     "motion_profiles.long_scissor.elbow_tolerance_above": 0.7853
     "motion_profiles.long_scissor.elbow_tolerance_below": 0.7853
     "handover.pre_release_dwell_seconds": 0.3
-    "handover.post_zeroer_settle_seconds": 0.0
     "handover.post_open_pause_seconds": 1.0
+    "handover.force_axis_threshold_newtons": 2.0
+    "handover.force_norm_threshold_newtons": 2.0
+    "handover.torque_norm_threshold_newton_meters": 0.12
+    "handover.zero_delay_seconds": 0.0
+    "handover.force_poll_rate_hz": 50.0
+    "handover.force_debug_log_interval_seconds": 1.0
 
     "reclaim.dropoff_position": [-0.25, 0.28, 0.18]
     "reclaim.dropoff_orientation": [-0.7071, 0.7071, 0.0, 0.0]
     "reclaim.force_threshold_newtons": 2.0
+    "reclaim.force_norm_threshold_newtons": 2.0
+    "reclaim.torque_norm_threshold_newton_meters": 0.12
     "reclaim.zero_delay_seconds": 0.5
+    "reclaim.force_poll_rate_hz": 50.0
     "reclaim.close_position": 250
     "reclaim.close_speed": 200
     "reclaim.close_force": 1
@@ -140,6 +148,17 @@ socket_mover:
     "motion.max_joint_acceleration": 2.5
     "motion.max_linear_speed": 0.4
     "motion.max_linear_acceleration": 1.8
+
+socket_gripper_controller:
+  ros__parameters:
+    "robot_ip": "192.168.12.10"
+    "robot_command_port": 30002
+    "gripper_port": 63352
+    "gripper.open_position": 150
+    "gripper.close_position": 250
+    "reclaim.close_position": 250
+    "reclaim.close_speed": 200
+    "reclaim.close_force": 1
 
 reclaim_controller:
   ros__parameters:

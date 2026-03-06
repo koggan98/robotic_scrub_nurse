@@ -54,15 +54,8 @@ def generate_launch_description():
         ),
         Node(
             package='tracking_pkg',
-            executable='gripper_opener_with_zeroer.py',
-            name='gripper_opener_with_zeroer',
-            output='screen',
-            parameters=[profile_config]
-        ),
-        Node(
-            package='tracking_pkg',
-            executable='reclaim_controller.py',
-            name='reclaim_controller',
+            executable='socket_gripper_controller.py',
+            name='socket_gripper_controller',
             output='screen',
             parameters=[profile_config]
         ),

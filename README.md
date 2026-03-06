@@ -170,4 +170,4 @@ This path reads tool/reclaim/orientation parameters from `src/tracking_pkg/confi
 
 By default, the socket path rotates incoming Cartesian pose targets by `pi` around Z before sending them to the UR controller. This matches the UR `base_link -> base` frame difference used by the controller and keeps the Cartesian targets aligned with the existing MoveIt-tuned coordinates.
 
-The socket launch does not start the MiR RViz collision publisher. Instead, it adds the missing static `world -> base` transform for tracking and opens a local lightweight viewer node on `/annotated_hand_image` by default. Disable the image window with `show_annotated_feed:=false`.
+The socket launch does not start the MiR RViz collision publisher. Instead, it adds the missing static `world -> base` transform for tracking, opens a local lightweight viewer node on `/annotated_hand_image` by default, and uses RTDE TCP force data directly for handover/reclaim sensing. No parallel `ur_robot_driver` runtime is required for this path. Disable the image window with `show_annotated_feed:=false`.
