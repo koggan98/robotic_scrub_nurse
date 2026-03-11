@@ -34,6 +34,7 @@ class ToolProfile:
     hand_offset: List[float]
     handover_orientation: List[float]  # quaternion [x, y, z, w]
     lift_height: float
+    post_lift_joint5_offset: float = 0.0
 
 
 @dataclass
@@ -225,6 +226,8 @@ class SocketMover(Node):
             )
         if not self.has_parameter(prefix + "lift_height"):
             self.declare_parameter(prefix + "lift_height", float("nan"))
+        if not self.has_parameter(prefix + "post_lift_joint5_offset"):
+            self.declare_parameter(prefix + "post_lift_joint5_offset", 0.0)
 
     def _load_configuration(self) -> bool:
         tool_ids = self.get_parameter("tool_ids").value
@@ -357,6 +360,9 @@ class SocketMover(Node):
         hand_offset = self._get_double_array_parameter(prefix + "hand_offset", 3)
         handover_orientation = self._get_double_array_parameter(prefix + "handover_orientation", 4)
         lift_height = self._get_double_parameter(prefix + "lift_height")
+        post_lift_joint5_offset = float(
+            self.get_parameter(prefix + "post_lift_joint5_offset").value
+        )
 
         if (
             pick_position is None
@@ -375,6 +381,7 @@ class SocketMover(Node):
             hand_offset=hand_offset,
             handover_orientation=handover_orientation,
             lift_height=lift_height,
+            post_lift_joint5_offset=post_lift_joint5_offset,
         )
 
     def _load_reclaim_configuration(self) -> bool:
@@ -1471,8 +1478,36 @@ class SocketMover(Node):
             "Lifting object with linear motion...",
             "Cartesian lift motion failed.",
         ):
+            self._apply_post_lift_joint5_offset()
             self.waiting_for_hand_pose = True
             self.move_to_home_position_using_joints()
+
+    def _apply_post_lift_joint5_offset(self) -> None:
+        if self.active_tool_profile is None:
+            return
+
+        offset = float(self.active_tool_profile.post_lift_joint5_offset)
+        if abs(offset) < 1e-6:
+            return
+
+        current_joints = self._get_actual_q()
+        if current_joints is None or len(current_joints) != 6:
+            self.get_logger().error(
+                "Hammer post-lift joint_5 rotation skipped: failed to read 6 RTDE joint values."
+            )
+            return
+
+        current_joints[4] += offset
+        if not self._move_to_joints(
+            current_joints,
+            0.6,
+            0.6,
+            f"Rotating joint_5 by {offset:.3f} rad after hammer lift to increase clearance.",
+            "Hammer post-lift joint_5 rotation failed.",
+        ):
+            self.get_logger().warn(
+                "Continuing with the normal sequence after failed hammer post-lift joint_5 rotation."
+            )
 
     def grab_long_scissor(self, x: float, y: float, z: float) -> None:
         if self.motion_profiles is None:

@@ -868,17 +868,22 @@ private:
         object_pose.position.z = z;
         object_pose.orientation = tool_orientation_;
 
+        geometry_msgs::msg::Pose approach_pose = object_pose;
+        approach_pose.position.z += active_tool_profile_.lift_height;
+
+        constexpr double hammer_post_grasp_x_offset = 0.05;
         geometry_msgs::msg::Pose lift_pose = object_pose;
+        lift_pose.position.x += hammer_post_grasp_x_offset;
         lift_pose.position.z += active_tool_profile_.lift_height;
 
         move_group_->setPlanningTime(1.0);
         move_group_->setMaxVelocityScalingFactor(1.0);
         move_group_->setMaxAccelerationScalingFactor(1.0);
-        move_group_->setPoseTarget(lift_pose);
+        move_group_->setPoseTarget(approach_pose);
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-            RCLCPP_INFO(this->get_logger(), "Planning above object successful, executing...");
+            RCLCPP_INFO(this->get_logger(), "Planning above hammer with z-only offset successful, executing...");
             move_group_->execute(plan);
         } else {
             RCLCPP_ERROR(this->get_logger(), "Planning above object failed.");
@@ -920,7 +925,10 @@ private:
             lift_waypoints, eef_step, jump_threshold, lift_trajectory);
 
         if (lift_fraction > 0.99) {
-            RCLCPP_INFO(this->get_logger(), "Lifting object (linear path %.2f%% achieved)...", lift_fraction * 100.0);
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Lifting hammer with Cartesian z and x offset (linear path %.2f%% achieved)...",
+                lift_fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
             lift_plan.trajectory_ = lift_trajectory;
             move_group_->execute(lift_plan);

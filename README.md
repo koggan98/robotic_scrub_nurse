@@ -156,6 +156,8 @@ The `/tool_selection` interface is unchanged:
 
 The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), and reclaim gripper close parameters. The dropoff sequence now uses a two-step motion: approach the configured pose, lower by `0.05 m`, then open the gripper.
 
+For hammer pickup in the MoveIt path, `loop_mover` now approaches the hammer with a pure `z` lift, descends straight down to grasp, and only applies the extra Cartesian offset on the return lift: `lift_height` in `z` plus `0.05 m` in `x`.
+
 After changing the YAML values, restart the launch so `loop_mover`, `gripper_opener_with_zeroer`, and `reclaim_controller` reload the updated parameters.
 
 ## Socket RTDE Launch (MoveIt-free)
@@ -167,6 +169,8 @@ ros2 launch tracking_pkg web_socket_launch.py
 ```
 
 This path reads tool/reclaim/orientation parameters from `src/tracking_pkg/config/loop_mover_profiles.yaml` under `socket_mover.ros__parameters`.
+
+Hammer pickup tuning in the socket path uses the same `tool_profiles.<id>.post_lift_joint5_offset` parameter. For the current hammer profile (`tool_profiles.2`), the socket runtime also applies `0.2 rad` of positive `joint_5` rotation after the lift to reduce post-grasp collision risk.
 
 By default, the socket path rotates incoming Cartesian pose targets by `pi` around Z before sending them to the UR controller. This matches the UR `base_link -> base` frame difference used by the controller and keeps the Cartesian targets aligned with the existing MoveIt-tuned coordinates.
 
