@@ -157,6 +157,26 @@ python3 ros_unrelated_scripts/aruco_marker_frame_test.py
 
 The script uses OpenCV's standard ArUco detection flow on the RealSense image, overlays each detected original marker ID, and draws the marker coordinate axes using the configured physical marker size.
 
+## ROS Frame Capture for YOLO Training
+
+To save RGB frames from the existing ROS camera stream without changing the current camera publisher, run:
+
+```bash
+ros2 run tracking_pkg frame_capture_node.py
+```
+
+The node subscribes to `/color_image`, opens a local OpenCV preview window, and writes PNG frames to `~/frame_captures/<session_timestamp>` by default. To avoid redundant training data, it stores every 30th received frame by default (about once per second with the current 30 Hz camera publisher).
+
+Controls:
+- `r` starts or stops continuous recording
+- `q` closes the node
+
+You can override the source topic, output directory, or save interval with ROS parameters, for example:
+
+```bash
+ros2 run tracking_pkg frame_capture_node.py --ros-args -p topic_name:=/color_image -p output_dir:=/tmp/yolo_frames -p save_every_n_frames:=30
+```
+
 ---
 
 ## Combined MoveIt + Tracking Launch

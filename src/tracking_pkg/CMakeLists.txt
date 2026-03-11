@@ -24,6 +24,7 @@ install(
     src/publisher/frame_publisher.py
     src/publisher/gesture_pose_publisher.py
     src/publisher/annotated_image_viewer.py
+    src/publisher/frame_capture_node.py
     src/publisher/mir_publisher.py
     src/publisher/joint_states_publisher.py
     src/publisher/tool_selection.py
