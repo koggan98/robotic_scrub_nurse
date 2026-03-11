@@ -92,7 +92,7 @@ Official UR simulation environment included as a git submodule for testing and d
 ### Python Packages
 
 ```bash
-pip install mediapipe pyrealsense2 tabulate ur_rtde
+pip install mediapipe pyrealsense2 tabulate ur_rtde ultralytics transformers torch pillow
 ```
 
 ---
@@ -122,6 +122,40 @@ ros2 launch ur_simulation_gazebo ur_sim_control.launch.py
 ### 4. Deploy on Hardware
 
 For detailed step-by-step instructions on physical deployment, see **[Deployment Guide](deployment_guide.md)**.
+
+## Standalone YOLO Test
+
+To quickly test whether a stock YOLO11 model detects anything plausible around the robot end effector on the connected RealSense camera, run:
+
+```bash
+python3 ros_unrelated_scripts/yolo11_realsense_test.py
+```
+
+The script opens the RealSense RGB stream, runs `yolo11n.pt`, draws detections in a local OpenCV window, and exits on `q`. You can also override the model path:
+
+```bash
+python3 ros_unrelated_scripts/yolo11_realsense_test.py --model /path/to/custom.pt
+```
+
+## Standalone Grounding DINO Test
+
+To test whether a text-guided detector can localize the Robotiq 2-finger gripper on the connected RealSense camera, run:
+
+```bash
+python3 ros_unrelated_scripts/grounding_dino_realsense_test.py
+```
+
+The script opens the RealSense RGB stream, runs Grounding DINO Tiny through Hugging Face `transformers`, uses a fixed prompt for `Robotiq gripper`, `robotic gripper`, and `two-finger robotic gripper`, and draws live detections in an OpenCV window. It exits on `q`.
+
+## Standalone ArUco Frame Test
+
+To detect a single original ArUco marker and draw its frame directly into the RealSense image, run:
+
+```bash
+python3 ros_unrelated_scripts/aruco_marker_frame_test.py
+```
+
+The script uses OpenCV's standard ArUco detection flow on the RealSense image, overlays each detected original marker ID, and draws the marker coordinate axes using the configured physical marker size.
 
 ---
 
