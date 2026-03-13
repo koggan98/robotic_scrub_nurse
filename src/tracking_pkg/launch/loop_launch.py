@@ -17,21 +17,41 @@ def generate_launch_description():
             output='screen'
         ),
         Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='world_to_base_tf',
+            output='screen',
+            arguments=[
+                '--x', '0.0',
+                '--y', '0.0',
+                '--z', '0.0',
+                '--yaw', '3.141592653589793',
+                '--pitch', '0.0',
+                '--roll', '0.0',
+                '--frame-id', 'world',
+                '--child-frame-id', 'base',
+            ]
+        ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='board_to_base_tf',
+            output='screen',
+            arguments=[
+                '--x', '0.05',
+                '--y', '-0.3',
+                '--z', '0.0',
+                '--yaw', '0.0',
+                '--pitch', '0.0',
+                '--roll', '0.0',
+                '--frame-id', 'base',
+                '--child-frame-id', 'aruco_board_frame',
+            ]
+        ),
+        Node(
             package='tracking_pkg',
             executable='frame_publisher.py',
             name='frame_publisher',
-            output='screen'
-        ),
-        Node(
-            package='tracking_pkg',
-            executable='gesture_pose_publisher.py', 
-            name='gesture_pose_marker',
-            output='screen'
-        ),
-        Node(
-            package='tracking_pkg',
-            executable='hand_tracker.py', 
-            name='hand_tracker',
             output='screen'
         ),
         Node(
@@ -53,6 +73,28 @@ def generate_launch_description():
             executable='handover_sound_publisher.py',
             name='handover_sound_publisher',
             output='screen'
+        ),
+        TimerAction(
+            period=1.0,
+            actions=[
+                Node(
+                    package='tracking_pkg',
+                    executable='hand_tracker.py', 
+                    name='hand_tracker',
+                    output='screen'
+                )
+            ]
+        ),
+        TimerAction(
+            period=1.5,
+            actions=[
+                Node(
+                    package='tracking_pkg',
+                    executable='gesture_pose_publisher.py', 
+                    name='gesture_pose_marker',
+                    output='screen'
+                )
+            ]
         ),
         # Verzögerter Start der Node um 5 Sekunden
         TimerAction(

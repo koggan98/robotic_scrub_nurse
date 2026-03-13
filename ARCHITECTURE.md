@@ -51,16 +51,17 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 
 ## High-Level Active ROS Flow
 1. Camera node publishes RGB/depth/camera parameters.
-2. Frame publisher provides board/camera transforms.
-3. Hand tracker detects gesture and publishes `hand_pose`.
-4. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
-5. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
-6. Loop mover attempts MoveIt handover planning:
+2. Launch starts independent static `world -> base` and `base -> aruco_board_frame` transform publishers.
+3. Frame publisher initializes `aruco_board_frame -> camera_frame` once the first valid ArUco board pose is detected.
+4. Hand tracker detects gesture and publishes `hand_pose` in `world`.
+5. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
+6. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
+7. Loop mover attempts MoveIt handover planning:
    - on plan failure: publishes `/handover_event = reachability:unreachable_plan_failed`,
    - on plan success: executes handover without additional audio event.
-7. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
-8. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
-9. Gripper feedback resets the system for the next cycle.
+8. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
+9. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
+10. Gripper feedback resets the system for the next cycle.
 
 ## Current Constraints
 - MoveIt path remains the primary thesis runtime path.
@@ -72,8 +73,16 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 
 ## Runtime Interfaces
 - `target_hand_pose`
+- `/hand_pose` (`geometry_msgs/msg/Pose`) in `world`
 - `/handover_event` (`std_msgs/msg/String`)
   - `gesture_detected`
   - `reachability:unreachable_plan_failed`
 - `target_roi`
 - `target_roi_marker`
+
+## Tracking Frame Contract
+- Active MoveIt tracking path canonical frame: `world`.
+- Expected TF chain for perception-to-handover: `world -> base -> aruco_board_frame -> camera_frame`.
+- `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
+- RViz tracking configuration uses `world` as fixed frame.
+- The socket path still injects `world -> base` for its own runtime compatibility; that is not the primary MoveIt tracking contract.

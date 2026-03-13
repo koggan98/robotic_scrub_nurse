@@ -325,7 +325,7 @@ class HandPositionPublisher(Node):
                                 hand_position.orientation.w = 0.321
                                 self.publisher_.publish(hand_position)
                                 self.get_logger().info(
-                                    f"Handposition veröffentlicht (Roboterframe): x={point_in_world[0]}, y={point_in_world[1]}, z={point_in_world[2]}"
+                                    f"Hand detected: published /hand_pose in world frame at x={point_in_world[0]}, y={point_in_world[1]}, z={point_in_world[2]}"
                                 )
                 else:
                     self.get_logger().warn("Locked hand has no depth value; skipping publish.")

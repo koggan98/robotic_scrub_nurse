@@ -21,7 +21,7 @@ class HandPositionMarkerNode(Node):
     def hand_position_callback(self, pose_msg):
         # Erstelle einen Marker für die Sphäre
         marker = Marker()
-        marker.header.frame_id = "base" 
+        marker.header.frame_id = "world" 
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "gesture_marker"
         marker.id = 0
@@ -29,8 +29,8 @@ class HandPositionMarkerNode(Node):
         marker.action = Marker.ADD
         
         # Position aus Pose-Nachricht übernehmen
-        marker.pose.position.x = -(pose_msg.position.x)
-        marker.pose.position.y = -(pose_msg.position.y)
+        marker.pose.position.x = pose_msg.position.x
+        marker.pose.position.y = pose_msg.position.y
         marker.pose.position.z = pose_msg.position.z
         marker.pose.orientation = pose_msg.orientation
         

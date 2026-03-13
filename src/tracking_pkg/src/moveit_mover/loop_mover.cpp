@@ -123,8 +123,12 @@ public:
         move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
             shared_from_this(), "ur_manipulator");
         move_group_->setEndEffectorLink("gripper_tip_link");
+        move_group_->setPoseReferenceFrame("world");
 
-        RCLCPP_INFO(this->get_logger(), "MoveGroupInterface initialized.");
+        RCLCPP_INFO(
+            this->get_logger(),
+            "MoveGroupInterface initialized. Using pose reference frame '%s'.",
+            move_group_->getPoseReferenceFrame().c_str());
 
         if (!configuration_loaded_) {
             RCLCPP_ERROR(this->get_logger(), "Motion configuration is invalid. Rejecting motion execution until configuration is fixed.");
@@ -516,6 +520,8 @@ private:
     }
 
     void handPositionCallback(const geometry_msgs::msg::Pose::SharedPtr msg) {
+        RCLCPP_INFO(this->get_logger(), "Hand detected: received /hand_pose message in world frame.");
+
         if (!waiting_for_hand_pose_) {
             RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but system is not waiting for a gesture.");
             return;
@@ -532,7 +538,7 @@ private:
         hand_pose_with_offset_.position.y += hand_offset_.y;
         hand_pose_with_offset_.position.z += hand_offset_.z;
         publishHandoverEvent("gesture_detected");
-        RCLCPP_INFO(this->get_logger(), "Gesture detected from hand pose message, proceeding with handover...");
+        RCLCPP_INFO(this->get_logger(), "Action accepted: gesture detected from /hand_pose in world frame, proceeding with handover.");
         performHandoverToHandPose();
     }
 
@@ -641,7 +647,7 @@ private:
         move_group_->setPoseTarget(target_pose);
         RCLCPP_INFO(
             this->get_logger(),
-            "Target for handover: x=%.2f y=%.2f z=%.2f",
+            "Target for handover in world frame: x=%.2f y=%.2f z=%.2f",
             target_pose.position.x,
             target_pose.position.y,
             target_pose.position.z);

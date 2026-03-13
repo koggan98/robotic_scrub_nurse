@@ -3,12 +3,11 @@
 # Notfalls TF frame fixieren(Statisch machen) oder filtern
 import cv2
 import numpy as np
+import time
 import cv2.aruco as aruco
 import rclpy
 from rclpy.node import Node
-from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
-from visualization_msgs.msg import Marker
 from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
@@ -18,8 +17,6 @@ from tf2_ros import StaticTransformBroadcaster
 # Board-Konfiguration
 MARKER_SIZE = 0.10  # Größe eines Markers in Metern
 MARKER_SEPARATION = 0.15  # Abstand zwischen den Markern in Metern
-MARKER_OFFSET_Y = -0.3
-MARKER_OFFSET_X = 0.05
 BOARD_ROWS = 2
 BOARD_COLS = 2
 MARKER_IDS = [100,105,110,115]
@@ -41,10 +38,6 @@ class ArucoBoard(Node):
         self.create_subscription(Image, 'color_image', self.rgb_callback, 10)
         self.create_subscription(CameraInfo, 'camera_info', self.camera_info_callback, 10)
 
-        # TF-Broadcaster
-        self.tf_broadcaster = TransformBroadcaster(self)
-        #self.static_tf_broadcaster = StaticTransformBroadcaster(self) # Für statisches publishen   
-
         # ArUco-Parameter
         self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_ARUCO_ORIGINAL)
 
@@ -58,11 +51,10 @@ class ArucoBoard(Node):
         # TF-Broadcaster für statisches Publizieren
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         self.camera_frame_published = False  # Statusvariable für einmaliges Publizieren
-        self.publish_aruco_board_frame()
-        self.get_logger().info("Static TF published: base -> aruco_board_frame")
+        self.last_tf_status_log_time = 0.0
+        self.tf_status_log_interval = 2.0
 
-
-    
+        self.get_logger().info("Waiting for first valid ArUco board pose to publish aruco_board_frame -> camera_frame.")
 
     def camera_info_callback(self, msg):
         """Speichert die Kameramatrix aus der ROS-Message."""
@@ -93,43 +85,63 @@ class ArucoBoard(Node):
     
 
     def detect_and_publish(self):
+        if self.rgb_image is None:
+            return
+
+        if self.camera_matrix is None:
+            self._log_tf_status(
+                "Waiting for camera_info before ArUco board pose estimation can initialize camera_frame."
+            )
+            return
+
         color_frame = self.rgb_image.copy()
         gray = cv2.cvtColor(color_frame, cv2.COLOR_BGR2GRAY)
 
         # Marker erkennen
         corners, ids, _ = aruco.detectMarkers(gray, self.aruco_dict, parameters=self.parameters)
 
-        if ids is not None:
-            rvec = np.zeros((1, 3), dtype=np.float64)
-            tvec = np.zeros((1, 3), dtype=np.float64)
+        if ids is None:
+            if not self.camera_frame_published:
+                self._log_tf_status(
+                    "Aruco board not detected yet. Waiting to initialize static TF aruco_board_frame -> camera_frame."
+                )
+            return
 
-            # Board-Pose schätzen
-            ret, rvec, tvec = aruco.estimatePoseBoard(corners, ids, self.board, self.camera_matrix, self.dist_coeffs, rvec, tvec)
+        rvec = np.zeros((1, 3), dtype=np.float64)
+        tvec = np.zeros((1, 3), dtype=np.float64)
 
-            if ret > 0:
-                # Rotation in Matrix umwandeln
-                rotation_matrix, _ = cv2.Rodrigues(rvec)
-                T_c_m = np.eye(4)
-                T_c_m[:3, :3] = rotation_matrix
-                T_c_m[:3, 3] = tvec.flatten()
+        # Board-Pose schätzen
+        ret, rvec, tvec = aruco.estimatePoseBoard(
+            corners, ids, self.board, self.camera_matrix, self.dist_coeffs, rvec, tvec
+        )
 
-                # Publiziere statische TF für camera_frame -> aruco_board_frame nur einmal
-                if not hasattr(self, 'camera_frame_published') or not self.camera_frame_published:
-                    self.publish_camera_frame(np.linalg.inv(T_c_m), "aruco_board_frame", "camera_frame")
-                    self.camera_frame_published = True
-                    self.get_logger().info("Static camera_frame published relative to aruco_board_frame.")
+        if ret > 0:
+            # Rotation in Matrix umwandeln
+            rotation_matrix, _ = cv2.Rodrigues(rvec)
+            T_c_m = np.eye(4)
+            T_c_m[:3, :3] = rotation_matrix
+            T_c_m[:3, 3] = tvec.flatten()
 
-                # Zeichne die Board-Achse
-                cv2.drawFrameAxes(color_frame, self.camera_matrix, self.dist_coeffs, rvec, tvec, 0.1)
+            if not self.camera_frame_published:
+                self.publish_camera_frame(np.linalg.inv(T_c_m), "aruco_board_frame", "camera_frame")
+                self.get_logger().info(
+                    "Static camera_frame published relative to aruco_board_frame after first valid ArUco board pose."
+                )
 
-        #else:
-            # Dynamisches Publizieren für den world -> camera_frame Transform
-            # print("No markers detected")
+            # Zeichne die Board-Achse
+            cv2.drawFrameAxes(color_frame, self.camera_matrix, self.dist_coeffs, rvec, tvec, 0.1)
+            return
 
+        if not self.camera_frame_published:
+            self._log_tf_status(
+                "Aruco markers detected but board pose estimation was invalid. camera_frame TF remains unlocked."
+            )
 
-            # Zeige das Bild für Debugging
-            # cv2.imshow("Aruco Board Detection", color_frame)
-            # cv2.waitKey(1)
+    def _log_tf_status(self, message):
+        now = time.time()
+        if now - self.last_tf_status_log_time >= self.tf_status_log_interval:
+            self.get_logger().warn(message)
+            self.last_tf_status_log_time = now
 
     def publish_camera_frame(self, matrix, parent_frame, child_frame):
         if self.camera_frame_published:
@@ -156,25 +168,6 @@ class ArucoBoard(Node):
         self.static_tf_broadcaster.sendTransform(transform)
         self.camera_frame_published = True  # Markiere den Frame als veröffentlicht
         self.get_logger().info(f"Static TF published: {parent_frame} -> {child_frame}")
- 
-
-    def publish_aruco_board_frame(self):
-        static_transform = TransformStamped()
-
-        static_transform.header.stamp = self.get_clock().now().to_msg()
-        static_transform.header.frame_id = "base"  # Basisframe des Roboters
-        static_transform.child_frame_id = "aruco_board_frame"
-        # Hard Coded Pose des ArUco-Boards relativ zur Roboterbasis
-        static_transform.transform.translation.x = MARKER_OFFSET_X 
-        static_transform.transform.translation.y = MARKER_OFFSET_Y 
-        static_transform.transform.translation.z = 0.0
-        # Rotation: Identisch zur Roboterbasis (keine Rotation)
-        static_transform.transform.rotation.x = 0.0
-        static_transform.transform.rotation.y = 0.0
-        static_transform.transform.rotation.z = 0.0
-        static_transform.transform.rotation.w = 1.0
-        
-        self.static_tf_broadcaster.sendTransform(static_transform)
 
 
 def main(args=None):
