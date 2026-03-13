@@ -48,6 +48,8 @@ Visualization Manager:
         All Enabled: false
         aruco_board_frame:
           Value: true
+        aruco_marker_120_frame:
+          Value: true
         base:
           Value: false
         base_link:

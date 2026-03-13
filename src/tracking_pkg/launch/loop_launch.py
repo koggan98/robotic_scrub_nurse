@@ -56,6 +56,12 @@ def generate_launch_description():
         ),
         Node(
             package='tracking_pkg',
+            executable='aruco_marker_120_publisher.py',
+            name='aruco_marker_120_publisher',
+            output='screen'
+        ),
+        Node(
+            package='tracking_pkg',
             executable='gripper_opener_with_zeroer.py', 
             name='gripper_opener_with_zeroer',
             output='screen',

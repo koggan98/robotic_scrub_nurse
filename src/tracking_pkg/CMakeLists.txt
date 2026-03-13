@@ -20,6 +20,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 install(
   PROGRAMS
     src/hand_tracker/hand_tracker.py
+    src/publisher/aruco_marker_120_publisher.py
     src/publisher/camera_publisher.py
     src/publisher/frame_publisher.py
     src/publisher/gesture_pose_publisher.py
