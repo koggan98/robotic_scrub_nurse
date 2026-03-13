@@ -192,13 +192,13 @@ This launch starts `ur_moveit_config` without its default RViz and opens RViz wi
 - `/gesture_pose_marker`
 - `/hand_pose_marker`
 - `/hand_pose`
-- TF display (including frames such as `world`, `base`, `aruco_board_frame`, `camera_frame`, and `aruco_marker_120_frame`)
+- TF display (including frames such as `world`, `base`, `aruco_board_frame`, `camera_frame`, `aruco_marker_120_frame`, and `tool_holder_frame`)
 
 The active MoveIt tracking path now uses `world` as the canonical tracking frame. RViz is configured with `world` as its fixed frame, `/hand_pose` positions are interpreted in `world`, and the expected TF chain is `world -> base -> aruco_board_frame -> camera_frame`.
 
 `world -> base` and `base -> aruco_board_frame` are now started as their own static TFs in the MoveIt launch path, so the upstream frames no longer depend on `frame_publisher.py` starting cleanly. `frame_publisher.py` is now responsible only for `aruco_board_frame -> camera_frame` and keeps retrying until it sees the first valid ArUco board pose. If the board is not visible yet, you should now see repeated warning logs instead of a silent partial initialization.
 
-`loop_launch.py` also starts `aruco_marker_120_publisher.py`, which watches `/color_image` and `/camera_info` for an original ArUco marker with ID `120` and physical size `45 mm`. Once the marker is detected for the first time, it publishes a static `camera_frame -> aruco_marker_120_frame` TF and leaves that frame fixed even if the marker later leaves the image.
+`loop_launch.py` also starts `aruco_marker_120_publisher.py`, which watches `/color_image` and `/camera_info` for an original ArUco marker with ID `120` and physical size `45 mm`. Once the marker is detected for the first time, it publishes static TFs `camera_frame -> aruco_marker_120_frame` and `aruco_marker_120_frame -> tool_holder_frame`, where `tool_holder_frame` uses a fixed offset of `x=0 mm`, `y=40 mm`, `z=-32 mm` with no additional rotation. Both frames remain fixed even if the marker later leaves the image.
 
 `loop_launch.py` now starts the camera publisher and static board TF first, then starts tracking consumers slightly later. `loop_with_moveit_launch.py` also delays RViz briefly so the TF tree is usually already populated when RViz opens, which reduces startup-time warning noise on slower hosts such as the NUC.
 

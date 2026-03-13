@@ -64,6 +64,8 @@ Visualization Manager:
           Value: false
         shoulder_link:
           Value: false
+        tool_holder_frame:
+          Value: true
         tool0:
           Value: true
         upper_arm_link:

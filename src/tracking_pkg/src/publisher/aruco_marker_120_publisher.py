@@ -17,6 +17,8 @@ from tf2_ros import Buffer, StaticTransformBroadcaster, TransformListener
 TARGET_MARKER_ID = 120
 TARGET_MARKER_SIZE_METERS = 0.045
 TARGET_MARKER_FRAME = "aruco_marker_120_frame"
+TOOL_HOLDER_FRAME = "tool_holder_frame"
+TOOL_HOLDER_OFFSET_METERS = np.array([0.0, 0.040, -0.032], dtype=np.float64)
 CAMERA_FRAME = "camera_frame"
 CAMERA_FRAME_PARENT = "aruco_board_frame"
 ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_ARUCO_ORIGINAL)
@@ -84,7 +86,8 @@ class ArucoMarker120Publisher(Node):
 
         self.get_logger().info(
             f"Waiting for first valid detection of original ArUco marker {TARGET_MARKER_ID} "
-            f"to publish static TF {CAMERA_FRAME} -> {TARGET_MARKER_FRAME}."
+            f"to publish static TFs {CAMERA_FRAME} -> {TARGET_MARKER_FRAME} "
+            f"and {TARGET_MARKER_FRAME} -> {TOOL_HOLDER_FRAME}."
         )
 
     def camera_info_callback(self, msg):
@@ -146,7 +149,7 @@ class ArucoMarker120Publisher(Node):
             )
             return
 
-        self.publish_marker_frame(rvec, tvec)
+        self.publish_locked_frames(rvec, tvec)
 
     def _camera_frame_is_available(self):
         return self.tf_buffer.can_transform(
@@ -174,31 +177,49 @@ class ArucoMarker120Publisher(Node):
             self.get_logger().warn(message)
             self.last_status_log_time = now
 
-    def publish_marker_frame(self, rvec, tvec):
+    def publish_locked_frames(self, rvec, tvec):
         if self.marker_frame_published:
             return
 
         rotation_matrix, _ = cv2.Rodrigues(rvec)
         quat = rotation_matrix_to_quaternion(rotation_matrix)
 
-        transform = TransformStamped()
-        transform.header.stamp = self.get_clock().now().to_msg()
-        transform.header.frame_id = CAMERA_FRAME
-        transform.child_frame_id = TARGET_MARKER_FRAME
+        stamp = self.get_clock().now().to_msg()
 
-        transform.transform.translation.x = float(tvec[0][0])
-        transform.transform.translation.y = float(tvec[1][0])
-        transform.transform.translation.z = float(tvec[2][0])
+        marker_transform = TransformStamped()
+        marker_transform.header.stamp = stamp
+        marker_transform.header.frame_id = CAMERA_FRAME
+        marker_transform.child_frame_id = TARGET_MARKER_FRAME
 
-        transform.transform.rotation.x = float(quat[0])
-        transform.transform.rotation.y = float(quat[1])
-        transform.transform.rotation.z = float(quat[2])
-        transform.transform.rotation.w = float(quat[3])
+        marker_transform.transform.translation.x = float(tvec[0][0])
+        marker_transform.transform.translation.y = float(tvec[1][0])
+        marker_transform.transform.translation.z = float(tvec[2][0])
 
-        self.static_tf_broadcaster.sendTransform(transform)
+        marker_transform.transform.rotation.x = float(quat[0])
+        marker_transform.transform.rotation.y = float(quat[1])
+        marker_transform.transform.rotation.z = float(quat[2])
+        marker_transform.transform.rotation.w = float(quat[3])
+
+        tool_holder_transform = TransformStamped()
+        tool_holder_transform.header.stamp = stamp
+        tool_holder_transform.header.frame_id = TARGET_MARKER_FRAME
+        tool_holder_transform.child_frame_id = TOOL_HOLDER_FRAME
+
+        tool_holder_transform.transform.translation.x = float(TOOL_HOLDER_OFFSET_METERS[0])
+        tool_holder_transform.transform.translation.y = float(TOOL_HOLDER_OFFSET_METERS[1])
+        tool_holder_transform.transform.translation.z = float(TOOL_HOLDER_OFFSET_METERS[2])
+
+        tool_holder_transform.transform.rotation.x = 0.0
+        tool_holder_transform.transform.rotation.y = 0.0
+        tool_holder_transform.transform.rotation.z = 0.0
+        tool_holder_transform.transform.rotation.w = 1.0
+
+        self.static_tf_broadcaster.sendTransform([marker_transform, tool_holder_transform])
         self.marker_frame_published = True
         self.get_logger().info(
-            f"Static TF published after first valid marker detection: {CAMERA_FRAME} -> {TARGET_MARKER_FRAME}"
+            "Static TFs published after first valid marker detection: "
+            f"{CAMERA_FRAME} -> {TARGET_MARKER_FRAME} and "
+            f"{TARGET_MARKER_FRAME} -> {TOOL_HOLDER_FRAME}"
         )
 
 
