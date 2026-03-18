@@ -64,6 +64,9 @@ loop_mover:
     "reclaim.post_close_wait_seconds": 1.0
     "reclaim.dropoff_descend_distance": 0.15
     "reclaim.post_open_pause_seconds": 1.0
+    "reclaim.holder_target_frame": "tool_holder_frame"
+    "reclaim.holder_approach_distance": 0.05
+    "reclaim.holder_close_settle_seconds": 1.0
 
 socket_mover:
   ros__parameters:

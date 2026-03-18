@@ -7,6 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -32,9 +33,17 @@ install(
     src/publisher/handover_sound_publisher.py
     src/moveit_mover/gripper_mover.py
     src/moveit_mover/gripper_opener_with_zeroer.py
+    src/moveit_mover/grasp_approach_pose_service.py
     src/moveit_mover/reclaim_controller.py
+    src/moveit_mover/tool_frame_quaternion_helper.py
     src/socket_mover/socket_mover.py
     src/socket_mover/socket_gripper_controller.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  FILES
+    src/moveit_mover/grasp_orientation_utils.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -54,6 +63,13 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/GetGraspApproachPose.srv"
+  DEPENDENCIES geometry_msgs
+)
+
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
 
 # Ziele definieren
 add_executable(moveit_mover src/moveit_mover/moveit_mover.cpp)
@@ -62,6 +78,7 @@ add_executable(loop_mover src/moveit_mover/loop_mover.cpp)
 # Abhängigkeiten mit dem Ziel verknüpfen
 ament_target_dependencies(moveit_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
 ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
+target_link_libraries(loop_mover "${cpp_typesupport_target}")
 
 # Installation des ausführbaren Ziels
 install(TARGETS moveit_mover
@@ -94,5 +111,7 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()

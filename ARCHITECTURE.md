@@ -54,15 +54,17 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 2. Launch starts independent static `world -> base` and `base -> aruco_board_frame` transform publishers.
 3. Frame publisher initializes `aruco_board_frame -> camera_frame` once the first valid ArUco board pose is detected.
 4. Marker frame publisher initializes `camera_frame -> aruco_marker_120_frame` and `aruco_marker_120_frame -> tool_holder_frame` once the first valid pose of original ArUco marker `120` is detected.
-5. Hand tracker detects gesture and publishes `hand_pose` in `world`.
-6. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
-7. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
-8. Loop mover attempts MoveIt handover planning:
+5. Grasp approach pose service can resolve a tracked TF frame such as `tool_holder_frame` into a `PoseStamped` in `world` on request.
+6. Hand tracker detects gesture and publishes `hand_pose` in `world`.
+7. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
+8. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
+9. Loop mover attempts MoveIt handover planning:
    - on plan failure: publishes `/handover_event = reachability:unreachable_plan_failed`,
    - on plan success: executes handover without additional audio event.
-9. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
-10. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
-11. Gripper feedback resets the system for the next cycle.
+10. In the MoveIt path, `/tool_selection = "8"` triggers a holder reclaim: query `tool_holder_frame` through the grasp pose service, approach from above, close without force-trigger, wait briefly at the lower holder pose for gripper settling, then finish through the same dropoff/home reclaim tail as the normal reclaim.
+11. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
+12. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
+13. Gripper feedback resets the system for the next cycle.
 
 ## Current Constraints
 - MoveIt path remains the primary thesis runtime path.
@@ -80,6 +82,8 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
   - `reachability:unreachable_plan_failed`
 - `target_roi`
 - `target_roi_marker`
+- `/get_grasp_approach_pose` (`tracking_pkg/srv/GetGraspApproachPose`)
+- `/tool_selection = "8"` holder reclaim via `tool_holder_frame`
 
 ## Tracking Frame Contract
 - Active MoveIt tracking path canonical frame: `world`.
@@ -87,5 +91,6 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Optional marker-specific static branch after first detection: `camera_frame -> aruco_marker_120_frame -> tool_holder_frame`.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
 - `aruco_marker_120_frame` and `tool_holder_frame` are published independently by `aruco_marker_120_publisher.py` after the first valid detection of original ArUco marker `120` with configured size `0.045 m`; `tool_holder_frame` uses a fixed offset of `(0.0, 0.040, -0.032) m` and identity rotation relative to the marker. If the marker is never seen, neither frame exists in the TF tree.
+- `grasp_approach_pose_service.py` resolves any requested target frame from the TF tree into a top-down grasp pose in `world`; the runtime default target is `tool_holder_frame`, with grasp orientation mapped as `TCP z = -world z` and `TCP x` following the world-horizontal projection of `frame z`.
 - RViz tracking configuration uses `world` as fixed frame.
 - The socket path still injects `world -> base` for its own runtime compatibility; that is not the primary MoveIt tracking contract.

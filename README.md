@@ -157,6 +157,26 @@ python3 ros_unrelated_scripts/aruco_marker_frame_test.py
 
 The script uses OpenCV's standard ArUco detection flow on the RealSense image, overlays each detected original marker ID, and draws the marker coordinate axes using the configured physical marker size.
 
+## Tool Frame Quaternion Helper
+
+To convert tracked frame axes into a gripper quaternion for a top-down approach, run:
+
+```bash
+ros2 run tracking_pkg tool_frame_quaternion_helper.py --frame-x 0 1 0 --frame-y 0 0 1 --frame-z 1 0 0
+```
+
+The helper assumes the usual RViz axis colors `x=red`, `y=green`, `z=blue` and uses the current grasp convention `TCP z = -world z`, so the gripper always approaches from global above. `TCP x` continues to follow the tool-frame `z` direction, but only after projecting that axis into the world-horizontal plane. The remaining TCP `y` axis is reconstructed as a right-handed cross product, then the helper prints only the quaternion in `xyzw` format so it can be copied into later grasp logic. It validates that the input axes are orthogonal and warns if the projected `TCP x` differs noticeably from the provided `frame_z`.
+
+## Grasp Approach Pose Service
+
+To request a top-down grasp pose in `world` for a tracked TF frame such as `tool_holder_frame`, use:
+
+```bash
+ros2 service call /get_grasp_approach_pose tracking_pkg/srv/GetGraspApproachPose "{target_frame: tool_holder_frame}"
+```
+
+`loop_launch.py` starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
+
 ## ROS Frame Capture for YOLO Training
 
 To save RGB frames from the existing ROS camera stream without changing the current camera publisher, run:
@@ -200,6 +220,8 @@ The active MoveIt tracking path now uses `world` as the canonical tracking frame
 
 `loop_launch.py` also starts `aruco_marker_120_publisher.py`, which watches `/color_image` and `/camera_info` for an original ArUco marker with ID `120` and physical size `45 mm`. Once the marker is detected for the first time, it publishes static TFs `camera_frame -> aruco_marker_120_frame` and `aruco_marker_120_frame -> tool_holder_frame`, where `tool_holder_frame` uses a fixed offset of `x=0 mm`, `y=40 mm`, `z=-32 mm` with no additional rotation. Both frames remain fixed even if the marker later leaves the image.
 
+The same launch now also starts `grasp_approach_pose_service.py`, which exposes `/get_grasp_approach_pose` for on-demand conversion of a TF target frame such as `tool_holder_frame` into a top-down robot grasp pose in `world`.
+
 `loop_launch.py` now starts the camera publisher and static board TF first, then starts tracking consumers slightly later. `loop_with_moveit_launch.py` also delays RViz briefly so the TF tree is usually already populated when RViz opens, which reduces startup-time warning noise on slower hosts such as the NUC.
 
 During handover, the robot now holds briefly at the target pose before force-guided release sensing is enabled. Audio events are queued sequentially so the initial `gesture_detected` tone is not overwritten by a following `unreachable` tone.
@@ -214,9 +236,10 @@ The `/tool_selection` interface is unchanged:
 
 - `"0"` resets the system
 - `"1"` to `"6"` select the configured tool profiles
+- `"8"` starts holder reclaim via `tool_holder_frame`, closes without force-trigger, waits `reclaim.holder_close_settle_seconds` at the lower holder pose, then finishes with the same dropoff/home sequence as reclaim
 - `"9"` starts the reclaim workflow from the last successful handover pose
 
-The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), and reclaim gripper close parameters. The dropoff sequence now uses a two-step motion: approach the configured pose, lower by `0.05 m`, then open the gripper.
+The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), reclaim gripper close parameters, and holder reclaim settings including the target frame, top-down approach distance, and lower-pose settle wait (`holder_close_settle_seconds`). The dropoff sequence now uses a two-step motion: approach the configured pose, lower by `0.05 m`, then open the gripper.
 
 For hammer pickup in the MoveIt path, `loop_mover` now approaches the hammer with a pure `z` lift, descends straight down to grasp, and only applies the extra Cartesian offset on the return lift: `lift_height` in `z` plus `0.05 m` in `x`.
 

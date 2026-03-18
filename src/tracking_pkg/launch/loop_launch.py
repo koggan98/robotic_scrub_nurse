@@ -62,6 +62,12 @@ def generate_launch_description():
         ),
         Node(
             package='tracking_pkg',
+            executable='grasp_approach_pose_service.py',
+            name='grasp_approach_pose_service',
+            output='screen'
+        ),
+        Node(
+            package='tracking_pkg',
             executable='gripper_opener_with_zeroer.py', 
             name='gripper_opener_with_zeroer',
             output='screen',
