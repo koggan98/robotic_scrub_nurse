@@ -7,7 +7,7 @@ Convention used by this helper:
 - TCP z-axis is the approach axis.
 - TCP x-axis is the gripper/tool axis.
 - TCP z = -world z.
-- TCP x = frame z projected into the world-horizontal plane.
+- TCP x = -frame z projected into the world-horizontal plane.
 """
 
 from __future__ import annotations

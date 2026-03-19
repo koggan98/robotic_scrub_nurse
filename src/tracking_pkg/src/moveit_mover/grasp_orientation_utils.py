@@ -100,7 +100,7 @@ def compute_gripper_quaternion(
 
     # Global top-down grasp convention:
     # - TCP z always points along -world z.
-    # - TCP x follows the tool frame z-axis projected into the horizontal plane.
+    # - TCP x follows the negated tool frame z-axis projected into the horizontal plane.
     target_z = WORLD_DOWN_AXIS
     projected_x = frame_z - np.dot(frame_z, target_z) * target_z
     projection_norm = np.linalg.norm(projected_x)
@@ -109,15 +109,15 @@ def compute_gripper_quaternion(
             "frame_z is too parallel to world z, so its horizontal projection is undefined."
         )
 
-    target_x = projected_x / projection_norm
+    target_x = -projected_x / projection_norm
     target_y = normalize_vector(np.cross(target_z, target_x), "target_y")
-    alignment = float(np.dot(target_x, frame_z))
+    alignment = float(np.dot(target_x, -frame_z))
     warning = None
 
     if abs(alignment) < AXIS_ALIGNMENT_WARNING_THRESHOLD:
         warning = (
-            "Projected target_x differs noticeably from the provided frame_z. "
-            f"dot(target_x, frame_z)={alignment:.4f}"
+            "Projected target_x differs noticeably from the expected -frame_z direction. "
+            f"dot(target_x, -frame_z)={alignment:.4f}"
         )
 
     rotation_matrix = np.column_stack((target_x, target_y, target_z))

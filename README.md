@@ -165,7 +165,7 @@ To convert tracked frame axes into a gripper quaternion for a top-down approach,
 ros2 run tracking_pkg tool_frame_quaternion_helper.py --frame-x 0 1 0 --frame-y 0 0 1 --frame-z 1 0 0
 ```
 
-The helper assumes the usual RViz axis colors `x=red`, `y=green`, `z=blue` and uses the current grasp convention `TCP z = -world z`, so the gripper always approaches from global above. `TCP x` continues to follow the tool-frame `z` direction, but only after projecting that axis into the world-horizontal plane. The remaining TCP `y` axis is reconstructed as a right-handed cross product, then the helper prints only the quaternion in `xyzw` format so it can be copied into later grasp logic. It validates that the input axes are orthogonal and warns if the projected `TCP x` differs noticeably from the provided `frame_z`.
+The helper assumes the usual RViz axis colors `x=red`, `y=green`, `z=blue` and uses the current grasp convention `TCP z = -world z`, so the gripper always approaches from global above. `TCP x` follows the negated tool-frame `z` direction, after projecting that axis into the world-horizontal plane. The remaining TCP `y` axis is reconstructed as a right-handed cross product, then the helper prints only the quaternion in `xyzw` format so it can be copied into later grasp logic. It validates that the input axes are orthogonal and warns if the projected `TCP x` differs noticeably from the expected `-frame_z` direction.
 
 ## Grasp Approach Pose Service
 
@@ -175,7 +175,7 @@ To request a top-down grasp pose in `world` for a tracked TF frame such as `tool
 ros2 service call /get_grasp_approach_pose tracking_pkg/srv/GetGraspApproachPose "{target_frame: tool_holder_frame}"
 ```
 
-`loop_launch.py` starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
+`loop_launch.py` starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `-frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
 
 ## ROS Frame Capture for YOLO Training
 

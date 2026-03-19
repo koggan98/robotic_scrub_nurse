@@ -91,6 +91,6 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Optional marker-specific static branch after first detection: `camera_frame -> aruco_marker_120_frame -> tool_holder_frame`.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
 - `aruco_marker_120_frame` and `tool_holder_frame` are published independently by `aruco_marker_120_publisher.py` after the first valid detection of original ArUco marker `120` with configured size `0.045 m`; `tool_holder_frame` uses a fixed offset of `(0.0, 0.040, -0.032) m` and identity rotation relative to the marker. If the marker is never seen, neither frame exists in the TF tree.
-- `grasp_approach_pose_service.py` resolves any requested target frame from the TF tree into a top-down grasp pose in `world`; the runtime default target is `tool_holder_frame`, with grasp orientation mapped as `TCP z = -world z` and `TCP x` following the world-horizontal projection of `frame z`.
+- `grasp_approach_pose_service.py` resolves any requested target frame from the TF tree into a top-down grasp pose in `world`; the runtime default target is `tool_holder_frame`, with grasp orientation mapped as `TCP z = -world z` and `TCP x` following the world-horizontal projection of `-frame z`.
 - RViz tracking configuration uses `world` as fixed frame.
 - The socket path still injects `world -> base` for its own runtime compatibility; that is not the primary MoveIt tracking contract.
