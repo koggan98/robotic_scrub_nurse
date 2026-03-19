@@ -15,10 +15,10 @@ from tf2_ros import Buffer, StaticTransformBroadcaster, TransformListener
 
 
 TARGET_MARKER_ID = 120
-TARGET_MARKER_SIZE_METERS = 0.085 # kleiner ist 0.045
+TARGET_MARKER_SIZE_METERS = 0.08 # kleiner ist 0.045
 TARGET_MARKER_FRAME = "aruco_marker_120_frame"
 TOOL_HOLDER_FRAME = "tool_holder_frame"
-TOOL_HOLDER_OFFSET_METERS = np.array([0.0, 0.040, -0.032], dtype=np.float64)
+TOOL_HOLDER_OFFSET_METERS = np.array([0.0, 0.070, -0.01], dtype=np.float64)
 CAMERA_FRAME = "camera_frame"
 CAMERA_FRAME_PARENT = "aruco_board_frame"
 ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_ARUCO_ORIGINAL)

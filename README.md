@@ -147,6 +147,20 @@ python3 ros_unrelated_scripts/grounding_dino_realsense_test.py
 
 The script opens the RealSense RGB stream, runs Grounding DINO Tiny through Hugging Face `transformers`, uses a fixed prompt for `Robotiq gripper`, `robotic gripper`, and `two-finger robotic gripper`, and draws live detections in an OpenCV window. It exits on `q`.
 
+## Standalone Robotiq Detector Test
+
+To test whether the custom YOLO model reliably detects the Robotiq gripper on the connected RealSense camera, run:
+
+```bash
+python3 ros_unrelated_scripts/robotiq_detector_realsense_test.py
+```
+
+The script opens the RealSense RGB stream, loads `files/robotiq_detector.pt` by default, and draws live `gripper` detections in an OpenCV window without covering the image with statistics. It exits on `q` and prints a final detection summary with reliability stats to the terminal. You can also override the model path:
+
+```bash
+python3 ros_unrelated_scripts/robotiq_detector_realsense_test.py --model /path/to/custom.pt
+```
+
 ## Standalone ArUco Frame Test
 
 To detect a single original ArUco marker and draw its frame directly into the RealSense image, run:
