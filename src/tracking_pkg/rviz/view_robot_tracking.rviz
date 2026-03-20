@@ -316,25 +316,6 @@ Visualization Manager:
         {}
       Queue Size: 100
       Value: true
-    - Axes Length: 0.08
-      Axes Radius: 0.008
-      Class: rviz_default_plugins/Pose
-      Color: 255; 25; 0
-      Enabled: true
-      Head Length: 0.03
-      Head Radius: 0.015
-      Name: Hand Pose
-      Queue Size: 10
-      Shaft Length: 0.08
-      Shaft Radius: 0.008
-      Shape: Arrow
-      Topic:
-        Depth: 10
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /hand_pose
-      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

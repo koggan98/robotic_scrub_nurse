@@ -253,7 +253,7 @@ The `/tool_selection` interface is unchanged:
 - `"8"` starts holder reclaim via `tool_holder_frame`, closes without force-trigger, waits `reclaim.holder_close_settle_seconds` at the lower holder pose, then finishes with the same dropoff/home sequence as reclaim
 - `"9"` starts the reclaim workflow from the last successful handover pose
 
-The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), reclaim gripper close parameters, and holder reclaim settings including the target frame, top-down approach distance, and lower-pose settle wait (`holder_close_settle_seconds`). The dropoff sequence now uses a two-step motion: approach the configured pose, lower by `0.05 m`, then open the gripper.
+The same YAML also contains reclaim settings for the dropoff pose, force threshold, reclaim timing (`zero_delay_seconds`, `post_close_wait_seconds`, `post_open_pause_seconds`), reclaim gripper close parameters, and holder reclaim settings including the target frame, top-down approach distance, and lower-pose settle wait (`holder_close_settle_seconds`). The dropoff sequence now uses a three-phase motion: approach the configured pose, lower by `0.05 m`, open the gripper, then lift back to the same upper dropoff pose before returning home.
 
 For hammer pickup in the MoveIt path, `loop_mover` now approaches the hammer with a pure `z` lift, descends straight down to grasp, and only applies the extra Cartesian offset on the return lift: `lift_height` in `z` plus `0.05 m` in `x`.
 

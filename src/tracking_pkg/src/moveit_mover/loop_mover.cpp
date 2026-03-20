@@ -666,6 +666,16 @@ private:
 
         publishGripperMover(true);
         std::this_thread::sleep_for(std::chrono::duration<double>(reclaim_post_open_pause_seconds_));
+
+        if (!moveToPoseTarget(
+                dropoff_approach_pose,
+                0.5,
+                0.5,
+                "Lifted back to reclaim dropoff approach pose.",
+                "Reclaim failed: dropoff lift-back pose is unreachable.")) {
+            return false;
+        }
+
         moveToHomePositionUsingJoints();
         return true;
     }
