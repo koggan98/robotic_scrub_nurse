@@ -31,6 +31,7 @@ install(
     src/publisher/joint_states_publisher.py
     src/publisher/tool_selection.py
     src/publisher/handover_sound_publisher.py
+    src/publisher/scrub_nurse_logger.py
     src/moveit_mover/gripper_mover.py
     src/moveit_mover/gripper_opener_with_zeroer.py
     src/moveit_mover/grasp_approach_pose_service.py
