@@ -1,0 +1,8 @@
+# Service to query available tools, optionally filtered by class
+# Called by the LLM node via tool calling
+
+string tool_class_filter    # Empty string = return all, otherwise filter by class
+---
+bool success
+string message
+tracking_pkg/GraspCandidate[] candidates

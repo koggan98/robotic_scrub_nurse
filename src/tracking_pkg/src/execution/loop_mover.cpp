@@ -1,0 +1,1483 @@
+#include <rclcpp/rclcpp.hpp>
+#include <moveit/move_group_interface/move_group_interface.h>
+#include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/quaternion.hpp>
+#include <geometry_msgs/msg/vector3.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <tracking_pkg/srv/get_grasp_approach_pose.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <functional>
+#include <future>
+#include <limits>
+#include <map>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+// mit ros2 topic pub /tool_selection std_msgs/msg/String "data: '0'" resetten, 1-6 sind werkzeuge
+
+// gripper_mover true = gripper open
+// gripper_mover false = gripper close
+// gripper_zeroer true = sensing aktiv
+// gripper_zeroer false = sensing inaktiv
+
+enum class GrabStrategy {
+    Standard,
+    HammerCartesian,
+    LongScissor,
+    RetractorCartesian
+};
+
+struct ToolProfile {
+    std::string tool_id;
+    GrabStrategy strategy = GrabStrategy::Standard;
+    geometry_msgs::msg::Point pick_position;
+    geometry_msgs::msg::Quaternion pick_orientation;
+    geometry_msgs::msg::Vector3 hand_offset;
+    geometry_msgs::msg::Quaternion handover_orientation;
+    double lift_height = 0.0;
+};
+
+struct MotionProfiles {
+    std::vector<double> home_joints;
+    std::vector<double> long_scissor_over_joints;
+    std::vector<double> long_scissor_after_joints;
+    double long_scissor_elbow_target = std::numeric_limits<double>::quiet_NaN();
+    double long_scissor_elbow_tolerance_above = std::numeric_limits<double>::quiet_NaN();
+    double long_scissor_elbow_tolerance_below = std::numeric_limits<double>::quiet_NaN();
+};
+
+class HandPositionFollower : public rclcpp::Node {
+public:
+    HandPositionFollower()
+    : Node("moveit_mover") {
+        // OMPL Parameter deklarieren
+        this->declare_parameter("robot_description_planning.default_planner_config", "RRTConnect");
+        this->declare_parameter("robot_description_planning.default_planner_config.settings", "RRTConnectkConfigDefault");
+        // Optional: Timeout und Planungszeit konfigurieren
+        this->declare_parameter("robot_description_planning.ompl_planning.timeout", 10.0);
+        this->declare_parameter("robot_description_planning.ompl_planning.max_planning_attempts", 10);
+        // Kinematik-Plugin deklarieren
+        this->declare_parameter("robot_description_kinematics.ur_manipulator.kinematics_solver", "kdl_kinematics_plugin/KDLKinematicsPlugin");
+        this->declare_parameter("robot_description_kinematics.ur_manipulator.kinematics_solver_search_resolution", 0.005);
+        this->declare_parameter("robot_description_kinematics.ur_manipulator.kinematics_solver_timeout", 0.05);
+        pre_release_dwell_seconds_ = std::max(0.0, this->declare_parameter("handover.pre_release_dwell_seconds", 0.35));
+        post_zeroer_settle_seconds_ = std::max(0.0, this->declare_parameter("handover.post_zeroer_settle_seconds", 0.05));
+        post_open_pause_seconds_ = std::max(0.0, this->declare_parameter("handover.post_open_pause_seconds", 1.0));
+
+        try {
+            declareConfigurationParameters();
+            configuration_loaded_ = loadConfiguration();
+        } catch (const rclcpp::exceptions::InvalidParameterTypeException &ex) {
+            configuration_loaded_ = false;
+            RCLCPP_ERROR(this->get_logger(), "Configuration load failed due to parameter type mismatch: %s", ex.what());
+        } catch (const std::exception &ex) {
+            configuration_loaded_ = false;
+            RCLCPP_ERROR(this->get_logger(), "Configuration load failed: %s", ex.what());
+        }
+
+        // Abonnieren des /hand_position Topics
+        hand_position_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
+            "/hand_pose",
+            10,
+            std::bind(&HandPositionFollower::handPositionCallback, this, std::placeholders::_1));
+        // Gripper-Status abonnieren
+        gripper_done_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/gripper_done",
+            10,
+            std::bind(&HandPositionFollower::gripperDoneCallback, this, std::placeholders::_1));
+        // tool_selection abonnieren
+        tool_selection_sub_ = this->create_subscription<std_msgs::msg::String>(
+            "/tool_selection",
+            10,
+            std::bind(&HandPositionFollower::toolSelectionCallback, this, std::placeholders::_1));
+        // joint_state_buffered abonnieren
+        joint_state_buffered_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+            "/joint_state_buffered",
+            10,
+            std::bind(&HandPositionFollower::jointStateBufferedCallback, this, std::placeholders::_1));
+        // Ruecknahme-Status abonnieren
+        gripper_reclaim_done_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/gripper_reclaim_done",
+            10,
+            std::bind(&HandPositionFollower::reclaimDoneCallback, this, std::placeholders::_1));
+        gripper_position_done_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/gripper_position_done",
+            10,
+            std::bind(&HandPositionFollower::gripperPositionDoneCallback, this, std::placeholders::_1));
+
+        // Publisher initialisieren
+        gripper_mover_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
+        gripper_zeroer_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
+        gripper_reclaim_trigger_publisher_ = this->create_publisher<std_msgs::msg::Bool>("/gripper_reclaim_trigger", 10);
+        gripper_position_command_publisher_ = this->create_publisher<std_msgs::msg::Int32>("/gripper_position_command", 10);
+        request_joint_state_ = this->create_publisher<std_msgs::msg::Bool>("/request_joint_state", 10);
+        handover_event_publisher_ = this->create_publisher<std_msgs::msg::String>("/handover_event", 10);
+        grasp_approach_pose_client_ = this->create_client<tracking_pkg::srv::GetGraspApproachPose>("/get_grasp_approach_pose");
+
+        RCLCPP_INFO(this->get_logger(), "Moveit Mover Node initialized.");
+    }
+
+    // Initialisiere die MoveGroupInterface
+    void initializeMoveGroupInterface() {
+        move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
+            shared_from_this(), "ur_manipulator");
+        move_group_->setEndEffectorLink("gripper_tip_link");
+        move_group_->setPoseReferenceFrame("world");
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "MoveGroupInterface initialized. Using pose reference frame '%s'.",
+            move_group_->getPoseReferenceFrame().c_str());
+
+        if (!configuration_loaded_) {
+            RCLCPP_ERROR(this->get_logger(), "Motion configuration is invalid. Rejecting motion execution until configuration is fixed.");
+            return;
+        }
+
+        moveToHomePositionUsingJoints();
+        RCLCPP_INFO(this->get_logger(), "Opening gripper...");
+        publishGripperMover(true);
+    }
+
+private:
+    geometry_msgs::msg::Point tool_position_;
+    geometry_msgs::msg::Quaternion tool_orientation_;
+    geometry_msgs::msg::Quaternion handover_orientation_;
+    geometry_msgs::msg::Pose hand_pose_;
+    geometry_msgs::msg::Pose hand_pose_with_offset_;
+    geometry_msgs::msg::Pose last_handover_pose_;
+    geometry_msgs::msg::Vector3 hand_offset_;
+    geometry_msgs::msg::Point reclaim_dropoff_position_;
+    geometry_msgs::msg::Quaternion reclaim_dropoff_orientation_;
+    sensor_msgs::msg::JointState latest_joint_state_;
+    ToolProfile active_tool_profile_;
+    MotionProfiles motion_profiles_;
+    std::unordered_map<std::string, ToolProfile> tool_profiles_;
+    bool hand_pose_received_ = false;
+    bool waiting_for_hand_pose_ = false;
+    bool waiting_for_gripper_done_ = false;
+    bool waiting_for_reclaim_done_ = false;
+    bool tool_has_been_picked_up_ = false;
+    bool received_joint_state_ = false;
+    bool configuration_loaded_ = false;
+    bool has_last_handover_pose_ = false;
+    std::atomic<bool> reclaim_in_progress_{false};
+    std::atomic<bool> waiting_for_gripper_position_done_{false};
+    std::atomic<bool> gripper_position_done_received_{false};
+    double reclaim_post_close_wait_seconds_ = 1.0;
+    double reclaim_dropoff_descend_distance_ = 0.05;
+    double reclaim_post_open_pause_seconds_ = 1.0;
+    double reclaim_holder_approach_distance_ = 0.05;
+    double reclaim_holder_close_settle_seconds_ = 1.0;
+    double pre_release_dwell_seconds_ = 0.35;
+    double post_zeroer_settle_seconds_ = 0.05;
+    double post_open_pause_seconds_ = 1.0;
+    int reclaim_close_position_ = 250;
+    std::string reclaim_holder_target_frame_ = "tool_holder_frame";
+
+    void declareConfigurationParameters() {
+        this->declare_parameter<std::vector<std::string>>("tool_ids", std::vector<std::string>{});
+        this->declare_parameter<std::vector<double>>("motion_profiles.home_joints", std::vector<double>{});
+        this->declare_parameter<std::vector<double>>("motion_profiles.long_scissor.over_joints", std::vector<double>{});
+        this->declare_parameter<std::vector<double>>("motion_profiles.long_scissor.after_joints", std::vector<double>{});
+        this->declare_parameter("motion_profiles.long_scissor.elbow_target", std::numeric_limits<double>::quiet_NaN());
+        this->declare_parameter("motion_profiles.long_scissor.elbow_tolerance_above", std::numeric_limits<double>::quiet_NaN());
+        this->declare_parameter("motion_profiles.long_scissor.elbow_tolerance_below", std::numeric_limits<double>::quiet_NaN());
+        this->declare_parameter<std::vector<double>>("reclaim.dropoff_position", std::vector<double>{});
+        this->declare_parameter<std::vector<double>>("reclaim.dropoff_orientation", std::vector<double>{});
+        this->declare_parameter("reclaim.force_threshold_newtons", 2.0);
+        this->declare_parameter("reclaim.zero_delay_seconds", 0.5);
+        this->declare_parameter("reclaim.close_position", 250);
+        this->declare_parameter("reclaim.close_speed", 255);
+        this->declare_parameter("reclaim.close_force", 1);
+        this->declare_parameter("reclaim.post_close_wait_seconds", 1.0);
+        this->declare_parameter("reclaim.dropoff_descend_distance", 0.05);
+        this->declare_parameter("reclaim.post_open_pause_seconds", 1.0);
+        this->declare_parameter("reclaim.holder_target_frame", std::string("tool_holder_frame"));
+        this->declare_parameter("reclaim.holder_approach_distance", 0.05);
+        this->declare_parameter("reclaim.holder_close_settle_seconds", 1.0);
+
+        std::vector<std::string> tool_ids;
+        this->get_parameter("tool_ids", tool_ids);
+        for (const std::string &tool_id : tool_ids) {
+            declareToolProfileParameters(tool_id);
+        }
+    }
+
+    void declareToolProfileParameters(const std::string &tool_id) {
+        const std::string prefix = "tool_profiles." + tool_id + ".";
+
+        if (!this->has_parameter(prefix + "strategy")) {
+            this->declare_parameter(prefix + "strategy", std::string());
+        }
+        if (!this->has_parameter(prefix + "pick_position")) {
+            this->declare_parameter<std::vector<double>>(prefix + "pick_position", std::vector<double>{});
+        }
+        if (!this->has_parameter(prefix + "pick_orientation")) {
+            this->declare_parameter<std::vector<double>>(prefix + "pick_orientation", std::vector<double>{});
+        }
+        if (!this->has_parameter(prefix + "hand_offset")) {
+            this->declare_parameter<std::vector<double>>(prefix + "hand_offset", std::vector<double>{});
+        }
+        if (!this->has_parameter(prefix + "handover_orientation")) {
+            this->declare_parameter<std::vector<double>>(prefix + "handover_orientation", std::vector<double>{});
+        }
+        if (!this->has_parameter(prefix + "lift_height")) {
+            this->declare_parameter(prefix + "lift_height", std::numeric_limits<double>::quiet_NaN());
+        }
+    }
+
+    bool loadConfiguration() {
+        std::vector<std::string> tool_ids;
+        if (!this->get_parameter("tool_ids", tool_ids) || tool_ids.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "Missing or empty required parameter: tool_ids");
+            return false;
+        }
+
+        MotionProfiles loaded_motion_profiles;
+        std::unordered_map<std::string, ToolProfile> loaded_tool_profiles;
+
+        if (!getDoubleArrayParameter("motion_profiles.home_joints", 6, loaded_motion_profiles.home_joints)) {
+            return false;
+        }
+        if (!getDoubleArrayParameter(
+                "motion_profiles.long_scissor.over_joints",
+                6,
+                loaded_motion_profiles.long_scissor_over_joints)) {
+            return false;
+        }
+        if (!getDoubleArrayParameter(
+                "motion_profiles.long_scissor.after_joints",
+                6,
+                loaded_motion_profiles.long_scissor_after_joints)) {
+            return false;
+        }
+        if (!getDoubleParameter("motion_profiles.long_scissor.elbow_target", loaded_motion_profiles.long_scissor_elbow_target)) {
+            return false;
+        }
+        if (!getDoubleParameter(
+                "motion_profiles.long_scissor.elbow_tolerance_above",
+                loaded_motion_profiles.long_scissor_elbow_tolerance_above)) {
+            return false;
+        }
+        if (!getDoubleParameter(
+                "motion_profiles.long_scissor.elbow_tolerance_below",
+                loaded_motion_profiles.long_scissor_elbow_tolerance_below)) {
+            return false;
+        }
+        if (!loadReclaimConfiguration()) {
+            return false;
+        }
+
+        for (const std::string &tool_id : tool_ids) {
+            ToolProfile profile;
+            if (!loadToolProfile(tool_id, profile)) {
+                return false;
+            }
+            loaded_tool_profiles[tool_id] = profile;
+        }
+
+        motion_profiles_ = loaded_motion_profiles;
+        tool_profiles_ = std::move(loaded_tool_profiles);
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Loaded %zu tool profiles from ROS2 parameters.",
+            tool_profiles_.size());
+        return true;
+    }
+
+    bool loadToolProfile(const std::string &tool_id, ToolProfile &out_profile) {
+        declareToolProfileParameters(tool_id);
+        const std::string prefix = "tool_profiles." + tool_id + ".";
+
+        std::string strategy_name;
+        if (!this->get_parameter(prefix + "strategy", strategy_name) || strategy_name.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "Missing or empty required parameter: %s", (prefix + "strategy").c_str());
+            return false;
+        }
+
+        std::vector<double> pick_position;
+        if (!getDoubleArrayParameter(prefix + "pick_position", 3, pick_position)) {
+            return false;
+        }
+
+        std::vector<double> pick_orientation;
+        if (!getDoubleArrayParameter(prefix + "pick_orientation", 4, pick_orientation)) {
+            return false;
+        }
+
+        std::vector<double> hand_offset;
+        if (!getDoubleArrayParameter(prefix + "hand_offset", 3, hand_offset)) {
+            return false;
+        }
+
+        std::vector<double> handover_orientation;
+        if (!getDoubleArrayParameter(prefix + "handover_orientation", 4, handover_orientation)) {
+            return false;
+        }
+
+        double lift_height = std::numeric_limits<double>::quiet_NaN();
+        if (!getDoubleParameter(prefix + "lift_height", lift_height)) {
+            return false;
+        }
+
+        try {
+            out_profile.tool_id = tool_id;
+            out_profile.strategy = parseGrabStrategy(strategy_name);
+            out_profile.pick_position = pointFromArray(pick_position);
+            out_profile.pick_orientation = quaternionFromArray(pick_orientation);
+            out_profile.hand_offset = vector3FromArray(hand_offset);
+            out_profile.handover_orientation = quaternionFromArray(handover_orientation);
+            out_profile.lift_height = lift_height;
+        } catch (const std::exception &ex) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid tool profile for tool id '%s': %s", tool_id.c_str(), ex.what());
+            return false;
+        }
+
+        return true;
+    }
+
+    bool loadReclaimConfiguration() {
+        std::vector<double> reclaim_dropoff_position;
+        if (!getDoubleArrayParameter("reclaim.dropoff_position", 3, reclaim_dropoff_position)) {
+            return false;
+        }
+
+        std::vector<double> reclaim_dropoff_orientation;
+        if (!getDoubleArrayParameter("reclaim.dropoff_orientation", 4, reclaim_dropoff_orientation)) {
+            return false;
+        }
+
+        if (!getDoubleParameter("reclaim.post_open_pause_seconds", reclaim_post_open_pause_seconds_)) {
+            return false;
+        }
+        if (!getDoubleParameter("reclaim.post_close_wait_seconds", reclaim_post_close_wait_seconds_)) {
+            return false;
+        }
+        if (!getDoubleParameter("reclaim.dropoff_descend_distance", reclaim_dropoff_descend_distance_)) {
+            return false;
+        }
+        if (!getDoubleParameter("reclaim.holder_approach_distance", reclaim_holder_approach_distance_)) {
+            return false;
+        }
+        if (!getDoubleParameter("reclaim.holder_close_settle_seconds", reclaim_holder_close_settle_seconds_)) {
+            return false;
+        }
+        if (!this->get_parameter("reclaim.holder_target_frame", reclaim_holder_target_frame_)
+            || reclaim_holder_target_frame_.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "Missing or empty required parameter: reclaim.holder_target_frame");
+            return false;
+        }
+        if (!this->get_parameter("reclaim.close_position", reclaim_close_position_)) {
+            RCLCPP_ERROR(this->get_logger(), "Missing or invalid required parameter: reclaim.close_position");
+            return false;
+        }
+
+        if (reclaim_post_open_pause_seconds_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.post_open_pause_seconds must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_post_close_wait_seconds_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.post_close_wait_seconds must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_dropoff_descend_distance_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.dropoff_descend_distance must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_holder_approach_distance_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.holder_approach_distance must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_holder_close_settle_seconds_ < 0.0) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.holder_close_settle_seconds must be >= 0.0.");
+            return false;
+        }
+        if (reclaim_close_position_ < 0 || reclaim_close_position_ > 255) {
+            RCLCPP_ERROR(this->get_logger(), "Parameter reclaim.close_position must be between 0 and 255.");
+            return false;
+        }
+
+        try {
+            reclaim_dropoff_position_ = pointFromArray(reclaim_dropoff_position);
+            reclaim_dropoff_orientation_ = quaternionFromArray(reclaim_dropoff_orientation);
+        } catch (const std::exception &ex) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid reclaim configuration: %s", ex.what());
+            return false;
+        }
+
+        return true;
+    }
+
+    bool getDoubleArrayParameter(const std::string &name, size_t expected_size, std::vector<double> &out) {
+        if (!this->get_parameter(name, out)) {
+            RCLCPP_ERROR(this->get_logger(), "Missing required parameter: %s", name.c_str());
+            return false;
+        }
+
+        if (out.size() != expected_size) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "Parameter %s must contain exactly %zu values but has %zu.",
+                name.c_str(),
+                expected_size,
+                out.size());
+            return false;
+        }
+
+        return true;
+    }
+
+    bool getDoubleParameter(const std::string &name, double &out) {
+        if (!this->get_parameter(name, out) || !std::isfinite(out)) {
+            RCLCPP_ERROR(this->get_logger(), "Missing or invalid required parameter: %s", name.c_str());
+            return false;
+        }
+
+        return true;
+    }
+
+    geometry_msgs::msg::Point pointFromArray(const std::vector<double> &values) {
+        if (values.size() != 3) {
+            throw std::invalid_argument("point arrays must have 3 values");
+        }
+
+        geometry_msgs::msg::Point point;
+        point.x = values[0];
+        point.y = values[1];
+        point.z = values[2];
+        return point;
+    }
+
+    geometry_msgs::msg::Quaternion quaternionFromArray(const std::vector<double> &values) {
+        if (values.size() != 4) {
+            throw std::invalid_argument("quaternion arrays must have 4 values");
+        }
+
+        geometry_msgs::msg::Quaternion quaternion;
+        quaternion.x = values[0];
+        quaternion.y = values[1];
+        quaternion.z = values[2];
+        quaternion.w = values[3];
+        return quaternion;
+    }
+
+    geometry_msgs::msg::Vector3 vector3FromArray(const std::vector<double> &values) {
+        if (values.size() != 3) {
+            throw std::invalid_argument("vector arrays must have 3 values");
+        }
+
+        geometry_msgs::msg::Vector3 vector;
+        vector.x = values[0];
+        vector.y = values[1];
+        vector.z = values[2];
+        return vector;
+    }
+
+    GrabStrategy parseGrabStrategy(const std::string &value) {
+        if (value == "standard") {
+            return GrabStrategy::Standard;
+        }
+        if (value == "hammer_cartesian") {
+            return GrabStrategy::HammerCartesian;
+        }
+        if (value == "long_scissor") {
+            return GrabStrategy::LongScissor;
+        }
+        if (value == "retractor_cartesian") {
+            return GrabStrategy::RetractorCartesian;
+        }
+
+        throw std::invalid_argument("unknown strategy '" + value + "'");
+    }
+
+    void activateToolProfile(const ToolProfile &profile) {
+        active_tool_profile_ = profile;
+        tool_position_ = profile.pick_position;
+        tool_orientation_ = profile.pick_orientation;
+        hand_offset_ = profile.hand_offset;
+        handover_orientation_ = profile.handover_orientation;
+    }
+
+    bool moveToPoseTarget(
+        const geometry_msgs::msg::Pose &target_pose,
+        double velocity_scale,
+        double acceleration_scale,
+        const char *success_log,
+        const char *failure_log) {
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(velocity_scale);
+        move_group_->setMaxAccelerationScalingFactor(acceleration_scale);
+        move_group_->setPoseTarget(target_pose);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
+            return false;
+        }
+
+        if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
+            return false;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "%s", success_log);
+        return true;
+    }
+
+    void publishGripperReclaimTrigger(bool active) {
+        auto msg = std_msgs::msg::Bool();
+        msg.data = active;
+        gripper_reclaim_trigger_publisher_->publish(msg);
+    }
+
+    bool requestGraspApproachPose(
+        const std::string &target_frame,
+        geometry_msgs::msg::Pose &approach_pose) {
+        if (!grasp_approach_pose_client_->wait_for_service(std::chrono::milliseconds(500))) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Action rejected: grasp approach pose service is unavailable for target frame '%s'.",
+                target_frame.c_str());
+            return false;
+        }
+
+        auto request = std::make_shared<tracking_pkg::srv::GetGraspApproachPose::Request>();
+        request->target_frame = target_frame;
+
+        auto future = grasp_approach_pose_client_->async_send_request(request);
+        const auto status = future.wait_for(std::chrono::milliseconds(1000));
+        if (status != std::future_status::ready) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Action rejected: timed out while requesting grasp approach pose for '%s'.",
+                target_frame.c_str());
+            return false;
+        }
+
+        const auto response = future.get();
+        if (!response->success) {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: %s", response->message.c_str());
+            return false;
+        }
+
+        approach_pose = response->approach_pose.pose;
+        return true;
+    }
+
+    bool moveLinearToPose(
+        const geometry_msgs::msg::Pose &target_pose,
+        double velocity_scale,
+        double acceleration_scale,
+        const char *success_log,
+        const char *failure_log) {
+        move_group_->setMaxVelocityScalingFactor(velocity_scale);
+        move_group_->setMaxAccelerationScalingFactor(acceleration_scale);
+
+        std::vector<geometry_msgs::msg::Pose> waypoints;
+        waypoints.push_back(target_pose);
+
+        moveit_msgs::msg::RobotTrajectory trajectory;
+        const double eef_step = 0.005;
+        const double jump_threshold = 0.0;
+        const double fraction =
+            move_group_->computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
+
+        if (fraction <= 0.99) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "%s Only %.2f%% of the Cartesian path could be planned.",
+                failure_log,
+                fraction * 100.0);
+            return false;
+        }
+
+        moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
+        cartesian_plan.trajectory_ = trajectory;
+        if (move_group_->execute(cartesian_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
+            return false;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "%s", success_log);
+        return true;
+    }
+
+    void publishGripperPositionCommand(int position) {
+        auto msg = std_msgs::msg::Int32();
+        msg.data = position;
+        gripper_position_command_publisher_->publish(msg);
+    }
+
+    bool waitForGripperPositionDone(std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+            if (gripper_position_done_received_.load()) {
+                gripper_position_done_received_.store(false);
+                waiting_for_gripper_position_done_.store(false);
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        waiting_for_gripper_position_done_.store(false);
+        gripper_position_done_received_.store(false);
+        return false;
+    }
+
+    bool executeReclaimDropoffSequence() {
+        geometry_msgs::msg::Pose dropoff_approach_pose;
+        dropoff_approach_pose.position = reclaim_dropoff_position_;
+        dropoff_approach_pose.orientation = reclaim_dropoff_orientation_;
+
+        geometry_msgs::msg::Pose dropoff_release_pose = dropoff_approach_pose;
+        dropoff_release_pose.position.z -= reclaim_dropoff_descend_distance_;
+
+        if (!moveToPoseTarget(
+                dropoff_approach_pose,
+                0.7,
+                0.7,
+                "Reached reclaim dropoff approach pose.",
+                "Reclaim failed: dropoff approach pose is unreachable.")) {
+            return false;
+        }
+
+        if (!moveToPoseTarget(
+                dropoff_release_pose,
+                0.5,
+                0.5,
+                "Reached reclaim dropoff release pose.",
+                "Reclaim failed: dropoff release pose is unreachable.")) {
+            return false;
+        }
+
+        publishGripperMover(true);
+        std::this_thread::sleep_for(std::chrono::duration<double>(reclaim_post_open_pause_seconds_));
+
+        if (!moveToPoseTarget(
+                dropoff_approach_pose,
+                0.5,
+                0.5,
+                "Lifted back to reclaim dropoff approach pose.",
+                "Reclaim failed: dropoff lift-back pose is unreachable.")) {
+            return false;
+        }
+
+        moveToHomePositionUsingJoints();
+        return true;
+    }
+
+    void resetReclaimState() {
+        reclaim_in_progress_.store(false);
+        waiting_for_reclaim_done_ = false;
+        waiting_for_hand_pose_ = false;
+        waiting_for_gripper_done_ = false;
+        hand_pose_received_ = false;
+        tool_has_been_picked_up_ = false;
+        waiting_for_gripper_position_done_.store(false);
+        gripper_position_done_received_.store(false);
+        publishGripperReclaimTrigger(false);
+    }
+
+    void startReclaimSequence() {
+        publishGripperMover(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        if (!moveToPoseTarget(
+                last_handover_pose_,
+                0.6,
+                0.6,
+                "Reached stored handover pose for reclaim.",
+                "Action rejected: reclaim start pose is unreachable.")) {
+            reclaim_in_progress_.store(false);
+            waiting_for_reclaim_done_ = false;
+            publishGripperReclaimTrigger(false);
+            return;
+        }
+
+        reclaim_in_progress_.store(true);
+        waiting_for_reclaim_done_ = true;
+        publishGripperReclaimTrigger(true);
+        RCLCPP_INFO(this->get_logger(), "Action accepted: reclaim started at last handover pose.");
+    }
+
+    void startHolderReclaimSequence() {
+        reclaim_in_progress_.store(true);
+        waiting_for_reclaim_done_ = false;
+        waiting_for_gripper_position_done_.store(false);
+        gripper_position_done_received_.store(false);
+        publishGripperReclaimTrigger(false);
+
+        std::thread([this]() {
+            publishGripperZeroer(false);
+            publishGripperMover(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+            geometry_msgs::msg::Pose holder_pose;
+            if (!requestGraspApproachPose(reclaim_holder_target_frame_, holder_pose)) {
+                resetReclaimState();
+                return;
+            }
+
+            geometry_msgs::msg::Pose holder_approach_pose = holder_pose;
+            holder_approach_pose.position.z += reclaim_holder_approach_distance_;
+
+            if (!moveToPoseTarget(
+                    holder_approach_pose,
+                    0.6,
+                    0.6,
+                    "Reached holder reclaim approach pose.",
+                    "Action rejected: holder reclaim approach pose is unreachable.")) {
+                resetReclaimState();
+                return;
+            }
+
+            if (!moveLinearToPose(
+                    holder_pose,
+                    0.4,
+                    0.4,
+                    "Reached holder reclaim grasp pose.",
+                    "Action rejected: holder reclaim descend path is unreachable.")) {
+                resetReclaimState();
+                return;
+            }
+
+            waiting_for_gripper_position_done_.store(true);
+            gripper_position_done_received_.store(false);
+            publishGripperPositionCommand(reclaim_close_position_);
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Action accepted: holder reclaim close requested at position %d.",
+                reclaim_close_position_);
+
+            if (!waitForGripperPositionDone(std::chrono::milliseconds(5000))) {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "Action rejected: holder reclaim did not receive /gripper_position_done in time.");
+                resetReclaimState();
+                return;
+            }
+
+            tool_has_been_picked_up_ = true;
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Holder reclaim close acknowledged. Waiting %.2f s at holder grasp pose for gripper settling.",
+                reclaim_holder_close_settle_seconds_);
+            std::this_thread::sleep_for(std::chrono::duration<double>(reclaim_holder_close_settle_seconds_));
+
+            if (!moveLinearToPose(
+                    holder_approach_pose,
+                    0.4,
+                    0.4,
+                    "Lifted tool from holder reclaim pose.",
+                    "Action rejected: holder reclaim lift path is unreachable.")) {
+                resetReclaimState();
+                return;
+            }
+
+            if (!executeReclaimDropoffSequence()) {
+                resetReclaimState();
+                return;
+            }
+
+            resetReclaimState();
+            RCLCPP_INFO(this->get_logger(), "Holder reclaim complete: dropped off tool and returned home.");
+        }).detach();
+    }
+
+    void handPositionCallback(const geometry_msgs::msg::Pose::SharedPtr msg) {
+        RCLCPP_INFO(this->get_logger(), "Hand detected: received /hand_pose message in world frame.");
+
+        if (!waiting_for_hand_pose_) {
+            RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but system is not waiting for a gesture.");
+            return;
+        }
+
+        if (!tool_has_been_picked_up_) {
+            RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but no tool has been picked up yet.");
+            return;
+        }
+
+        hand_pose_ = *msg;
+        hand_pose_with_offset_ = *msg;
+        hand_pose_with_offset_.position.x += hand_offset_.x;
+        hand_pose_with_offset_.position.y += hand_offset_.y;
+        hand_pose_with_offset_.position.z += hand_offset_.z;
+        publishHandoverEvent("gesture_detected");
+        RCLCPP_INFO(this->get_logger(), "Action accepted: gesture detected from /hand_pose in world frame, proceeding with handover.");
+        performHandoverToHandPose();
+    }
+
+    void toolSelectionCallback(const std_msgs::msg::String::SharedPtr msg) {
+        const std::string cmd = msg->data;
+
+        if (cmd == "0") {
+            RCLCPP_WARN(this->get_logger(), "RESETTING SYSTEM STATE MANUALLY.");
+            hand_pose_received_ = false;
+            waiting_for_hand_pose_ = false;
+            waiting_for_gripper_done_ = false;
+            waiting_for_reclaim_done_ = false;
+            tool_has_been_picked_up_ = false;
+            reclaim_in_progress_.store(false);
+            publishGripperMover(true);
+            publishGripperZeroer(false);
+            publishGripperReclaimTrigger(false);
+            waiting_for_gripper_position_done_.store(false);
+            gripper_position_done_received_.store(false);
+
+            if (move_group_ != nullptr && configuration_loaded_) {
+                moveToHomePositionUsingJoints();
+            } else {
+                RCLCPP_WARN(this->get_logger(), "Reset skipped home motion because move group or configuration is unavailable.");
+            }
+
+            RCLCPP_INFO(this->get_logger(), "System reset complete.");
+            return;
+        }
+
+        if (!configuration_loaded_) {
+            RCLCPP_ERROR(this->get_logger(), "Action rejected: tool command '%s' received but motion configuration is invalid.", cmd.c_str());
+            return;
+        }
+
+        if (move_group_ == nullptr) {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: tool command '%s' received before MoveGroupInterface initialization.", cmd.c_str());
+            return;
+        }
+
+        if (reclaim_in_progress_.load()) {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: reclaim is already in progress.");
+            return;
+        }
+
+        if (cmd == "8") {
+            if (waiting_for_hand_pose_ || waiting_for_gripper_done_) {
+                RCLCPP_WARN(this->get_logger(), "Action rejected: holder reclaim requested while another handover action is still active.");
+                return;
+            }
+
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Action accepted: holder reclaim requested via frame '%s'.",
+                reclaim_holder_target_frame_.c_str());
+            startHolderReclaimSequence();
+            return;
+        }
+
+        if (cmd == "9") {
+            if (waiting_for_hand_pose_ || waiting_for_gripper_done_) {
+                RCLCPP_WARN(this->get_logger(), "Action rejected: reclaim requested while another handover action is still active.");
+                return;
+            }
+
+            if (!has_last_handover_pose_) {
+                RCLCPP_WARN(this->get_logger(), "Action rejected: reclaim requested but no stored handover pose is available.");
+                return;
+            }
+
+            startReclaimSequence();
+            return;
+        }
+
+        if (waiting_for_gripper_done_) {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: still waiting for gripper completion from the previous handover.");
+            return;
+        }
+
+        if (waiting_for_hand_pose_) {
+            RCLCPP_WARN(this->get_logger(), "Already waiting for hand pose - ignoring tool command.");
+            return;
+        }
+
+        const auto profile_it = tool_profiles_.find(cmd);
+        if (profile_it == tool_profiles_.end()) {
+            RCLCPP_WARN(this->get_logger(), "Unknown command: '%s'", cmd.c_str());
+            return;
+        }
+
+        activateToolProfile(profile_it->second);
+        RCLCPP_INFO(this->get_logger(), "Action accepted: tool %s selected with configured strategy.", cmd.c_str());
+
+        switch (profile_it->second.strategy) {
+            case GrabStrategy::Standard:
+                grabTool(tool_position_.x, tool_position_.y, tool_position_.z);
+                break;
+            case GrabStrategy::HammerCartesian:
+                grabHammer(tool_position_.x, tool_position_.y, tool_position_.z);
+                break;
+            case GrabStrategy::LongScissor:
+                grabLongScissor(tool_position_.x, tool_position_.y, tool_position_.z);
+                break;
+            case GrabStrategy::RetractorCartesian:
+                grabRetractor(tool_position_.x, tool_position_.y, tool_position_.z);
+                break;
+        }
+
+        if (waiting_for_hand_pose_) {
+            RCLCPP_INFO(this->get_logger(), "Waiting for hand pose...");
+        } else {
+            RCLCPP_WARN(this->get_logger(), "Action rejected: tool %s did not complete pickup, see previous planning errors.", cmd.c_str());
+        }
+    }
+
+    void performHandoverToHandPose() {
+        geometry_msgs::msg::Pose target_pose = hand_pose_with_offset_;
+        target_pose.orientation = handover_orientation_;
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(0.6);
+        move_group_->setMaxAccelerationScalingFactor(0.6);
+        move_group_->setPoseTarget(target_pose);
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Target for handover in world frame: x=%.2f y=%.2f z=%.2f",
+            target_pose.position.x,
+            target_pose.position.y,
+            target_pose.position.z);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Reachability decision: reachable.");
+            RCLCPP_INFO(this->get_logger(), "Moving above hand...");
+            if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+                publishHandoverEvent("reachability:unreachable_execution_failed");
+                RCLCPP_ERROR(this->get_logger(), "Reachability decision: unreachable.");
+                RCLCPP_ERROR(this->get_logger(), "Execution to above hand failed.");
+                return;
+            }
+            last_handover_pose_ = target_pose;
+            has_last_handover_pose_ = true;
+            waiting_for_hand_pose_ = false;
+            hand_pose_received_ = true;
+            RCLCPP_INFO(this->get_logger(), "Reached handover pose, holding before release sensing.");
+            std::this_thread::sleep_for(std::chrono::duration<double>(pre_release_dwell_seconds_));
+            RCLCPP_INFO(this->get_logger(), "Activating gripper sensing after dwell.");
+            publishGripperZeroer(true);
+            waiting_for_gripper_done_ = true;
+            std::this_thread::sleep_for(std::chrono::duration<double>(post_zeroer_settle_seconds_));
+            RCLCPP_INFO(this->get_logger(), "Waiting for gripper_done from force-guided release.");
+        } else {
+            publishHandoverEvent("reachability:unreachable_plan_failed");
+            RCLCPP_ERROR(this->get_logger(), "Reachability decision: unreachable.");
+            RCLCPP_ERROR(this->get_logger(), "Planning to above hand failed.");
+        }
+    }
+
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tool_selection_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_done_sub_;
+
+    void reclaimDoneCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        if (!msg->data) {
+            return;
+        }
+
+        if (!reclaim_in_progress_.load() || !waiting_for_reclaim_done_) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring reclaim completion because no reclaim sequence is active.");
+            return;
+        }
+
+        publishGripperReclaimTrigger(false);
+        waiting_for_reclaim_done_ = false;
+        tool_has_been_picked_up_ = true;
+        RCLCPP_INFO(this->get_logger(), "Reclaim gripper close acknowledged.");
+        std::this_thread::sleep_for(std::chrono::duration<double>(reclaim_post_close_wait_seconds_));
+
+        if (!executeReclaimDropoffSequence()) {
+            resetReclaimState();
+            return;
+        }
+
+        resetReclaimState();
+        RCLCPP_INFO(this->get_logger(), "Reclaim complete: returned to home.");
+    }
+
+    void gripperPositionDoneCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        if (!msg->data) {
+            return;
+        }
+
+        if (!waiting_for_gripper_position_done_.load()) {
+            return;
+        }
+
+        gripper_position_done_received_.store(true);
+        RCLCPP_INFO(this->get_logger(), "Received /gripper_position_done for holder reclaim close.");
+    }
+
+    void gripperDoneCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+        if (!msg->data) {
+            return;
+        }
+
+        if (reclaim_in_progress_.load()) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring /gripper_done while reclaim is active.");
+            return;
+        }
+
+        if (!waiting_for_gripper_done_) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring /gripper_done because no normal handover is waiting for gripper feedback.");
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Gripper opened, holding before return to home.");
+        std::this_thread::sleep_for(std::chrono::duration<double>(post_open_pause_seconds_));
+        RCLCPP_INFO(this->get_logger(), "Returning to home after handover release pause.");
+        moveToHomePositionUsingJoints();
+        hand_pose_received_ = false;
+        waiting_for_hand_pose_ = false;
+        waiting_for_gripper_done_ = false;
+        tool_has_been_picked_up_ = false;
+        RCLCPP_INFO(this->get_logger(), "Ready for next tool command.");
+    }
+
+    void jointStateBufferedCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
+        latest_joint_state_ = *msg;
+        received_joint_state_ = true;
+        RCLCPP_INFO(this->get_logger(), "Received joint_state from Python relay.");
+    }
+
+    void moveToHomePositionUsingJoints() {
+        if (move_group_ == nullptr) {
+            RCLCPP_ERROR(this->get_logger(), "Cannot move home: MoveGroupInterface is not initialized.");
+            return;
+        }
+
+        if (motion_profiles_.home_joints.size() != 6) {
+            RCLCPP_ERROR(this->get_logger(), "Cannot move home: configured home joint preset is invalid.");
+            return;
+        }
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setJointValueTarget(motion_profiles_.home_joints);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning to Home-Position (Joints) successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning to Home-Position (Joints) failed.");
+        }
+    }
+
+    void grabTool(double x, double y, double z) {
+        RCLCPP_INFO(this->get_logger(), "Moving to object at x=%.2f y=%.2f z=%.2f", x, y, z);
+        publishGripperMover(true);
+
+        geometry_msgs::msg::Pose object_pose;
+        object_pose.position.x = x;
+        object_pose.position.y = y;
+        object_pose.position.z = z;
+        object_pose.orientation = tool_orientation_;
+
+        geometry_msgs::msg::Pose lift_pose = object_pose;
+        lift_pose.position.z += active_tool_profile_.lift_height;
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(lift_pose);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning above object successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning above object failed.");
+            return;
+        }
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(0.5);
+        move_group_->setMaxAccelerationScalingFactor(0.5);
+        move_group_->setPoseTarget(object_pose);
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning to object successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning to object failed.");
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Closing gripper on object...");
+        publishGripperMover(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        tool_has_been_picked_up_ = true;
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(lift_pose);
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Lifting object...");
+            move_group_->execute(plan);
+            waiting_for_hand_pose_ = true;
+            moveToHomePositionUsingJoints();
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Lift motion failed.");
+        }
+    }
+
+    void grabHammer(double x, double y, double z) {
+        RCLCPP_INFO(this->get_logger(), "Moving to object at x=%.2f y=%.2f z=%.2f", x, y, z);
+        publishGripperMover(true);
+
+        geometry_msgs::msg::Pose object_pose;
+        object_pose.position.x = x;
+        object_pose.position.y = y;
+        object_pose.position.z = z;
+        object_pose.orientation = tool_orientation_;
+
+        geometry_msgs::msg::Pose approach_pose = object_pose;
+        approach_pose.position.z += active_tool_profile_.lift_height;
+
+        constexpr double hammer_post_grasp_x_offset = 0.05;
+        geometry_msgs::msg::Pose lift_pose = object_pose;
+        lift_pose.position.x += hammer_post_grasp_x_offset;
+        lift_pose.position.z += active_tool_profile_.lift_height;
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(approach_pose);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning above hammer with z-only offset successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning above object failed.");
+            return;
+        }
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(object_pose);
+
+        std::vector<geometry_msgs::msg::Pose> waypoints;
+        waypoints.push_back(object_pose);
+        moveit_msgs::msg::RobotTrajectory trajectory;
+        const double eef_step = 0.005;
+        const double jump_threshold = 0.0;
+
+        const double fraction = move_group_->computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
+        if (fraction > 0.99) {
+            RCLCPP_INFO(this->get_logger(), "Linear path to object (%.2f%% achieved), executing...", fraction * 100.0);
+            moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
+            cartesian_plan.trajectory_ = trajectory;
+            move_group_->execute(cartesian_plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Failed to compute linear Cartesian path (only %.2f%% achieved)", fraction * 100.0);
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Closing gripper on object...");
+        publishGripperMover(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        tool_has_been_picked_up_ = true;
+
+        std::vector<geometry_msgs::msg::Pose> lift_waypoints;
+        lift_waypoints.push_back(lift_pose);
+
+        moveit_msgs::msg::RobotTrajectory lift_trajectory;
+        const double lift_fraction = move_group_->computeCartesianPath(
+            lift_waypoints, eef_step, jump_threshold, lift_trajectory);
+
+        if (lift_fraction > 0.99) {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Lifting hammer with Cartesian z and x offset (linear path %.2f%% achieved)...",
+                lift_fraction * 100.0);
+            moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
+            lift_plan.trajectory_ = lift_trajectory;
+            move_group_->execute(lift_plan);
+
+            waiting_for_hand_pose_ = true;
+            moveToHomePositionUsingJoints();
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Cartesian lift motion failed (%.2f%% achieved)", lift_fraction * 100.0);
+        }
+    }
+
+    void grabLongScissor(double x, double y, double z) {
+        RCLCPP_INFO(this->get_logger(), "Moving to object at x=%.2f y=%.2f z=%.2f", x, y, z);
+        publishGripperMover(true);
+
+        geometry_msgs::msg::Pose object_pose;
+        object_pose.position.x = x;
+        object_pose.position.y = y;
+        object_pose.position.z = z;
+        object_pose.orientation = tool_orientation_;
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setJointValueTarget(motion_profiles_.long_scissor_over_joints);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning above Scissor successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning above Scissor failed.");
+            return;
+        }
+
+        moveit_msgs::msg::Constraints constraints;
+        moveit_msgs::msg::JointConstraint elbow_constraint;
+        elbow_constraint.joint_name = "elbow_joint";
+        elbow_constraint.position = motion_profiles_.long_scissor_elbow_target;
+        elbow_constraint.tolerance_above = motion_profiles_.long_scissor_elbow_tolerance_above;
+        elbow_constraint.tolerance_below = motion_profiles_.long_scissor_elbow_tolerance_below;
+        elbow_constraint.weight = 1.0;
+        constraints.joint_constraints.push_back(elbow_constraint);
+
+        move_group_->setPathConstraints(constraints);
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(object_pose);
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planned motion to object pose successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning to object pose failed.");
+            move_group_->clearPathConstraints();
+            return;
+        }
+        move_group_->clearPathConstraints();
+
+        RCLCPP_INFO(this->get_logger(), "Closing gripper on object...");
+        publishGripperMover(false);
+        tool_has_been_picked_up_ = true;
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setJointValueTarget(motion_profiles_.long_scissor_after_joints);
+
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning above Scissor successful, executing...");
+            move_group_->execute(plan);
+            waiting_for_hand_pose_ = true;
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning above Scissor failed.");
+            return;
+        }
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setJointValueTarget(motion_profiles_.long_scissor_over_joints);
+
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning above Scissor successful, executing...");
+            move_group_->execute(plan);
+            waiting_for_hand_pose_ = true;
+            moveToHomePositionUsingJoints();
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning above Scissor failed.");
+        }
+    }
+
+    void grabRetractor(double x, double y, double z) {
+        RCLCPP_INFO(this->get_logger(), "Moving to object at x=%.2f y=%.2f z=%.2f", x, y, z);
+        publishGripperMover(true);
+
+        geometry_msgs::msg::Pose object_pose;
+        object_pose.position.x = x;
+        object_pose.position.y = y;
+        object_pose.position.z = z;
+        object_pose.orientation = tool_orientation_;
+
+        geometry_msgs::msg::Pose lift_pose = object_pose;
+        lift_pose.position.z += active_tool_profile_.lift_height;
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(lift_pose);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Planning above object successful, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning above object failed.");
+            return;
+        }
+
+        move_group_->setPlanningTime(1.0);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setPoseTarget(object_pose);
+
+        std::vector<geometry_msgs::msg::Pose> waypoints;
+        waypoints.push_back(object_pose);
+        moveit_msgs::msg::RobotTrajectory trajectory;
+        const double eef_step = 0.005;
+        const double jump_threshold = 0.0;
+
+        const double fraction = move_group_->computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
+        if (fraction > 0.99) {
+            RCLCPP_INFO(this->get_logger(), "Linear path to object (%.2f%% achieved), executing...", fraction * 100.0);
+            moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
+            cartesian_plan.trajectory_ = trajectory;
+            move_group_->execute(cartesian_plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Failed to compute linear Cartesian path (only %.2f%% achieved)", fraction * 100.0);
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Closing gripper on object...");
+        publishGripperMover(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        tool_has_been_picked_up_ = true;
+
+        std::vector<geometry_msgs::msg::Pose> lift_waypoints;
+        lift_waypoints.push_back(lift_pose);
+
+        moveit_msgs::msg::RobotTrajectory lift_trajectory;
+        const double lift_fraction = move_group_->computeCartesianPath(
+            lift_waypoints, eef_step, jump_threshold, lift_trajectory);
+
+        if (lift_fraction > 0.99) {
+            RCLCPP_INFO(this->get_logger(), "Lifting object (linear path %.2f%% achieved)...", lift_fraction * 100.0);
+            moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
+            lift_plan.trajectory_ = lift_trajectory;
+            move_group_->execute(lift_plan);
+
+            waiting_for_hand_pose_ = true;
+            moveToHomePositionUsingJoints();
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Cartesian lift motion failed (%.2f%% achieved)", lift_fraction * 100.0);
+        }
+    }
+
+    void moveToModifiedJoints() {
+        received_joint_state_ = false;
+        publishRequestJointState(true);
+        RCLCPP_INFO(this->get_logger(), "Published joint state request.");
+
+        std::thread([this]() {
+            int retries = 0;
+            while (!received_joint_state_ && rclcpp::ok() && retries < 30) {
+                rclcpp::sleep_for(std::chrono::milliseconds(100));
+                RCLCPP_WARN(this->get_logger(), "Waiting for joint state... (%d)", retries);
+                ++retries;
+            }
+
+            if (!received_joint_state_) {
+                RCLCPP_ERROR(this->get_logger(), "Still no joint state received.");
+                return;
+            }
+
+            this->planAndExecuteFromBufferedState();
+        }).detach();
+    }
+
+    void planAndExecuteFromBufferedState() {
+        std::map<std::string, double> joint_map;
+        for (size_t i = 0; i < latest_joint_state_.name.size(); ++i) {
+            joint_map[latest_joint_state_.name[i]] = latest_joint_state_.position[i];
+        }
+
+        joint_map["wrist_2_joint"] = 0.0;
+        joint_map["wrist_3_joint"] = 0.0;
+
+        const std::vector<std::string> ur_joint_order = {
+            "shoulder_pan_joint",
+            "shoulder_lift_joint",
+            "elbow_joint",
+            "wrist_1_joint",
+            "wrist_2_joint",
+            "wrist_3_joint"
+        };
+
+        std::vector<double> joint_positions;
+        constexpr double rad_to_deg = 180.0 / 3.14159265358979323846;
+        for (const std::string &name : ur_joint_order) {
+            const double rad = joint_map[name];
+            const double deg = rad * rad_to_deg;
+            RCLCPP_INFO(this->get_logger(), "Target Joint %s: %.4f rad (%.2f deg)", name.c_str(), rad, deg);
+            joint_positions.push_back(rad);
+        }
+
+        move_group_->setPlanningTime(0.5);
+        move_group_->setMaxVelocityScalingFactor(1.0);
+        move_group_->setMaxAccelerationScalingFactor(1.0);
+        move_group_->setJointValueTarget(joint_positions);
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            RCLCPP_INFO(this->get_logger(), "Modified joint movement planned successfully, executing...");
+            move_group_->execute(plan);
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Planning failed.");
+        }
+    }
+
+    void publishGripperMover(bool close) {
+        auto msg = std_msgs::msg::Bool();
+        msg.data = close;
+        gripper_mover_->publish(msg);
+    }
+
+    void publishGripperZeroer(bool close) {
+        auto msg = std_msgs::msg::Bool();
+        msg.data = close;
+        gripper_zeroer_->publish(msg);
+    }
+
+    void publishRequestJointState(bool trigger) {
+        auto msg = std_msgs::msg::Bool();
+        msg.data = trigger;
+        request_joint_state_->publish(msg);
+        RCLCPP_INFO(this->get_logger(), "Published joint state request.");
+    }
+
+    void publishHandoverEvent(const std::string &event_name) {
+        auto msg = std_msgs::msg::String();
+        msg.data = event_name;
+        handover_event_publisher_->publish(msg);
+        RCLCPP_INFO(this->get_logger(), "Published handover event: %s", event_name.c_str());
+    }
+
+    rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr hand_position_sub_;
+    std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_mover_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_zeroer_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_reclaim_trigger_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr gripper_position_command_publisher_;
+    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_buffered_sub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr request_joint_state_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_event_publisher_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_reclaim_done_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_position_done_sub_;
+    rclcpp::Client<tracking_pkg::srv::GetGraspApproachPose>::SharedPtr grasp_approach_pose_client_;
+};
+
+int main(int argc, char **argv) {
+    rclcpp::init(argc, argv);
+
+    auto node = std::make_shared<HandPositionFollower>();
+    node->initializeMoveGroupInterface();
+    rclcpp::spin(node);
+
+    rclcpp::shutdown();
+    return 0;
+}

@@ -1,0 +1,96 @@
+# Tool Knowledge Base
+# Provides semantic information about surgical instruments for:
+# - LLM context (tool calling, disambiguation, handover rules)
+# - Grasp reasoning (grip strategy, orientation constraints)
+# - OBB model class mapping
+#
+# Each entry maps an OBB model class name to its semantic properties.
+
+tools:
+
+  needle_holder:
+    display_name: "Needle Holder"
+    synonyms: ["needle driver", "nadelhalter"]
+    description: "Clamping instrument for holding suture needles during stitching."
+    variants:
+      - "needle_holder_12mm"
+      - "needle_holder_15mm"
+    grip_strategy: "parallel"         # parallel | pinch | wrap
+    handover_rule: "functional_end_away"
+    handover_description: "Hand over with the clamping jaws pointing away from the surgeon."
+    functional_end: "jaws"
+    lift_height: 0.10                 # meters above tray surface
+
+  scalpel:
+    display_name: "Scalpel"
+    synonyms: ["blade", "skalpell", "knife", "messer"]
+    description: "Sharp cutting instrument with a blade."
+    variants:
+      - "scalpel_10"
+      - "scalpel_15"
+      - "scalpel_20"
+    grip_strategy: "parallel"
+    handover_rule: "blade_away"
+    handover_description: "Hand over with the blade pointing away from the surgeon. Handle first."
+    functional_end: "blade"
+    lift_height: 0.10
+
+  scissors:
+    display_name: "Scissors"
+    synonyms: ["schere", "mayo scissors", "metzenbaum", "metzenbaum scissors"]
+    variants:
+      - "scissors_straight"
+      - "scissors_curved"
+      - "scissors_long"
+    description: "Cutting instrument with two blades."
+    grip_strategy: "parallel"
+    handover_rule: "functional_end_away"
+    handover_description: "Hand over with cutting tips away from the surgeon."
+    functional_end: "blades"
+    lift_height: 0.10
+
+  forceps:
+    display_name: "Forceps"
+    synonyms: ["pinzette", "tweezers", "tissue forceps", "adson", "debakey"]
+    variants:
+      - "forceps_toothed"
+      - "forceps_atraumatic"
+    description: "Grasping instrument for holding tissue."
+    grip_strategy: "parallel"
+    handover_rule: "functional_end_away"
+    handover_description: "Hand over with the tips pointing away from the surgeon."
+    functional_end: "tips"
+    lift_height: 0.10
+
+  retractor:
+    display_name: "Retractor"
+    synonyms: ["haken", "wundhaken", "langenbeck", "army navy"]
+    variants:
+      - "retractor_small"
+      - "retractor_large"
+    description: "Instrument for holding back tissue to expose the surgical field."
+    grip_strategy: "parallel"
+    handover_rule: "neutral"
+    handover_description: "Hand over with handle toward the surgeon, hook end away."
+    functional_end: "hook"
+    lift_height: 0.15
+
+  clamp:
+    display_name: "Clamp"
+    synonyms: ["klemme", "hemostat", "kocher", "pean", "mosquito"]
+    variants:
+      - "clamp_straight"
+      - "clamp_curved"
+    description: "Locking instrument for clamping blood vessels or tissue."
+    grip_strategy: "parallel"
+    handover_rule: "functional_end_away"
+    handover_description: "Hand over with clamping jaws away from the surgeon."
+    functional_end: "jaws"
+    lift_height: 0.10
+
+# Default fallback for unknown tool classes
+default:
+  grip_strategy: "parallel"
+  handover_rule: "neutral"
+  handover_description: "Hand over in neutral orientation."
+  lift_height: 0.10

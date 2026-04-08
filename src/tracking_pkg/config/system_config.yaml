@@ -1,0 +1,69 @@
+# System Configuration for LLM-based Robotic Scrub Nurse
+# Replaces hardcoded tool profiles with dynamic perception-based approach.
+#
+# Tool pick positions are no longer hardcoded - they come from the
+# tray perception node's OBB detections + grasp reasoning.
+
+# ── Robot Motion Defaults ──────────────────────────────────────────
+motion:
+  home_joints: [-1.62, -2.29, 2.3, -2.39, -1.43, 0.0]
+  max_planning_time: 1.0           # seconds
+  default_lift_height: 0.10         # meters above tray
+  approach_offset: 0.15             # meters above grasp point for approach
+  servo_threshold_distance: 0.15    # switch to servo mode within this distance to hand [m]
+
+# ── Handover Defaults ─────────────────────────────────────────────
+handover:
+  pre_release_dwell_seconds: 0.3
+  post_zeroer_settle_seconds: 0.0
+  post_open_pause_seconds: 1.0
+  release_force_threshold: 5.0     # newtons
+  hand_proximity_threshold: 0.05   # meters - hand must be this close for release gate
+
+# ── Gripper ───────────────────────────────────────────────────────
+gripper:
+  open_position: 150
+  close_position: 250
+  reclaim_close_speed: 200
+  reclaim_close_force: 1
+
+# ── Reclaim ───────────────────────────────────────────────────────
+reclaim:
+  dropoff_position: [-0.25, 0.28, 0.18]
+  dropoff_orientation: [-0.7071, 0.7071, 0.0, 0.0]
+  force_threshold_newtons: 5.0
+  zero_delay_seconds: 0.5
+  close_position: 250
+  close_speed: 200
+  close_force: 1
+  post_close_wait_seconds: 1.0
+  dropoff_descend_distance: 0.15
+  post_open_pause_seconds: 1.0
+
+# ── Perception ────────────────────────────────────────────────────
+tray_perception:
+  model_path: ""                    # Path to OBB model (set when trained)
+  confidence_threshold: 0.5
+  inference_rate_hz: 10.0
+
+scene_perception:
+  max_num_hands: 2
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+  publish_rate_hz: 15.0
+
+# ── LLM ───────────────────────────────────────────────────────────
+llm:
+  model_name: "gpt-4o"
+  # openai_api_key: set via OPENAI_API_KEY env var
+
+# ── ASR ───────────────────────────────────────────────────────────
+asr:
+  whisper_model: "base"
+  language: "de"
+  energy_threshold: 300
+  use_api: false
+
+# ── State Feedback ────────────────────────────────────────────────
+# No TTS - system state will be communicated via LEDs / visual indicators.
+# Audio feedback limited to sound events (handover_sound_publisher).

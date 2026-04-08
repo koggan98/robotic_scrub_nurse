@@ -1,0 +1,8 @@
+# Service to query the current world model snapshot
+# Called by the LLM node
+
+# Request: empty, returns full snapshot
+---
+bool success
+string message
+tracking_pkg/SystemState world_state

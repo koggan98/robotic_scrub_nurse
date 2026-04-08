@@ -17,7 +17,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
-# Install the Python script as an executable
+# ── Legacy node installs (existing launch files still reference these) ──
 install(
   PROGRAMS
     src/hand_tracker/hand_tracker.py
@@ -48,6 +48,39 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# ── New architecture node installs ──
+install(
+  PROGRAMS
+    # Perception
+    src/perception/tray_perception_node.py
+    src/perception/camera_publisher.py
+    src/perception/frame_publisher.py
+    src/perception/aruco_marker_120_publisher.py
+    src/perception/hand_tracker.py
+    # Reasoning
+    src/reasoning/grasp_reasoning_node.py
+    src/reasoning/world_model_node.py
+    # LLM
+    src/llm/llm_reasoning_node.py
+    # Interfaces
+    src/interfaces/asr_node.py
+    src/interfaces/handover_sound_publisher.py
+    src/interfaces/annotated_image_viewer.py
+    src/interfaces/scrub_nurse_logger.py
+    # Execution
+    src/execution/gripper_opener_with_zeroer.py
+    src/execution/reclaim_controller.py
+    src/execution/grasp_approach_pose_service.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  FILES
+    src/perception/mediapipe_and_gesture.py
+    src/execution/grasp_orientation_utils.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install the launch file
 install(
   DIRECTORY launch
@@ -65,8 +98,18 @@ install(
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/OrientedBoundingBox2D.msg"
+  "msg/ToolDetection.msg"
+  "msg/ToolDetectionArray.msg"
+  "msg/GraspCandidate.msg"
+  "msg/GraspCandidateArray.msg"
+  "msg/HandState.msg"
+  "msg/SystemState.msg"
+  "msg/ExecutionPlan.msg"
   "srv/GetGraspApproachPose.srv"
-  DEPENDENCIES geometry_msgs
+  "srv/GetWorldState.srv"
+  "srv/GetToolCandidates.srv"
+  DEPENDENCIES geometry_msgs std_msgs
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
