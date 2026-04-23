@@ -57,12 +57,16 @@ class HandTrackerNode(Node):
         self.declare_parameter('min_tracking_confidence', 0.5)
         self.declare_parameter('publish_rate_hz', 15.0)
         self.declare_parameter('annotated_image_max_hz', 12.0)
+        self.declare_parameter('camera_frame', 'scene_camera_color_optical_frame')
+        self.declare_parameter('world_frame', 'world')
 
         max_hands = int(self.get_parameter('max_num_hands').value)
         det_conf = float(self.get_parameter('min_detection_confidence').value)
         track_conf = float(self.get_parameter('min_tracking_confidence').value)
         pub_hz = float(self.get_parameter('publish_rate_hz').value)
         ann_hz = float(self.get_parameter('annotated_image_max_hz').value)
+        self.camera_frame = self.get_parameter('camera_frame').value
+        self.world_frame = self.get_parameter('world_frame').value
 
         self.publish_interval = 1.0 / pub_hz if pub_hz > 0 else 0.0
         self.annotated_interval = 1.0 / ann_hz if ann_hz > 0 else 0.0
@@ -130,16 +134,16 @@ class HandTrackerNode(Node):
         return np.array([x, y, depth_m])
 
     def _camera_to_world(self, cam_coords):
-        """Transform camera-frame point to world frame via TF chain."""
-        try:
-            t_cam_board = self.tf_buffer.lookup_transform(
-                'aruco_board_frame', 'camera_frame', rclpy.time.Time())
-            t_board_world = self.tf_buffer.lookup_transform(
-                'world', 'aruco_board_frame', rclpy.time.Time())
+        """Transform camera-frame point to world frame via single TF lookup.
 
-            T1 = self._tf_to_matrix(t_cam_board)
-            T2 = self._tf_to_matrix(t_board_world)
-            T = T2 @ T1
+        TF chain (produced by aruco_marker_manager + launch):
+          world -> base -> aruco_marker_100_frame -> scene_camera_color_optical_frame
+        tf2 collapses this into a single lookup.
+        """
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.world_frame, self.camera_frame, rclpy.time.Time())
+            T = self._tf_to_matrix(tf)
 
             pt = np.array([cam_coords[0], cam_coords[1], cam_coords[2], 1.0])
             world_pt = T @ pt
@@ -147,7 +151,9 @@ class HandTrackerNode(Node):
         except Exception as e:
             now = time.time()
             if now - self.last_tf_warn_time > 2.0:
-                self.get_logger().warn(f'TF unavailable: {e}')
+                self.get_logger().warn(
+                    f'TF unavailable ({self.world_frame} <- {self.camera_frame}): {e}'
+                )
                 self.last_tf_warn_time = now
             return None
 
@@ -243,7 +249,7 @@ class HandTrackerNode(Node):
             if now - self.last_annotated_time >= self.annotated_interval:
                 ros_img = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
                 ros_img.header.stamp = self.get_clock().now().to_msg()
-                ros_img.header.frame_id = 'camera_frame'
+                ros_img.header.frame_id = self.camera_frame
                 self.annotated_pub.publish(ros_img)
                 self.last_annotated_time = now
 

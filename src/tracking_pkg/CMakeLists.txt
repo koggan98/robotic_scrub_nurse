@@ -21,9 +21,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 install(
   PROGRAMS
     src/hand_tracker/hand_tracker.py
-    src/publisher/aruco_marker_120_publisher.py
     src/publisher/camera_publisher.py
-    src/publisher/frame_publisher.py
     src/publisher/gesture_pose_publisher.py
     src/publisher/annotated_image_viewer.py
     src/publisher/frame_capture_node.py
@@ -54,8 +52,7 @@ install(
     # Perception
     src/perception/tray_perception_node.py
     src/perception/camera_publisher.py
-    src/perception/frame_publisher.py
-    src/perception/aruco_marker_120_publisher.py
+    src/perception/aruco_marker_manager.py
     src/perception/hand_tracker.py
     # Reasoning
     src/reasoning/grasp_reasoning_node.py

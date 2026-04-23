@@ -8,10 +8,10 @@ Cameras use the official realsense2_camera ROS2 package.
 Set SCENE_CAM_SERIAL / TRAY_CAM_SERIAL env vars or edit serial_no below.
 
 Startup order:
-  1. Static TFs (world→base, base→aruco_board_frame)
+  1. Static TFs (world→base)
   2. Scene camera (realsense2_camera, side: hand tracking + marker)
   3. Tray camera  (realsense2_camera, top-down: instrument detection) [when available]
-  4. Frame publishers (ArUco board + marker)
+  4. ArUco marker manager (config-driven static + detection TFs)
   5. Hand tracker (continuous, no gestures)
   6. Tray perception (OBB model) [when model available]
   7. Grasp reasoning + World model
@@ -55,22 +55,13 @@ def generate_launch_description():
                 '--frame-id', 'world', '--child-frame-id', 'base',
             ]
         ),
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='board_to_base_tf',
-            output='screen',
-            arguments=[
-                '--x', '0.05', '--y', '-0.3', '--z', '0.0',
-                '--yaw', '0.0', '--pitch', '0.0', '--roll', '0.0',
-                '--frame-id', 'base', '--child-frame-id', 'aruco_board_frame',
-            ]
-        ),
 
         # ── Layer 1: Scene Camera (realsense2_camera) ─────────────
         # Publishes to /scene_camera/color/image_raw,
         #              /scene_camera/aligned_depth_to_color/image_raw,
         #              /scene_camera/color/camera_info, etc.
+        # publish_tf is disabled: aruco_marker_manager wires camera frames
+        # into the world tree on first marker detection.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rs_launch_file),
             launch_arguments={
@@ -87,7 +78,7 @@ def generate_launch_description():
                 'hole_filling_filter.enable': 'true',
                 'decimation_filter.enable': 'true',
                 'enable_sync': 'true',
-                'publish_tf': 'true',
+                'publish_tf': 'false',
             }.items(),
         ),
 
@@ -109,21 +100,18 @@ def generate_launch_description():
         #         'temporal_filter.enable': 'true',
         #         'hole_filling_filter.enable': 'true',
         #         'enable_sync': 'true',
-        #         'publish_tf': 'true',
+        #         'publish_tf': 'false',
         #     }.items(),
         # ),
 
-        # ── Layer 2: Frame Publishers ─────────────────────────────
+        # ── Layer 2: ArUco Marker Manager ─────────────────────────
+        # Loads config/aruco_markers.yaml and handles:
+        #   - Static TFs (marker frames + tool_holder_frame)
+        #   - Camera-pose detection (one-shot static TFs per marker)
         Node(
             package='tracking_pkg',
-            executable='frame_publisher.py',
-            name='frame_publisher',
-            output='screen',
-        ),
-        Node(
-            package='tracking_pkg',
-            executable='aruco_marker_120_publisher.py',
-            name='aruco_marker_120_publisher',
+            executable='aruco_marker_manager.py',
+            name='aruco_marker_manager',
             output='screen',
         ),
 
