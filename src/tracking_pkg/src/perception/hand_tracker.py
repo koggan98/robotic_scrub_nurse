@@ -137,7 +137,7 @@ class HandTrackerNode(Node):
         """Transform camera-frame point to world frame via single TF lookup.
 
         TF chain (produced by aruco_marker_manager + launch):
-          world -> base -> aruco_marker_100_frame -> scene_camera_color_optical_frame
+          world -> base -> aruco_marker_105_frame -> scene_camera_color_optical_frame
         tf2 collapses this into a single lookup.
         """
         try:

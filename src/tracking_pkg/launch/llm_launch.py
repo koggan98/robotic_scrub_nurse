@@ -78,7 +78,7 @@ def generate_launch_description():
             launch_arguments={
                 'camera_name': 'scene_camera',
                 'camera_namespace': '',
-                'serial_no': scene_cam_serial,
+                'serial_no': f"'{scene_cam_serial}'",
                 'enable_color': 'true',
                 'enable_depth': 'true',
                 'rgb_camera.color_profile': '640,480,30',

@@ -48,7 +48,9 @@ Visualization Manager:
         All Enabled: false
         aruco_board_frame:
           Value: true
-        aruco_marker_120_frame:
+        aruco_marker_105_frame:
+          Value: true
+        scene_camera_color_optical_frame:
           Value: true
         base:
           Value: false

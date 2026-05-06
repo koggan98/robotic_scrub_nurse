@@ -227,7 +227,11 @@ class ArucoMarkerManager(Node):
         super().__init__('aruco_marker_manager')
 
         self.declare_parameter('config_path', '')
+        self.declare_parameter('publish_marker_static_tfs', True)
         cfg_path = self.get_parameter('config_path').value
+        self.publish_marker_static_tfs = bool(
+            self.get_parameter('publish_marker_static_tfs').value
+        )
         if not cfg_path:
             pkg_share = get_package_share_directory('tracking_pkg')
             cfg_path = os.path.join(pkg_share, 'config', 'aruco_markers.yaml')
@@ -264,22 +268,27 @@ class ArucoMarkerManager(Node):
             return {}
 
     def _publish_static_tfs(self):
-        """Publish all static TFs: per-marker static_pose + static_frames entries."""
+        """Publish configured static TFs.
+
+        Marker static poses can also be provided by launch files when a frame
+        should be visible even if this detector node is delayed or restarted.
+        """
         transforms = []
         stamp = self.get_clock().now().to_msg()
 
-        for marker in self.config.get('markers', []):
-            sp = marker.get('static_pose', {})
-            if not sp:
-                continue
-            quat = _rpy_to_quat(sp.get('rotation_rpy', [0.0, 0.0, 0.0]))
-            transforms.append(_make_static_tf(
-                stamp,
-                parent_frame=sp['parent_frame'],
-                child_frame=sp['child_frame'],
-                translation=sp.get('translation', [0.0, 0.0, 0.0]),
-                quat_xyzw=quat,
-            ))
+        if self.publish_marker_static_tfs:
+            for marker in self.config.get('markers', []):
+                sp = marker.get('static_pose', {})
+                if not sp:
+                    continue
+                quat = _rpy_to_quat(sp.get('rotation_rpy', [0.0, 0.0, 0.0]))
+                transforms.append(_make_static_tf(
+                    stamp,
+                    parent_frame=sp['parent_frame'],
+                    child_frame=sp['child_frame'],
+                    translation=sp.get('translation', [0.0, 0.0, 0.0]),
+                    quat_xyzw=quat,
+                ))
 
         for sf in self.config.get('static_frames', []):
             quat = _rpy_to_quat(sf.get('rotation_rpy', [0.0, 0.0, 0.0]))

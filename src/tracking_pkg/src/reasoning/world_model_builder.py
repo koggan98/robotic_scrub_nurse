@@ -522,7 +522,7 @@ class WorldModelBuilder(Node):
         pairs = self._pair_handles_with_bodies(bodies, handles)
         unpaired_bodies = len(bodies) - len(pairs)
 
-        # World-frame TF (may be unavailable if marker 120 not yet detected)
+        # World-frame TF from the fixed tray-camera transform.
         tf_world_from_cam = self._lookup_tf_world_from_cam()
         world_available = tf_world_from_cam is not None
 
@@ -542,7 +542,7 @@ class WorldModelBuilder(Node):
         if not world_available:
             errors.append(
                 f'TF {self.world_frame} <- {self.tray_camera_frame} not available; '
-                'world coordinates omitted (marker 120 may not be detected yet).'
+                'world coordinates omitted.'
             )
 
         annotated_img = color.copy()

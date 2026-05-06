@@ -38,7 +38,12 @@ class TrayCameraVolumePublisher(Node):
             .double_value
         )
         self.length_m = (
-            self.declare_parameter("length_m", 0.40)
+            self.declare_parameter("length_m", 0.60)
+            .get_parameter_value()
+            .double_value
+        )
+        self.start_offset_m = (
+            self.declare_parameter("start_offset_m", 0.10)
             .get_parameter_value()
             .double_value
         )
@@ -62,7 +67,7 @@ class TrayCameraVolumePublisher(Node):
             "Publishing tray camera volume collision object "
             f"'{self.object_id}' on {self.collision_topic} in frame "
             f"'{self.frame_id}' ({self.width_m:.3f} x {self.height_m:.3f} x "
-            f"{self.length_m:.3f} m)."
+            f"{self.length_m:.3f} m, start offset {self.start_offset_m:.3f} m)."
         )
         self.publish_collision_object()
 
@@ -74,12 +79,12 @@ class TrayCameraVolumePublisher(Node):
         collision_object.operation = CollisionObject.ADD
 
         # The RealSense optical +Z axis points away from the camera. In the
-        # current setup that is downward toward the tray, so the prism is
-        # centered halfway down the camera optical axis.
+        # current setup that is downward toward the tray. start_offset_m keeps
+        # the first part of the optical axis free before the collision prism.
         pose = Pose()
         pose.position.x = 0.0
         pose.position.y = 0.0
-        pose.position.z = self.length_m / 2.0
+        pose.position.z = self.start_offset_m + (self.length_m / 2.0)
         pose.orientation.w = 1.0
 
         primitive = SolidPrimitive()

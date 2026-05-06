@@ -41,7 +41,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Motion/handover core: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`.
 - Tool command flow uses `/tool_selection` and MoveIt planning.
 - Instrument-camera/world-model pick-test path: `src/tracking_pkg/launch/llm_launch.py` starts a fixed `world -> tray_camera_color_optical_frame` TF and the on-demand `/build_world_model` service.
-- Lightweight robot pickup test: `src/tracking_pkg/launch/tool_pick_test_launch.py` starts MoveIt, the fixed tray-camera TF, the world-model builder, gripper bridge, MiR collision object, and tray-camera volume collision object without `loop_mover`; `tool_pick_test_node` is run separately for terminal-based tool selection and one pick attempt.
+- Lightweight robot pickup test: `src/tracking_pkg/launch/tool_pick_test_launch.py` starts MoveIt, the official scene-camera RealSense node, marker-105 localization, hand tracking, the fixed tray-camera TF, the world-model builder, gripper bridge, MiR collision object, and tray-camera volume collision object without `loop_mover`; `tool_pick_test_node` is run separately for terminal-based tool selection and one pick attempt.
 
 ### Alternative Path (Socket + RTDE, MoveIt-free)
 - Launch entry: `src/tracking_pkg/launch/web_socket_launch.py`.
@@ -54,11 +54,11 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 
 ## High-Level Active ROS Flow
 1. Launch starts independent static `world -> base` and `world -> tray_camera_color_optical_frame` transform publishers.
-2. Scene camera publishes RGB/depth/camera parameters for hand tracking.
+2. Scene camera serial `239222300719` is started through the official `realsense2_camera` package and publishes RGB/depth/camera parameters under `/scene_camera/...` for marker localization and hand tracking.
 3. The instrument tray camera is opened directly by `world_model_builder.py` in direct RealSense mode.
-4. Pick-test launches publish the MiR base and a 50 x 50 x 400 mm tray-camera volume as MoveIt collision objects on `/collision_object`.
+4. Pick-test launches publish the MiR base and a 50 x 50 x 600 mm tray-camera volume as MoveIt collision objects on `/collision_object`.
 5. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
-6. ArUco marker tracking remains optional for validation/provisional frames, but fixed ArUco marker 120 is not required for the current instrument-camera pick-test path.
+6. ArUco marker 105 localizes the scene camera for hand tracking; marker 120 has been removed from the active configuration.
 7. Grasp approach pose service can resolve a tracked TF frame such as `tool_holder_frame` into a `PoseStamped` in `world` on request.
 8. Hand tracker detects gesture and publishes `hand_pose` in `world`.
 9. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
@@ -101,12 +101,13 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Active MoveIt tracking path canonical frame: `world`.
 - Expected TF chain for perception-to-handover: `world -> base -> aruco_board_frame -> camera_frame`.
 - Current instrument-camera pick-test TF: `world -> tray_camera_color_optical_frame`.
+- Pick-test launches publish `world -> aruco_marker_105_frame` directly for RViz visibility and run `aruco_marker_manager.py` with marker static TF publishing disabled; after marker ID 105 is detected, the manager publishes `aruco_marker_105_frame -> scene_camera_color_optical_frame`.
 - Instrument camera static translation in `world`: `[-0.075, 0.349, 0.4325] m`.
 - Instrument camera static orientation maps camera axes as `x -> -world_x`, `y -> +world_y`, `z -> -world_z`; quaternion `xyzw = [0.0, 1.0, 0.0, 0.0]`.
-- `tray_camera_volume` is expressed in `tray_camera_color_optical_frame`, centered at camera-frame `z = 0.20 m`, and uses box dimensions `[0.05, 0.05, 0.40] m`.
-- Optional marker-specific static branch after first detection: `camera_frame -> aruco_marker_120_frame -> tool_holder_frame`.
+- `tray_camera_volume` is expressed in `tray_camera_color_optical_frame`, starts at camera-frame `z = 0.10 m`, is centered at `z = 0.40 m`, and uses box dimensions `[0.05, 0.05, 0.60] m`.
+- Marker 120 is no longer part of the active TF configuration.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
-- Fixed ArUco marker 120 is not required for world-model grasp coordinates in the current pick-test path.
+- World-model grasp coordinates use the fixed tray-camera TF, not marker 120.
 - `tool_pick_test_node` uses world-model candidate `x/y`, overrides grasp `z = 0.05 m`, approaches/lifts at `z = 0.10 m`, and aligns a top-down TCP orientation from the candidate handle axis.
 - `grasp_approach_pose_service.py` resolves any requested target frame from the TF tree into a top-down grasp pose in `world`; the runtime default target is `tool_holder_frame`, with grasp orientation mapped as `TCP z = -world z` and `TCP x` following the world-horizontal projection of `-frame z`.
 - RViz tracking configuration uses `world` as fixed frame.

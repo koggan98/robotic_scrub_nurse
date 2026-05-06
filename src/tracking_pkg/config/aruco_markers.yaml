@@ -22,13 +22,13 @@ dictionary: "original"
 
 markers:
 
-  # ─── Marker 100: Scene camera localization (mounted on MiR side) ──────
+  # ─── Marker 105: Scene camera localization (mounted on MiR side) ──────
   - name: "mir_side_marker"
-    id: 100
+    id: 105
     size: 0.115
     static_pose:
       parent_frame: "world"
-      child_frame: "aruco_marker_100_frame"
+      child_frame: "aruco_marker_105_frame"
       # TODO: measure x in world frame
       # y = -0.44 in world (marker sits 44 cm along -y_world; = +y_base)
       # z = top_edge (-0.028) - size/2 (0.0575) = -0.0855  (center below base plane)
@@ -42,21 +42,6 @@ markers:
     detection:
       camera_namespace: "/scene_camera"
       camera_output_frame: "scene_camera_color_optical_frame"
-      publish_once: true
-
-  # ─── Marker 120: Tray camera localization (mounted on instrument tray) ──
-  - name: "tray_marker"
-    id: 120
-    size: 0.080
-    static_pose:
-      parent_frame: "world"
-      child_frame: "aruco_marker_120_frame"
-      # TODO: measure actual position + orientation in world frame after tray is built
-      translation: [-0.35, 0.12, 0.0]
-      rotation_rpy: [0.0, 0.0, 3.141592653589793]
-    detection:
-      camera_namespace: "/tray_camera"
-      camera_output_frame: "tray_camera_color_optical_frame"
       publish_once: true
 
 # ─── Additional static frames (no detection, just fixed TFs) ─────────

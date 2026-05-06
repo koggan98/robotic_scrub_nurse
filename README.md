@@ -256,18 +256,36 @@ Run the isolated world-model test with:
 ros2 launch tracking_pkg test_world_model_launch.py
 ```
 
+The scene camera is started through the official `realsense2_camera`
+`rs_launch.py` launch file and defaults to serial `239222300719`. It publishes
+RGB, aligned depth, and camera info under `/scene_camera/...`. Override it with
+`SCENE_CAM_SERIAL` if the camera changes:
+
+```bash
+SCENE_CAM_SERIAL=239222300719 ros2 launch tracking_pkg test_world_model_launch.py
+```
+
+The direct tray camera path defaults to serial `239222302690`, so the scene
+camera and tray camera stay pinned to different devices.
+
 Then trigger one on-demand tray capture and OBB inference:
 
 ```bash
 ros2 service call /build_world_model tracking_pkg/srv/BuildWorldModel
 ```
 
-The launch starts the static tray-camera TF directly, so fixed ArUco marker 120
-is not required for `point_world_m` grasp coordinates in this pick-test path.
+The launch starts the static tray-camera TF directly, so marker 120 is no
+longer part of this pick-test path.
+The ArUco manager publishes the configured marker-105 frame as
+`world -> aruco_marker_105_frame` in general launches. The pick-test launches
+publish that static frame directly so it is always visible in RViz; once marker
+ID 105 is visible in the scene camera image, the ArUco manager locks
+`aruco_marker_105_frame ->
+scene_camera_color_optical_frame` for hand tracking in `world`.
 It also publishes the MiR base collision object and a
 `tray_camera_volume` collision object on `/collision_object`. The camera volume
-is a 50 x 50 mm box that extends 400 mm down the tray camera optical axis from
-`tray_camera_color_optical_frame`.
+is a 50 x 50 mm box that starts 100 mm down the tray camera optical axis from
+`tray_camera_color_optical_frame` and then extends another 600 mm.
 You can verify the transform with:
 
 ```bash
@@ -286,9 +304,10 @@ ros2 launch tracking_pkg tool_pick_test_launch.py ur_type:=ur3e
 ```
 
 This starts MoveIt, RViz, the fixed tray-camera TF, `world_model_builder.py`,
-the gripper bridge, the MiR collision object, and the `tray_camera_volume`
-collision object. It intentionally does not start `loop_mover`, so there is no
-competing `/tool_selection` runtime.
+the official scene-camera RealSense node, marker-105 localization, hand
+tracking, the gripper bridge, the MiR collision object, and the
+`tray_camera_volume` collision object. It intentionally does not start
+`loop_mover`, so there is no competing `/tool_selection` runtime.
 
 In a second terminal with stdin attached, run:
 
@@ -334,13 +353,13 @@ This launch starts `ur_moveit_config` without its default RViz and opens RViz wi
 - `/gesture_pose_marker`
 - `/hand_pose_marker`
 - `/hand_pose`
-- TF display (including frames such as `world`, `base`, `tray_camera_color_optical_frame`, `aruco_marker_120_frame`, and `tool_holder_frame`)
+- TF display (including frames such as `world`, `base`, `tray_camera_color_optical_frame`, `aruco_marker_105_frame`, `scene_camera_color_optical_frame`, and `tool_holder_frame`)
 
 The active MoveIt tracking path now uses `world` as the canonical tracking frame. RViz is configured with `world` as its fixed frame, `/hand_pose` positions are interpreted in `world`, and the expected TF chain is `world -> base -> aruco_board_frame -> camera_frame`.
 
 `world -> base` and `base -> aruco_board_frame` are now started as their own static TFs in the MoveIt launch path, so the upstream frames no longer depend on `frame_publisher.py` starting cleanly. `frame_publisher.py` is now responsible only for `aruco_board_frame -> camera_frame` and keeps retrying until it sees the first valid ArUco board pose. If the board is not visible yet, you should now see repeated warning logs instead of a silent partial initialization.
 
-The instrument-camera/world-model path now starts `world -> tray_camera_color_optical_frame` as a fixed static TF. ArUco marker 120 can still be used for validation experiments, but it is not required for current world-frame grasp coordinates from `/build_world_model`.
+The instrument-camera/world-model path now starts `world -> tray_camera_color_optical_frame` as a fixed static TF. ArUco marker 120 has been removed from the active configuration.
 
 The same launch now also starts `grasp_approach_pose_service.py`, which exposes `/get_grasp_approach_pose` for on-demand conversion of a TF target frame such as `tool_holder_frame` into a top-down robot grasp pose in `world`.
 

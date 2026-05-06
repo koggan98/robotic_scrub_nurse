@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Tray Perception Node
+Instrument tray Perception Node
 ====================
 Subscribes to the tray camera (RGB + Depth), runs OBB inference on each frame,
 and publishes ToolDetectionArray with 3D-projected positions in world frame.
 
 Pipeline:
-  tray_camera/color_image → OBB model inference → pixel OBBs
-  tray_camera/depth_image → depth lookup per OBB center
-  TF (tray_camera_frame → world) → 3D projection
+  instrument_tray_camera/color_image → OBB model inference → pixel OBBs
+  instrument_tray_camera/depth_image → depth lookup per OBB center
+  TF (instrument_tray_camera_frame → world) → 3D projection
 
 Publishes:
   /tools_detected (tracking_pkg/msg/ToolDetectionArray)
@@ -30,9 +30,9 @@ import tf2_ros
 # from tracking_pkg.msg import ToolDetection, ToolDetectionArray, OrientedBoundingBox2D
 
 
-class TrayPerceptionNode(Node):
+class InstrumentTrayPerceptionNode(Node):
     def __init__(self):
-        super().__init__('tray_perception_node')
+        super().__init__('instrument_tray_perception_node')
 
         # Parameters
         self.declare_parameter('model_path', '')
@@ -53,9 +53,9 @@ class TrayPerceptionNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Subscribers - tray camera topics
-        self.create_subscription(Image, 'tray_camera/color_image', self._rgb_cb, 10)
-        self.create_subscription(Image, 'tray_camera/depth_image', self._depth_cb, 10)
-        self.create_subscription(CameraInfo, 'tray_camera/camera_info', self._cam_info_cb, 10)
+        self.create_subscription(Image, 'instrument_tray_camera/color_image', self._rgb_cb, 10)
+        self.create_subscription(Image, 'instrument_tray_camera/depth_image', self._depth_cb, 10)
+        self.create_subscription(CameraInfo, 'instrument_tray_camera/camera_info', self._cam_info_cb, 10)
 
         # Publisher
         # self.detection_pub = self.create_publisher(ToolDetectionArray, 'tools_detected', 10)
@@ -67,7 +67,7 @@ class TrayPerceptionNode(Node):
         # OBB model (loaded lazily)
         self.model = None
 
-        self.get_logger().info(f'TrayPerceptionNode initialized (model: {self.model_path})')
+        self.get_logger().info(f'InstrumentTrayPerceptionNode initialized (model: {self.model_path})')
 
     def _rgb_cb(self, msg):
         self.rgb_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -126,7 +126,7 @@ class TrayPerceptionNode(Node):
 
         # Transform camera → world via TF
         try:
-            tf = self.tf_buffer.lookup_transform('world', 'tray_camera_frame', rclpy.time.Time())
+            tf = self.tf_buffer.lookup_transform('world', 'instrument_tray_camera_frame', rclpy.time.Time())
             # TODO: Apply transform to [x_cam, y_cam, z_cam]
             return None
         except Exception:
@@ -135,7 +135,7 @@ class TrayPerceptionNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrayPerceptionNode()
+    node = InstrumentTrayPerceptionNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
