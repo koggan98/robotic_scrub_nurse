@@ -8,7 +8,7 @@ Cameras use the official realsense2_camera ROS2 package.
 Set SCENE_CAM_SERIAL / TRAY_CAM_SERIAL env vars or edit serial_no below.
 
 Startup order:
-  1. Static TFs (world→base)
+  1. Static TFs (world→base, world→tray_camera_color_optical_frame)
   2. Scene camera (realsense2_camera, side: hand tracking + marker)
   3. Tray camera  (realsense2_camera, top-down: instrument detection) [when available]
   4. ArUco marker manager (config-driven static + detection TFs)
@@ -38,8 +38,8 @@ def generate_launch_description():
 
     # ── Camera serial numbers ─────────────────────────────────
     # Set via environment variable or hardcode here.
-    scene_cam_serial = os.environ.get('SCENE_CAM_SERIAL', '')
-    tray_cam_serial = os.environ.get('TRAY_CAM_SERIAL', '')
+    scene_cam_serial = os.environ.get('SCENE_CAM_SERIAL', '239222300719')
+    tray_cam_serial = os.environ.get('TRAY_CAM_SERIAL', '239222302690')
 
     return LaunchDescription([
 
@@ -55,6 +55,17 @@ def generate_launch_description():
                 '--frame-id', 'world', '--child-frame-id', 'base',
             ]
         ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='world_to_tray_camera_tf',
+            output='screen',
+            arguments=[
+                '--x', '-0.075', '--y', '0.349', '--z', '0.4325',
+                '--qx', '0.0', '--qy', '1.0', '--qz', '0.0', '--qw', '0.0',
+                '--frame-id', 'world', '--child-frame-id', 'tray_camera_color_optical_frame',
+            ]
+        ),
 
         # ── Layer 1: Scene Camera (realsense2_camera) ─────────────
         # Publishes to /scene_camera/color/image_raw,
@@ -66,7 +77,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(rs_launch_file),
             launch_arguments={
                 'camera_name': 'scene_camera',
-                'camera_namespace': 'scene_camera',
+                'camera_namespace': '',
                 'serial_no': scene_cam_serial,
                 'enable_color': 'true',
                 'enable_depth': 'true',
@@ -82,27 +93,13 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # ── Layer 1b: Tray Camera (second RealSense) ─────────────
-        # TODO: Enable when second camera is physically set up.
-        #       Set TRAY_CAM_SERIAL env var to the camera's serial.
-        # IncludeLaunchDescription(
-        #     PythonLaunchDescriptionSource(rs_launch_file),
-        #     launch_arguments={
-        #         'camera_name': 'tray_camera',
-        #         'camera_namespace': 'tray_camera',
-        #         'serial_no': tray_cam_serial,
-        #         'enable_color': 'true',
-        #         'enable_depth': 'true',
-        #         'rgb_camera.color_profile': '640,480,30',
-        #         'depth_module.depth_profile': '640,480,30',
-        #         'align_depth.enable': 'true',
-        #         'spatial_filter.enable': 'true',
-        #         'temporal_filter.enable': 'true',
-        #         'hole_filling_filter.enable': 'true',
-        #         'enable_sync': 'true',
-        #         'publish_tf': 'false',
-        #     }.items(),
-        # ),
+        # ── Layer 1b: Tray Camera (no realsense2_camera) ──────────
+        # The tray camera is opened directly by world_model_builder in
+        # "direct" mode: pyrealsense2 pipeline is held open but no frames
+        # are streamed/published until /build_world_model is called.
+        # The fixed world -> tray_camera_color_optical_frame TF above is the
+        # current pick-test baseline until the camera hardware is fixed.
+        # This keeps idle CPU low.
 
         # ── Layer 2: ArUco Marker Manager ─────────────────────────
         # Loads config/aruco_markers.yaml and handles:
@@ -162,20 +159,40 @@ def generate_launch_description():
         # ),
 
         # ── Layer 4: Reasoning ────────────────────────────────────
+        # On-demand world model builder: triggered via /build_world_model service.
+        # Runs YOLOv8-OBB inference, pairs handle/body OBBs, computes grasp
+        # points + orientations, and returns a JSON snapshot for the LLM.
         TimerAction(
             period=3.0,
             actions=[
                 Node(
                     package='tracking_pkg',
-                    executable='grasp_reasoning_node.py',
-                    name='grasp_reasoning',
+                    executable='world_model_builder.py',
+                    name='world_model_builder',
                     output='screen',
-                ),
-                Node(
-                    package='tracking_pkg',
-                    executable='world_model_node.py',
-                    name='world_model',
-                    output='screen',
+                    parameters=[{
+                        'model_path': os.environ.get(
+                            'OBB_MODEL_PATH',
+                            '/home/mir/robotic_scrub_nurse_ws/ros_unrelated_scripts/first_obb_test.pt',
+                        ),
+                        # Direct mode: builder owns the tray-camera pyrealsense2
+                        # pipeline. No continuous ROS publishing - frames pulled
+                        # only on /build_world_model service call.
+                        'camera_mode': 'direct',
+                        'realsense_serial': tray_cam_serial,
+                        'color_width': 1280,
+                        'color_height': 720,
+                        'color_fps': 30,
+                        'warmup_frames': 5,
+                        'tray_camera_frame': 'tray_camera_color_optical_frame',
+                        'world_frame': 'world',
+                        'conf_threshold': 0.35,
+                        'imgsz': 1024,
+                        'device': 'cpu',
+                        'handle_class_name': 'handle',
+                        'grasp_offset_fraction': 1.0 / 16.0,
+                        'max_image_age_sec': 1.0,
+                    }],
                 ),
             ]
         ),

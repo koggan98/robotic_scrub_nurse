@@ -171,6 +171,34 @@ python3 ros_unrelated_scripts/aruco_marker_frame_test.py
 
 The script uses OpenCV's standard ArUco detection flow on the RealSense image, overlays each detected original marker ID, and draws the marker coordinate axes using the configured physical marker size.
 
+## Standalone RealSense Manual Capture
+
+To capture single RealSense RGB frames directly from an SSH terminal without ROS, run:
+
+```bash
+python3 ros_unrelated_scripts/realsense_manual_capture.py
+```
+
+The script reads the RealSense color stream directly through `pyrealsense2` and is built for a lightweight dataset collection workflow for later annotation in tools such as Roboflow. By default it stores lossless PNG images outside the repository in:
+
+```bash
+~/datasets/tool_detector/<YYYY-MM-DD>/<session_timestamp>
+```
+
+Controls:
+- `1` saves the current RGB frame
+- `h` prints the help text again
+- `q` quits the script
+
+Optional examples:
+
+```bash
+python3 ros_unrelated_scripts/realsense_manual_capture.py --preview
+python3 ros_unrelated_scripts/realsense_manual_capture.py --output-dir ~/datasets/tool_detector/custom_session
+```
+
+`--preview` opens a local OpenCV window when you have a GUI available, but the default mode stays terminal-only so it works well over SSH. The saved PNG files can be uploaded to Roboflow directly, and for larger dataset sessions it is usually more practical to move them to a Mac via SSD, `scp`, or Finder-based file sharing than to commit them into Git.
+
 ## Tool Frame Quaternion Helper
 
 To convert tracked frame axes into a gripper quaternion for a top-down approach, run:
@@ -213,6 +241,37 @@ ros2 run tracking_pkg frame_capture_node.py --ros-args -p topic_name:=/color_ima
 
 ---
 
+## Instrument Camera World-Model Test
+
+For the current pick-test baseline, the instrument camera is fixed in `world`
+with a static `world -> tray_camera_color_optical_frame` TF:
+
+- translation: `[-0.075, 0.349, 0.4325] m`
+- quaternion `xyzw`: `[0.0, 1.0, 0.0, 0.0]`
+- axis mapping: camera `x -> -world_x`, camera `y -> +world_y`, camera `z -> -world_z`
+
+Run the isolated world-model test with:
+
+```bash
+ros2 launch tracking_pkg test_world_model_launch.py
+```
+
+Then trigger one on-demand tray capture and OBB inference:
+
+```bash
+ros2 service call /build_world_model tracking_pkg/srv/BuildWorldModel
+```
+
+The launch starts the static tray-camera TF directly, so fixed ArUco marker 120
+is not required for `point_world_m` grasp coordinates in this pick-test path.
+You can verify the transform with:
+
+```bash
+ros2 run tf2_ros tf2_echo world tray_camera_color_optical_frame
+```
+
+---
+
 ## Combined MoveIt + Tracking Launch
 
 If you want Adam-style startup (MoveIt RViz + tracking topics in one command), use:
@@ -226,13 +285,13 @@ This launch starts `ur_moveit_config` without its default RViz and opens RViz wi
 - `/gesture_pose_marker`
 - `/hand_pose_marker`
 - `/hand_pose`
-- TF display (including frames such as `world`, `base`, `aruco_board_frame`, `camera_frame`, `aruco_marker_120_frame`, and `tool_holder_frame`)
+- TF display (including frames such as `world`, `base`, `tray_camera_color_optical_frame`, `aruco_marker_120_frame`, and `tool_holder_frame`)
 
 The active MoveIt tracking path now uses `world` as the canonical tracking frame. RViz is configured with `world` as its fixed frame, `/hand_pose` positions are interpreted in `world`, and the expected TF chain is `world -> base -> aruco_board_frame -> camera_frame`.
 
 `world -> base` and `base -> aruco_board_frame` are now started as their own static TFs in the MoveIt launch path, so the upstream frames no longer depend on `frame_publisher.py` starting cleanly. `frame_publisher.py` is now responsible only for `aruco_board_frame -> camera_frame` and keeps retrying until it sees the first valid ArUco board pose. If the board is not visible yet, you should now see repeated warning logs instead of a silent partial initialization.
 
-`loop_launch.py` also starts `aruco_marker_120_publisher.py`, which watches `/color_image` and `/camera_info` for an original ArUco marker with ID `120` and physical size `45 mm`. Once the marker is detected for the first time, it publishes static TFs `camera_frame -> aruco_marker_120_frame` and `aruco_marker_120_frame -> tool_holder_frame`, where `tool_holder_frame` uses a fixed offset of `x=0 mm`, `y=40 mm`, `z=-32 mm` with no additional rotation. Both frames remain fixed even if the marker later leaves the image.
+The instrument-camera/world-model path now starts `world -> tray_camera_color_optical_frame` as a fixed static TF. ArUco marker 120 can still be used for validation experiments, but it is not required for current world-frame grasp coordinates from `/build_world_model`.
 
 The same launch now also starts `grasp_approach_pose_service.py`, which exposes `/get_grasp_approach_pose` for on-demand conversion of a TF target frame such as `tool_holder_frame` into a top-down robot grasp pose in `world`.
 

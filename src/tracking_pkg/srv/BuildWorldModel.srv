@@ -1,0 +1,12 @@
+# Trigger building the world model from the current tray camera frame.
+# The node runs OBB inference, pairs handles with bodies, computes grasp
+# points, projects to world frame, and returns everything as both a
+# structured JSON string (for the LLM) and ROS messages (for ROS subscribers).
+#
+# Request: empty - the configured tray camera namespace is used.
+---
+bool success
+string message
+string world_model_json
+tracking_pkg/ToolDetectionArray tools_detected
+tracking_pkg/GraspCandidateArray grasp_candidates

@@ -17,46 +17,18 @@ find_package(moveit_ros_planning_interface REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
-# ── Legacy node installs (existing launch files still reference these) ──
-install(
-  PROGRAMS
-    src/hand_tracker/hand_tracker.py
-    src/publisher/camera_publisher.py
-    src/publisher/gesture_pose_publisher.py
-    src/publisher/annotated_image_viewer.py
-    src/publisher/frame_capture_node.py
-    src/publisher/mir_publisher.py
-    src/publisher/joint_states_publisher.py
-    src/publisher/tool_selection.py
-    src/publisher/handover_sound_publisher.py
-    src/publisher/scrub_nurse_logger.py
-    src/moveit_mover/gripper_mover.py
-    src/moveit_mover/gripper_opener_with_zeroer.py
-    src/moveit_mover/grasp_approach_pose_service.py
-    src/moveit_mover/reclaim_controller.py
-    src/moveit_mover/tool_frame_quaternion_helper.py
-    src/socket_mover/socket_mover.py
-    src/socket_mover/socket_gripper_controller.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-install(
-  FILES
-    src/moveit_mover/grasp_orientation_utils.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-# ── New architecture node installs ──
+# ── Python node installs ──
 install(
   PROGRAMS
     # Perception
-    src/perception/tray_perception_node.py
     src/perception/camera_publisher.py
     src/perception/aruco_marker_manager.py
     src/perception/hand_tracker.py
+    src/perception/instrument_tray_perception_node.py
     # Reasoning
     src/reasoning/grasp_reasoning_node.py
     src/reasoning/world_model_node.py
+    src/reasoning/world_model_builder.py
     # LLM
     src/llm/llm_reasoning_node.py
     # Interfaces
@@ -73,7 +45,6 @@ install(
 
 install(
   FILES
-    src/perception/mediapipe_and_gesture.py
     src/execution/grasp_orientation_utils.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -106,25 +77,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetGraspApproachPose.srv"
   "srv/GetWorldState.srv"
   "srv/GetToolCandidates.srv"
+  "srv/BuildWorldModel.srv"
   DEPENDENCIES geometry_msgs std_msgs
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 
-# Ziele definieren
-add_executable(moveit_mover src/moveit_mover/moveit_mover.cpp)
-add_executable(loop_mover src/moveit_mover/loop_mover.cpp)
-
-# Abhängigkeiten mit dem Ziel verknüpfen
-ament_target_dependencies(moveit_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
+# C++ executable: legacy MoveIt-based executor (still referenced by llm_launch.py
+# until the new Python execution layer replaces it).
+add_executable(loop_mover src/execution/loop_mover.cpp)
 ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
 target_link_libraries(loop_mover "${cpp_typesupport_target}")
-
-# Installation des ausführbaren Ziels
-install(TARGETS moveit_mover
-  DESTINATION lib/${PROJECT_NAME}
-)
 
 install(TARGETS loop_mover
   DESTINATION lib/${PROJECT_NAME}
