@@ -264,10 +264,59 @@ ros2 service call /build_world_model tracking_pkg/srv/BuildWorldModel
 
 The launch starts the static tray-camera TF directly, so fixed ArUco marker 120
 is not required for `point_world_m` grasp coordinates in this pick-test path.
+It also publishes the MiR base collision object and a
+`tray_camera_volume` collision object on `/collision_object`. The camera volume
+is a 50 x 50 mm box that extends 400 mm down the tray camera optical axis from
+`tray_camera_color_optical_frame`.
 You can verify the transform with:
 
 ```bash
 ros2 run tf2_ros tf2_echo world tray_camera_color_optical_frame
+```
+
+---
+
+## Lightweight MoveIt Pick Test
+
+To test whether the robot can pick one detected instrument without starting the
+full handover loop, launch the pick-test infrastructure:
+
+```bash
+ros2 launch tracking_pkg tool_pick_test_launch.py ur_type:=ur3e
+```
+
+This starts MoveIt, RViz, the fixed tray-camera TF, `world_model_builder.py`,
+the gripper bridge, the MiR collision object, and the `tray_camera_volume`
+collision object. It intentionally does not start `loop_mover`, so there is no
+competing `/tool_selection` runtime.
+
+In a second terminal with stdin attached, run:
+
+```bash
+ros2 run tracking_pkg tool_pick_test_node
+```
+
+The node calls `/build_world_model`, prints detected grasp candidates, asks for
+a terminal index, then executes one conservative sequence:
+
+1. move 5 cm above the selected tool,
+2. open the gripper,
+3. descend to fixed robot/world `z = 0.05 m`,
+4. close the gripper,
+5. lift back 5 cm.
+
+The node commands fixed robot/world tool height `z=0.05 m`, and the pick-test
+launch projects detected grasp pixels onto the same fixed world-z plane. The
+default gripper yaw is rotated by `pi/2` relative to the detected tool axis.
+Useful parameter overrides:
+
+```bash
+ros2 run tracking_pkg tool_pick_test_node --ros-args \
+  -p tool_z_m:=0.05 \
+  -p approach_height_m:=0.05 \
+  -p tool_yaw_offset_rad:=1.57079632679 \
+  -p velocity_scale:=0.2 \
+  -p acceleration_scale:=0.2
 ```
 
 ---

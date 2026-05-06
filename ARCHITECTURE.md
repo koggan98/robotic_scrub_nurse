@@ -41,6 +41,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Motion/handover core: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`.
 - Tool command flow uses `/tool_selection` and MoveIt planning.
 - Instrument-camera/world-model pick-test path: `src/tracking_pkg/launch/llm_launch.py` starts a fixed `world -> tray_camera_color_optical_frame` TF and the on-demand `/build_world_model` service.
+- Lightweight robot pickup test: `src/tracking_pkg/launch/tool_pick_test_launch.py` starts MoveIt, the fixed tray-camera TF, the world-model builder, gripper bridge, MiR collision object, and tray-camera volume collision object without `loop_mover`; `tool_pick_test_node` is run separately for terminal-based tool selection and one pick attempt.
 
 ### Alternative Path (Socket + RTDE, MoveIt-free)
 - Launch entry: `src/tracking_pkg/launch/web_socket_launch.py`.
@@ -55,19 +56,20 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 1. Launch starts independent static `world -> base` and `world -> tray_camera_color_optical_frame` transform publishers.
 2. Scene camera publishes RGB/depth/camera parameters for hand tracking.
 3. The instrument tray camera is opened directly by `world_model_builder.py` in direct RealSense mode.
-4. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
-5. ArUco marker tracking remains optional for validation/provisional frames, but fixed ArUco marker 120 is not required for the current instrument-camera pick-test path.
-6. Grasp approach pose service can resolve a tracked TF frame such as `tool_holder_frame` into a `PoseStamped` in `world` on request.
-7. Hand tracker detects gesture and publishes `hand_pose` in `world`.
-8. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
-9. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
-10. Loop mover attempts MoveIt handover planning:
+4. Pick-test launches publish the MiR base and a 50 x 50 x 400 mm tray-camera volume as MoveIt collision objects on `/collision_object`.
+5. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
+6. ArUco marker tracking remains optional for validation/provisional frames, but fixed ArUco marker 120 is not required for the current instrument-camera pick-test path.
+7. Grasp approach pose service can resolve a tracked TF frame such as `tool_holder_frame` into a `PoseStamped` in `world` on request.
+8. Hand tracker detects gesture and publishes `hand_pose` in `world`.
+9. Loop mover handles tool pickup, then waits for `hand_pose` as gesture trigger.
+10. In valid waiting state, loop mover publishes `/handover_event = gesture_detected`.
+11. Loop mover attempts MoveIt handover planning:
    - on plan failure: publishes `/handover_event = reachability:unreachable_plan_failed`,
    - on plan success: executes handover without additional audio event.
-11. In the MoveIt path, `/tool_selection = "8"` triggers a holder reclaim: query `tool_holder_frame` through the grasp pose service, approach from above, close without force-trigger, wait briefly at the lower holder pose for gripper settling, then finish through the same dropoff/home reclaim tail as the normal reclaim.
-12. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
-13. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
-14. Gripper feedback resets the system for the next cycle.
+12. In the MoveIt path, `/tool_selection = "8"` triggers a holder reclaim: query `tool_holder_frame` through the grasp pose service, approach from above, close without force-trigger, wait briefly at the lower holder pose for gripper settling, then finish through the same dropoff/home reclaim tail as the normal reclaim.
+13. After reaching the handover pose, loop mover holds briefly before enabling force-guided release sensing.
+14. Sound publisher node subscribes to `/handover_event`, queues audio events sequentially, and plays them through the first available system backend (`paplay`, `pw-play`, then `aplay`).
+15. Gripper feedback resets the system for the next cycle.
 
 ## Current Constraints
 - MoveIt path remains the primary thesis runtime path.
@@ -89,7 +91,11 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - `/build_world_model` (`tracking_pkg/srv/BuildWorldModel`)
 - `/world_model/json` (`std_msgs/msg/String`)
 - `/world_model/grasp_candidates` (`tracking_pkg/msg/GraspCandidateArray`)
+- `/gripper_mover` (`std_msgs/msg/Bool`, `true=open`, `false=close`)
 - `/tool_selection = "8"` holder reclaim via `tool_holder_frame`
+- `/collision_object` (`moveit_msgs/msg/CollisionObject`)
+  - `mir`
+  - `tray_camera_volume`
 
 ## Tracking Frame Contract
 - Active MoveIt tracking path canonical frame: `world`.
@@ -97,9 +103,11 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Current instrument-camera pick-test TF: `world -> tray_camera_color_optical_frame`.
 - Instrument camera static translation in `world`: `[-0.075, 0.349, 0.4325] m`.
 - Instrument camera static orientation maps camera axes as `x -> -world_x`, `y -> +world_y`, `z -> -world_z`; quaternion `xyzw = [0.0, 1.0, 0.0, 0.0]`.
+- `tray_camera_volume` is expressed in `tray_camera_color_optical_frame`, centered at camera-frame `z = 0.20 m`, and uses box dimensions `[0.05, 0.05, 0.40] m`.
 - Optional marker-specific static branch after first detection: `camera_frame -> aruco_marker_120_frame -> tool_holder_frame`.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
 - Fixed ArUco marker 120 is not required for world-model grasp coordinates in the current pick-test path.
+- `tool_pick_test_node` uses world-model candidate `x/y`, overrides grasp `z = 0.05 m`, approaches/lifts at `z = 0.10 m`, and aligns a top-down TCP orientation from the candidate handle axis.
 - `grasp_approach_pose_service.py` resolves any requested target frame from the TF tree into a top-down grasp pose in `world`; the runtime default target is `tool_holder_frame`, with grasp orientation mapped as `TCP z = -world z` and `TCP x` following the world-horizontal projection of `-frame z`.
 - RViz tracking configuration uses `world` as fixed frame.
 - The socket path still injects `world -> base` for its own runtime compatibility; that is not the primary MoveIt tracking contract.

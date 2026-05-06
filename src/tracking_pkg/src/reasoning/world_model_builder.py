@@ -30,6 +30,12 @@ Parameters:
   grasp_offset_fraction (float): grasp point offset along long axis from handle
                                  center toward body center, in fractions of image
                                  height. Default 1/16 = 0.0625.
+  fixed_tool_plane_z_m (float):  optional world-frame z plane for grasp pixel
+                                 projection. If finite, grasp/world directions
+                                 use ray-plane projection instead of depth.
+  depth_search_radius_px (int):  radius for median depth fallback around a
+                                 target pixel. Default 5.
+  depth_min_m / depth_max_m:     valid depth range used by the median fallback.
   max_image_age_sec (float):   reject service if image older than this, default 1.0
 
 Grasp geometry:
@@ -173,6 +179,10 @@ class WorldModelBuilder(Node):
         self.declare_parameter('device', 'cpu')
         self.declare_parameter('handle_class_name', 'handle')
         self.declare_parameter('grasp_offset_fraction', 1.0 / 16.0)
+        self.declare_parameter('fixed_tool_plane_z_m', float('nan'))
+        self.declare_parameter('depth_search_radius_px', 5)
+        self.declare_parameter('depth_min_m', 0.05)
+        self.declare_parameter('depth_max_m', 2.0)
         self.declare_parameter('max_image_age_sec', 1.0)
 
         self.model_path = self.get_parameter('model_path').value
@@ -198,6 +208,10 @@ class WorldModelBuilder(Node):
         self.device = self.get_parameter('device').value
         self.handle_class_name = self.get_parameter('handle_class_name').value
         self.grasp_offset_fraction = float(self.get_parameter('grasp_offset_fraction').value)
+        self.fixed_tool_plane_z_m = float(self.get_parameter('fixed_tool_plane_z_m').value)
+        self.depth_search_radius_px = int(self.get_parameter('depth_search_radius_px').value)
+        self.depth_min_m = float(self.get_parameter('depth_min_m').value)
+        self.depth_max_m = float(self.get_parameter('depth_max_m').value)
         self.max_image_age_sec = float(self.get_parameter('max_image_age_sec').value)
 
         # ── State ──────────────────────────────────────────────
@@ -561,16 +575,36 @@ class WorldModelBuilder(Node):
             functional_end_world = None
             grasp_rot_z = None
 
-            if grasp_camera_xyz is not None and tf_world_from_cam is not None:
-                grasp_world_xyz = self._transform(tf_world_from_cam, grasp_camera_xyz)
+            use_fixed_plane = math.isfinite(self.fixed_tool_plane_z_m)
+            if tf_world_from_cam is not None:
+                if use_fixed_plane:
+                    grasp_world_xyz = self._pixel_to_world_on_plane(
+                        grasp_px[0], grasp_px[1], cam_matrix,
+                        tf_world_from_cam, self.fixed_tool_plane_z_m,
+                    )
+                elif grasp_camera_xyz is not None:
+                    grasp_world_xyz = self._transform(tf_world_from_cam, grasp_camera_xyz)
+
+            if grasp_world_xyz is not None and tf_world_from_cam is not None:
                 # Sample two pixels along the long axis to derive its world direction
                 p1 = body.center
                 p2 = body.center + 0.25 * long_length * axis_unit
-                p1_cam = self._pixel_to_camera(p1[0], p1[1], depth, cam_matrix)
-                p2_cam = self._pixel_to_camera(p2[0], p2[1], depth, cam_matrix)
-                if p1_cam is not None and p2_cam is not None:
-                    p1_w = self._transform(tf_world_from_cam, p1_cam)
-                    p2_w = self._transform(tf_world_from_cam, p2_cam)
+                if use_fixed_plane:
+                    p1_w = self._pixel_to_world_on_plane(
+                        p1[0], p1[1], cam_matrix,
+                        tf_world_from_cam, self.fixed_tool_plane_z_m,
+                    )
+                    p2_w = self._pixel_to_world_on_plane(
+                        p2[0], p2[1], cam_matrix,
+                        tf_world_from_cam, self.fixed_tool_plane_z_m,
+                    )
+                else:
+                    p1_cam = self._pixel_to_camera(p1[0], p1[1], depth, cam_matrix)
+                    p2_cam = self._pixel_to_camera(p2[0], p2[1], depth, cam_matrix)
+                    p1_w = self._transform(tf_world_from_cam, p1_cam) if p1_cam is not None else None
+                    p2_w = self._transform(tf_world_from_cam, p2_cam) if p2_cam is not None else None
+
+                if p1_w is not None and p2_w is not None:
                     direction = p2_w - p1_w
                     direction[2] = 0.0
                     n = np.linalg.norm(direction)
@@ -609,6 +643,10 @@ class WorldModelBuilder(Node):
                                        if grasp_camera_xyz is not None else None),
                     'point_world_m': (grasp_world_xyz.tolist()
                                       if grasp_world_xyz is not None else None),
+                    'projection_mode': (
+                        f'fixed_world_z={self.fixed_tool_plane_z_m:.4f}'
+                        if use_fixed_plane else 'realsense_depth'
+                    ),
                     'rotation_world_z_rad': grasp_rot_z,
                     'needs_180_flip_for_handover': needs_flip,
                     'approach_direction_world': [0.0, 0.0, -1.0],  # top-down default
@@ -640,17 +678,23 @@ class WorldModelBuilder(Node):
                     handle_3d=self._pixel_to_world_safe(handle.center, depth, cam_matrix, tf_world_from_cam),
                 )
             )
-            grasps_msg.candidates.append(
-                self._build_grasp_candidate_msg(
-                    body, handle, tool_id,
-                    grasp_world=grasp_world_xyz,
-                    grasp_rot_z=grasp_rot_z,
-                    long_axis_world=long_axis_world,
-                    handle_dir_world=handle_dir_world,
-                    functional_end_world=functional_end_world,
-                    kb_entry=kb_entry,
+            if grasp_world_xyz is not None:
+                grasps_msg.candidates.append(
+                    self._build_grasp_candidate_msg(
+                        body, handle, tool_id,
+                        grasp_world=grasp_world_xyz,
+                        grasp_rot_z=grasp_rot_z,
+                        long_axis_world=long_axis_world,
+                        handle_dir_world=handle_dir_world,
+                        functional_end_world=functional_end_world,
+                        kb_entry=kb_entry,
+                    )
                 )
-            )
+            else:
+                errors.append(
+                    f'{tool_id} ({body.cls_name}) has no valid world grasp point; '
+                    'skipping ROS GraspCandidate.'
+                )
 
             # ── Annotate image ──
             self._annotate(annotated_img, body, handle, grasp_px, long_angle, sign, tool_id)
@@ -733,8 +777,8 @@ class WorldModelBuilder(Node):
         ui, vi = int(round(u)), int(round(v))
         if not (0 <= vi < depth_img.shape[0] and 0 <= ui < depth_img.shape[1]):
             return None
-        z = float(depth_img[vi, ui]) / 1000.0  # mm -> m
-        if z <= 0.0:
+        z = self._median_depth_m(depth_img, ui, vi)
+        if z is None:
             return None
         fx = cam_matrix[0, 0]
         fy = cam_matrix[1, 1]
@@ -743,6 +787,25 @@ class WorldModelBuilder(Node):
         x = (u - cx) / fx * z
         y = (v - cy) / fy * z
         return np.array([x, y, z], dtype=float)
+
+    def _median_depth_m(self, depth_img, ui, vi):
+        radius = max(0, int(self.depth_search_radius_px))
+        h, w = depth_img.shape[:2]
+        u0 = max(0, ui - radius)
+        u1 = min(w, ui + radius + 1)
+        v0 = max(0, vi - radius)
+        v1 = min(h, vi + radius + 1)
+
+        window = np.asarray(depth_img[v0:v1, u0:u1], dtype=np.float64) / 1000.0
+        valid = window[
+            np.isfinite(window)
+            & (window > 0.0)
+            & (window >= self.depth_min_m)
+            & (window <= self.depth_max_m)
+        ]
+        if valid.size == 0:
+            return None
+        return float(np.median(valid))
 
     def _lookup_tf_world_from_cam(self):
         try:
@@ -762,10 +825,44 @@ class WorldModelBuilder(Node):
     def _pixel_to_world_safe(self, pt_px, depth_img, cam_matrix, tf_world_from_cam):
         if tf_world_from_cam is None:
             return None
+        if math.isfinite(self.fixed_tool_plane_z_m):
+            return self._pixel_to_world_on_plane(
+                pt_px[0], pt_px[1], cam_matrix,
+                tf_world_from_cam, self.fixed_tool_plane_z_m,
+            )
         cam_pt = self._pixel_to_camera(pt_px[0], pt_px[1], depth_img, cam_matrix)
         if cam_pt is None:
             return None
         return self._transform(tf_world_from_cam, cam_pt)
+
+    def _pixel_to_world_on_plane(self, u, v, cam_matrix, tf_world_from_cam, plane_z_world):
+        if cam_matrix is None or tf_world_from_cam is None:
+            return None
+
+        fx = cam_matrix[0, 0]
+        fy = cam_matrix[1, 1]
+        cx = cam_matrix[0, 2]
+        cy = cam_matrix[1, 2]
+        if abs(fx) < 1e-9 or abs(fy) < 1e-9:
+            return None
+
+        ray_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+        ray_cam_norm = np.linalg.norm(ray_cam)
+        if ray_cam_norm < 1e-9:
+            return None
+        ray_cam = ray_cam / ray_cam_norm
+
+        origin_world = tf_world_from_cam[:3, 3]
+        ray_world = tf_world_from_cam[:3, :3] @ ray_cam
+        ray_world_norm = np.linalg.norm(ray_world)
+        if ray_world_norm < 1e-9 or abs(ray_world[2]) < 1e-9:
+            return None
+        ray_world = ray_world / ray_world_norm
+
+        t = (plane_z_world - origin_world[2]) / ray_world[2]
+        if t <= 0.0:
+            return None
+        return origin_world + t * ray_world
 
     def _lookup_tool_kb(self, tool_class):
         tools = self.knowledge_base.get('tools', {})

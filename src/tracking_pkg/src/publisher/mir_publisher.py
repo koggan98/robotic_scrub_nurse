@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import Mesh, MeshTriangle
 from geometry_msgs.msg import Pose, Point, Quaternion
@@ -15,7 +16,12 @@ from ament_index_python.packages import get_package_share_directory
 class AddSTLObject(Node):
     def __init__(self):
         super().__init__('add_stl_object')
-        self.publisher = self.create_publisher(CollisionObject, '/collision_object', 10)
+        qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.publisher = self.create_publisher(CollisionObject, '/collision_object', qos)
 
         pkg_share = get_package_share_directory('tracking_pkg')
         stl_file_path = os.path.join(pkg_share, 'collisionObjects', 'stls', 'base_link.STL')
@@ -43,8 +49,14 @@ class AddSTLObject(Node):
         collision_object.mesh_poses.append(mir_pose)
         collision_object.operation = CollisionObject.ADD
 
-        self.publisher.publish(collision_object)
-        self.get_logger().info("Published STL object")
+        self.collision_object = collision_object
+        self.timer = self.create_timer(2.0, self.publish_collision_object)
+        self.publish_collision_object()
+        self.get_logger().info("Publishing MiR STL collision object on /collision_object")
+
+    def publish_collision_object(self):
+        self.collision_object.header.stamp = self.get_clock().now().to_msg()
+        self.publisher.publish(self.collision_object)
 
     def load_stl_as_ros_mesh(self, stl_path):
         """Load and convert STL to ROS Mesh with vertex transformation"""

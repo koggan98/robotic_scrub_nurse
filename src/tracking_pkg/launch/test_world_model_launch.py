@@ -11,6 +11,8 @@ This keeps idle CPU low - good for the NUC.
 No MoveIt, no scene camera, no ArUco manager, no execution. A static
 world -> tray_camera_color_optical_frame TF is started so the service can
 return world-frame grasp coordinates during instrument-camera pick tests.
+The MiR base and tray-camera volume are also published as collision objects
+for quick Planning Scene / RViz checks when a consumer is available.
 
 Usage:
   # If only one RealSense is connected, leave TRAY_CAM_SERIAL unset
@@ -77,9 +79,31 @@ def generate_launch_description():
                 'imgsz': 1024,
                 'device': 'cpu',
                 'handle_class_name': 'handle',
-                'grasp_offset_fraction': 1.0 / 10.0,
+                'grasp_offset_fraction': 1.0 / 8.0,
+                'fixed_tool_plane_z_m': 0.05,
                 # streaming-mode-only safeguard, ignored in direct mode
                 'max_image_age_sec': 5.0,
+            }],
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='mir_publisher.py',
+            name='mir_publisher',
+            output='screen',
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='tray_camera_volume_publisher.py',
+            name='tray_camera_volume_publisher',
+            output='screen',
+            parameters=[{
+                'frame_id': 'tray_camera_color_optical_frame',
+                'collision_topic': '/collision_object',
+                'object_id': 'tray_camera_volume',
+                'width_m': 0.05,
+                'height_m': 0.05,
+                'length_m': 0.40,
+                'publish_hz': 2.0,
             }],
         ),
     ])

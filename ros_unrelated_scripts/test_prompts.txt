@@ -1,0 +1,5 @@
+Für greifpunkte:
+ros2 launch tracking_pkg test_world_model_launch.py -> hier kann ich den abstand unter grasp_offset_fraction einstellen
+ros2 run rqt_image_view rqt_image_view -> zeigt nur bild an 
+ros2 service call /build_world_model tracking_pkg/srv/BuildWorldModel -> service call.
+

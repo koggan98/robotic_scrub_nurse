@@ -191,6 +191,7 @@ def generate_launch_description():
                         'device': 'cpu',
                         'handle_class_name': 'handle',
                         'grasp_offset_fraction': 1.0 / 16.0,
+                        'fixed_tool_plane_z_m': 0.05,
                         'max_image_age_sec': 1.0,
                     }],
                 ),

@@ -12,6 +12,7 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(moveit_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -36,6 +37,9 @@ install(
     src/interfaces/handover_sound_publisher.py
     src/interfaces/annotated_image_viewer.py
     src/interfaces/scrub_nurse_logger.py
+    # Scene / visualization helpers
+    src/publisher/mir_publisher.py
+    src/publisher/tray_camera_volume_publisher.py
     # Execution
     src/execution/gripper_opener_with_zeroer.py
     src/execution/reclaim_controller.py
@@ -87,10 +91,16 @@ rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typ
 # C++ executable: legacy MoveIt-based executor (still referenced by llm_launch.py
 # until the new Python execution layer replaces it).
 add_executable(loop_mover src/execution/loop_mover.cpp)
-ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_ros_planning_interface)
+ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_msgs moveit_ros_planning_interface)
 target_link_libraries(loop_mover "${cpp_typesupport_target}")
 
-install(TARGETS loop_mover
+add_executable(tool_pick_test_node src/execution/tool_pick_test_node.cpp)
+ament_target_dependencies(tool_pick_test_node rclcpp geometry_msgs std_msgs moveit_msgs moveit_ros_planning_interface)
+target_link_libraries(tool_pick_test_node "${cpp_typesupport_target}")
+
+install(TARGETS
+  loop_mover
+  tool_pick_test_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
