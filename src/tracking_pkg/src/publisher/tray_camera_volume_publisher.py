@@ -43,7 +43,22 @@ class TrayCameraVolumePublisher(Node):
             .double_value
         )
         self.start_offset_m = (
-            self.declare_parameter("start_offset_m", 0.10)
+            self.declare_parameter("start_offset_m", -0.20)
+            .get_parameter_value()
+            .double_value
+        )
+        self.frame_box_width_m = (
+            self.declare_parameter("frame_box_width_m", 0.14)
+            .get_parameter_value()
+            .double_value
+        )
+        self.frame_box_depth_m = (
+            self.declare_parameter("frame_box_depth_m", 0.05)
+            .get_parameter_value()
+            .double_value
+        )
+        self.frame_box_height_m = (
+            self.declare_parameter("frame_box_height_m", 0.05)
             .get_parameter_value()
             .double_value
         )
@@ -63,11 +78,13 @@ class TrayCameraVolumePublisher(Node):
         )
         period = 1.0 / self.publish_hz if self.publish_hz > 0.0 else 0.5
         self.timer = self.create_timer(period, self.publish_collision_object)
+        volume_center_z = self.start_offset_m + (self.length_m / 2.0)
         self.get_logger().info(
             "Publishing tray camera volume collision object "
             f"'{self.object_id}' on {self.collision_topic} in frame "
             f"'{self.frame_id}' ({self.width_m:.3f} x {self.height_m:.3f} x "
-            f"{self.length_m:.3f} m, start offset {self.start_offset_m:.3f} m)."
+            f"{self.length_m:.3f} m, start offset {self.start_offset_m:.3f} m, "
+            f"center z {volume_center_z:.3f} m)."
         )
         self.publish_collision_object()
 
@@ -81,18 +98,34 @@ class TrayCameraVolumePublisher(Node):
         # The RealSense optical +Z axis points away from the camera. In the
         # current setup that is downward toward the tray. start_offset_m keeps
         # the first part of the optical axis free before the collision prism.
-        pose = Pose()
-        pose.position.x = 0.0
-        pose.position.y = 0.0
-        pose.position.z = self.start_offset_m + (self.length_m / 2.0)
-        pose.orientation.w = 1.0
+        volume_pose = Pose()
+        volume_pose.position.x = 0.0
+        volume_pose.position.y = 0.0
+        volume_pose.position.z = self.start_offset_m + (self.length_m / 2.0)
+        volume_pose.orientation.w = 1.0
 
-        primitive = SolidPrimitive()
-        primitive.type = SolidPrimitive.BOX
-        primitive.dimensions = [self.width_m, self.height_m, self.length_m]
+        volume_primitive = SolidPrimitive()
+        volume_primitive.type = SolidPrimitive.BOX
+        volume_primitive.dimensions = [self.width_m, self.height_m, self.length_m]
 
-        collision_object.primitives.append(primitive)
-        collision_object.primitive_poses.append(pose)
+        frame_box_pose = Pose()
+        frame_box_pose.position.x = 0.0
+        frame_box_pose.position.y = 0.0
+        frame_box_pose.position.z = 0.0
+        frame_box_pose.orientation.w = 1.0
+
+        frame_box_primitive = SolidPrimitive()
+        frame_box_primitive.type = SolidPrimitive.BOX
+        frame_box_primitive.dimensions = [
+            self.frame_box_width_m,
+            self.frame_box_depth_m,
+            self.frame_box_height_m,
+        ]
+
+        collision_object.primitives.append(volume_primitive)
+        collision_object.primitive_poses.append(volume_pose)
+        collision_object.primitives.append(frame_box_primitive)
+        collision_object.primitive_poses.append(frame_box_pose)
 
         self.publisher.publish(collision_object)
 

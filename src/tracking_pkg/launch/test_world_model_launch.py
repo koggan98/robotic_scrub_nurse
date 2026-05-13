@@ -175,7 +175,7 @@ def generate_launch_description():
                 'width_m': 0.05,
                 'height_m': 0.05,
                 'length_m': 0.60,
-                'start_offset_m': 0.10,
+                'start_offset_m': -0.10,
                 'publish_hz': 2.0,
             }],
         ),
