@@ -41,7 +41,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Motion/handover core: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`.
 - Tool command flow uses `/tool_selection` and MoveIt planning.
 - Instrument-camera/world-model pick-test path: `src/tracking_pkg/launch/llm_launch.py` starts a fixed `world -> tray_camera_color_optical_frame` TF and the on-demand `/build_world_model` service.
-- Lightweight robot pickup test: `src/tracking_pkg/launch/tool_pick_test_launch.py` starts MoveIt, the official scene-camera RealSense node, marker-105 localization, hand tracking, the fixed tray-camera TF, the world-model builder, gripper bridge, MiR collision object, and tray-camera volume collision object without `loop_mover`; `tool_pick_test_node` is run separately for terminal-based tool selection and one pick attempt.
+- Lightweight robot pickup/handover test: `src/tracking_pkg/launch/tool_pick_test_launch.py` starts MoveIt, the official scene-camera RealSense node, marker-105 localization, hand tracking, the fixed tray-camera TF, the world-model builder, gripper bridge, MiR collision object, and tray-camera volume collision object without `loop_mover`; `tool_pick_test_node` is run separately for terminal-based tool selection, one camera-based pick, hand-pose handover, and force-guided release.
 
 ### Alternative Path (Socket + RTDE, MoveIt-free)
 - Launch entry: `src/tracking_pkg/launch/web_socket_launch.py`.
@@ -57,7 +57,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 2. Scene camera serial `239222300719` is started through the official `realsense2_camera` package and publishes RGB/depth/camera parameters under `/scene_camera/...` for marker localization and hand tracking.
 3. The instrument tray camera is opened directly by `world_model_builder.py` in direct RealSense mode.
 4. Pick-test launches publish the MiR base and a two-primitive tray-camera volume as MoveIt collision objects on `/collision_object`.
-5. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
+5. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, estimates grasp height from filtered tray-camera depth over the full tool OBB, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
 6. ArUco marker 105 localizes the scene camera for hand tracking; marker 120 has been removed from the active configuration.
 7. Grasp approach pose service can resolve a tracked TF frame such as `tool_holder_frame` into a `PoseStamped` in `world` on request.
 8. Hand tracker detects gesture and publishes `hand_pose` in `world`.
@@ -108,7 +108,9 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Marker 120 is no longer part of the active TF configuration.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
 - World-model grasp coordinates use the fixed tray-camera TF, not marker 120.
-- `tool_pick_test_node` uses world-model candidate `x/y`, overrides grasp `z = 0.05 m`, approaches/lifts at `z = 0.10 m`, and aligns a top-down TCP orientation from the candidate handle axis.
+- Pick-test world-model height supports median valid depth over the full detected tool OBB, but the current calibrated `tool_pick_test_launch.py` path uses `fixed_tool_plane_z_m = 0.04` for robust candidate publication.
+- `tool_pick_test_node` uses the selected tool detection's OBB `center_x` to choose `tray_left`, `tray_center`, or `tray_right` from `config/tool_pick_joint_states.yaml`, performs the camera pick, returns to `tray_left`, waits there for `/hand_pose`, moves to `hand_pose + hand_offset`, activates `/gripper_zeroer`, waits for `/gripper_done`, and optionally returns home; `tray_left` is the default home/hold position.
+- Tray-region waypoint moves avoid direct `tray_left <-> tray_right` transitions by routing through `tray_center`; the same rule is used by the interactive joint-state jogger.
 - `grasp_approach_pose_service.py` resolves any requested target frame from the TF tree into a top-down grasp pose in `world`; the runtime default target is `tool_holder_frame`, with grasp orientation mapped as `TCP z = -world z` and `TCP x` following the world-horizontal projection of `-frame z`.
 - RViz tracking configuration uses `world` as fixed frame.
 - The socket path still injects `world -> base` for its own runtime compatibility; that is not the primary MoveIt tracking contract.

@@ -276,6 +276,10 @@ ros2 service call /build_world_model tracking_pkg/srv/BuildWorldModel
 
 The launch starts the static tray-camera TF directly, so marker 120 is no
 longer part of this pick-test path.
+The world-model builder supports aligned tray-camera depth for grasp height.
+The current pick-test calibration projects grasp pixels onto
+`fixed_tool_plane_z_m = 0.04` while the depth thresholds remain available for
+depth-mode tuning.
 The ArUco manager publishes the configured marker-105 frame as
 `world -> aruco_marker_105_frame` in general launches. The pick-test launches
 publish that static frame directly so it is always visible in RViz; once marker
@@ -313,30 +317,84 @@ tracking, the gripper bridge, the MiR collision object, and the
 In a second terminal with stdin attached, run:
 
 ```bash
-ros2 run tracking_pkg tool_pick_test_node
+ros2 run tracking_pkg tool_pick_test_node --ros-args \
+  --params-file install/tracking_pkg/share/tracking_pkg/config/tool_pick_joint_states.yaml
 ```
 
 The node calls `/build_world_model`, prints detected grasp candidates, asks for
-a terminal index, then executes one conservative sequence:
+a terminal index, then executes a camera-pick and force-guided handover
+sequence:
 
-1. move 5 cm above the selected tool,
-2. open the gripper,
-3. descend to fixed robot/world `z = 0.05 m`,
-4. close the gripper,
-5. lift back 5 cm.
+1. choose `tray_left`, `tray_center`, or `tray_right` from the selected tool's OBB `center_x`,
+2. move to the corresponding joint-state waypoint,
+3. move 5 cm above the selected tool,
+4. open the gripper,
+5. descend to the detected tool surface height plus `z_offset`,
+6. close the gripper,
+7. lift back 5 cm,
+8. move back to `tray_left`,
+9. wait for `/hand_pose` at `tray_left`,
+10. move to the hand pose plus `hand_offset`,
+11. activate `/gripper_zeroer`,
+12. wait for `/gripper_done` from the force-guided release node,
+13. optionally return home, which defaults to `tray_left`.
 
-The node commands fixed robot/world tool height `z=0.05 m`, and the pick-test
-launch projects detected grasp pixels onto the same fixed world-z plane. The
-default gripper yaw is rotated by `pi/2` relative to the detected tool axis.
+The joint-state waypoints live in
+`config/tool_pick_joint_states.yaml`. All arrays use the canonical UR order:
+`shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`,
+`wrist_2_joint`, `wrist_3_joint`.
+
+The pick-test launch currently uses the calibrated world-z plane from
+`fixed_tool_plane_z_m`. `z_offset` is added to the detected/projected surface
+height; set a negative value to grip slightly below the top surface. The default
+gripper yaw is rotated by `pi/2` relative to the detected tool axis.
+The handover orientation uses the same configurable quaternion style as the
+main MoveIt handover path.
 Useful parameter overrides:
 
 ```bash
 ros2 run tracking_pkg tool_pick_test_node --ros-args \
-  -p tool_z_m:=0.05 \
+  --params-file install/tracking_pkg/share/tracking_pkg/config/tool_pick_joint_states.yaml \
+  -p z_offset:=-0.005 \
   -p approach_height_m:=0.05 \
   -p tool_yaw_offset_rad:=1.57079632679 \
-  -p velocity_scale:=0.2 \
-  -p acceleration_scale:=0.2
+  -p hand_offset:="[-0.08, 0.0, 0.05]" \
+  -p handover_orientation:="[-0.63, 0.63, -0.321, 0.321]" \
+  -p velocity_scale:=0.6 \
+  -p acceleration_scale:=0.6
+```
+
+### Joint-State Keyboard Jogger
+
+To manually move between the saved tray/handover joint waypoints, start the
+MoveIt/RViz jogger infrastructure first:
+
+```bash
+ros2 launch tracking_pkg joint_state_jogger_launch.py ur_type:=ur3e
+```
+
+Then run the interactive jogger in a second terminal:
+
+```bash
+ros2 run tracking_pkg joint_state_jogger_node
+```
+
+Keys:
+- `1`: `tray_left`
+- `2`: `tray_center`
+- `3`: `tray_right`
+- `4`: `reclaim_holder`
+- `q`: quit
+
+When moving between `tray_left` and `tray_right`, the jogger automatically
+routes via `tray_center` to avoid the direct long cross-tray motion.
+
+The jogger has built-in defaults for these waypoints. To override them from the
+shared YAML file, add:
+
+```bash
+ros2 run tracking_pkg joint_state_jogger_node --ros-args \
+  --params-file install/tracking_pkg/share/tracking_pkg/config/tool_pick_joint_states.yaml
 ```
 
 ---

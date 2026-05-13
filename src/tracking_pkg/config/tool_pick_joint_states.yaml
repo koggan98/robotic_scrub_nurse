@@ -1,0 +1,54 @@
+tool_pick_test_node:
+  ros__parameters:
+    # Canonical UR joint order used by all joint_state.* arrays below.
+    joint_state_names:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+
+    tray_image_width_px: 1280
+    enable_region_preposition: true
+    enable_post_pick_waypoints: true
+    velocity_scale: 0.6
+    acceleration_scale: 0.6
+    home_joints:
+      [-0.1601136366, -2.2975937329, 2.2748802344, -1.5248240244, -1.2305892150, 0.0]
+
+    joint_state.tray_center:
+      [1.6273860335, -2.6157323323, 2.2653740088, -1.5361764350, -1.5710740725, 0.0]
+    joint_state.tray_right:
+      [2.1262052059, -2.1099254094, 2.4224575202, -2.1711937390, -1.6874073187, 0.0]
+    joint_state.tray_left:
+      [-0.1601136366, -2.2975937329, 2.2748802344, -1.5248240244, -1.2305892150, 0.0]
+    joint_state.reclaim_holder:
+      [-1.3372991721, -1.6360527478, 2.1957047621, -2.1333886586, -1.5137208144, 0.0]
+    joint_state.waiting_for_handover:
+      [-0.2380548159, -2.3569044075, 2.5677889029, -2.0229608021, -1.6096962134, 0.0]
+
+joint_state_jogger_node:
+  ros__parameters:
+    # Same waypoint set as tool_pick_test_node, scoped for direct jogger use.
+    velocity_scale: 0.6
+    acceleration_scale: 0.6
+
+    joint_state_names:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+
+    joint_state.tray_center:
+      [1.6273860335, -2.6157323323, 2.2653740088, -1.5361764350, -1.5710740725, 0.0]
+    joint_state.tray_right:
+      [2.1262052059, -2.1099254094, 2.4224575202, -2.1711937390, -1.6874073187, 0.0]
+    joint_state.tray_left:
+      [-0.1601136366, -2.2975937329, 2.2748802344, -1.5248240244, -1.2305892150, 0.0]
+    joint_state.reclaim_holder:
+      [-1.3372991721, -1.6360527478, 2.1957047621, -2.1333886586, -1.5137208144, 0.0]
+    joint_state.waiting_for_handover:
+      [-0.2380548159, -2.3569044075, 2.5677889029, -2.0229608021, -1.6096962134, 0.0]

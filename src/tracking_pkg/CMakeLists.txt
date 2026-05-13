@@ -98,9 +98,13 @@ add_executable(tool_pick_test_node src/execution/tool_pick_test_node.cpp)
 ament_target_dependencies(tool_pick_test_node rclcpp geometry_msgs std_msgs moveit_msgs moveit_ros_planning_interface)
 target_link_libraries(tool_pick_test_node "${cpp_typesupport_target}")
 
+add_executable(joint_state_jogger_node src/execution/joint_state_jogger_node.cpp)
+ament_target_dependencies(joint_state_jogger_node rclcpp moveit_ros_planning_interface)
+
 install(TARGETS
   loop_mover
   tool_pick_test_node
+  joint_state_jogger_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

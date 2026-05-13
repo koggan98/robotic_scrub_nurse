@@ -311,6 +311,13 @@ class WorldModelBuilder(Node):
         self._rs_pipeline = pipeline
         self._rs_align = rs.align(rs.stream.color)
 
+        # Depth post-processing filters (mirror the streaming-mode launch defaults).
+        # Decimation is deliberately omitted to keep depth at full color resolution
+        # so OBB pixel coordinates from inference map 1:1 onto depth pixels.
+        self._rs_spatial = rs.spatial_filter()
+        self._rs_temporal = rs.temporal_filter()
+        self._rs_hole_filling = rs.hole_filling_filter()
+
         # Read intrinsics from the actually negotiated color stream
         color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
         intr = color_profile.get_intrinsics()
@@ -362,6 +369,12 @@ class WorldModelBuilder(Node):
             depth_frame = aligned.get_depth_frame()
             if not color_frame or not depth_frame:
                 return None, None, None
+
+            # Hole-filling is what actually rescues depth on specular metal
+            # tool bodies; spatial/temporal smooth the cloth around them.
+            depth_frame = self._rs_spatial.process(depth_frame)
+            depth_frame = self._rs_temporal.process(depth_frame)
+            depth_frame = self._rs_hole_filling.process(depth_frame)
 
             color = np.asanyarray(color_frame.get_data()).copy()
             depth = np.asanyarray(depth_frame.get_data()).copy()
@@ -567,8 +580,26 @@ class WorldModelBuilder(Node):
                 grasp_px, [0.0, 0.0], [float(image_w - 1), float(image_h - 1)]
             )
 
-            # 3D projection
-            grasp_camera_xyz = self._pixel_to_camera(grasp_px[0], grasp_px[1], depth, cam_matrix)
+            # 3D projection. The grasp Z we want is the tray surface, not the
+            # tool body — tools are essentially flat and metal returns junk
+            # depth. Sample a ring just outside the body OBB (cloth/tray) and
+            # only fall back to inside-OBB depth if the ring is empty.
+            tray_depth_m, tray_depth_count = self._median_depth_around_obb_m(
+                depth, body.corners, dilate_px=15,
+            )
+            tool_depth_m, tool_depth_count = self._median_depth_in_obb_m(depth, body.corners)
+            if tray_depth_m is not None:
+                body_depth_m = tray_depth_m
+                depth_source = 'tray_ring'
+                depth_sample_count = tray_depth_count
+            else:
+                body_depth_m = tool_depth_m
+                depth_source = 'tool_obb_fallback'
+                depth_sample_count = tool_depth_count
+            grasp_camera_xyz = (
+                self._pixel_to_camera_at_depth(grasp_px[0], grasp_px[1], body_depth_m, cam_matrix)
+                if body_depth_m is not None else None
+            )
             grasp_world_xyz = None
             long_axis_world = None
             handle_dir_world = None
@@ -599,8 +630,14 @@ class WorldModelBuilder(Node):
                         tf_world_from_cam, self.fixed_tool_plane_z_m,
                     )
                 else:
-                    p1_cam = self._pixel_to_camera(p1[0], p1[1], depth, cam_matrix)
-                    p2_cam = self._pixel_to_camera(p2[0], p2[1], depth, cam_matrix)
+                    p1_cam = (
+                        self._pixel_to_camera_at_depth(p1[0], p1[1], body_depth_m, cam_matrix)
+                        if body_depth_m is not None else None
+                    )
+                    p2_cam = (
+                        self._pixel_to_camera_at_depth(p2[0], p2[1], body_depth_m, cam_matrix)
+                        if body_depth_m is not None else None
+                    )
                     p1_w = self._transform(tf_world_from_cam, p1_cam) if p1_cam is not None else None
                     p2_w = self._transform(tf_world_from_cam, p2_cam) if p2_cam is not None else None
 
@@ -645,8 +682,14 @@ class WorldModelBuilder(Node):
                                       if grasp_world_xyz is not None else None),
                     'projection_mode': (
                         f'fixed_world_z={self.fixed_tool_plane_z_m:.4f}'
-                        if use_fixed_plane else 'realsense_depth'
+                        if use_fixed_plane else f'realsense_depth_{depth_source}'
                     ),
+                    'depth_m': body_depth_m,
+                    'depth_sample_count': depth_sample_count,
+                    'tray_ring_depth_m': tray_depth_m,
+                    'tray_ring_sample_count': tray_depth_count,
+                    'tool_obb_depth_m': tool_depth_m,
+                    'tool_obb_sample_count': tool_depth_count,
                     'rotation_world_z_rad': grasp_rot_z,
                     'needs_180_flip_for_handover': needs_flip,
                     'approach_direction_world': [0.0, 0.0, -1.0],  # top-down default
@@ -679,6 +722,13 @@ class WorldModelBuilder(Node):
                 )
             )
             if grasp_world_xyz is not None:
+                if body_depth_m is not None:
+                    self.get_logger().info(
+                        f'{tool_id} ({body.cls_name}) depth={body_depth_m:.4f}m '
+                        f'src={depth_source} (tray_ring={tray_depth_count}px, '
+                        f'tool_obb={tool_depth_count}px) -> '
+                        f'world_z={grasp_world_xyz[2]:.4f}m'
+                    )
                 grasps_msg.candidates.append(
                     self._build_grasp_candidate_msg(
                         body, handle, tool_id,
@@ -693,7 +743,8 @@ class WorldModelBuilder(Node):
             else:
                 errors.append(
                     f'{tool_id} ({body.cls_name}) has no valid world grasp point; '
-                    'skipping ROS GraspCandidate.'
+                    f'skipping ROS GraspCandidate. Valid depth pixels — '
+                    f'tray_ring: {tray_depth_count}, tool_obb: {tool_depth_count}.'
                 )
 
             # ── Annotate image ──
@@ -780,10 +831,17 @@ class WorldModelBuilder(Node):
         z = self._median_depth_m(depth_img, ui, vi)
         if z is None:
             return None
+        return self._pixel_to_camera_at_depth(u, v, z, cam_matrix)
+
+    def _pixel_to_camera_at_depth(self, u, v, z, cam_matrix):
+        if z is None or cam_matrix is None:
+            return None
         fx = cam_matrix[0, 0]
         fy = cam_matrix[1, 1]
         cx = cam_matrix[0, 2]
         cy = cam_matrix[1, 2]
+        if abs(fx) < 1e-9 or abs(fy) < 1e-9:
+            return None
         x = (u - cx) / fx * z
         y = (v - cy) / fy * z
         return np.array([x, y, z], dtype=float)
@@ -806,6 +864,65 @@ class WorldModelBuilder(Node):
         if valid.size == 0:
             return None
         return float(np.median(valid))
+
+    def _median_depth_in_obb_m(self, depth_img, corners):
+        if depth_img is None:
+            return None, 0
+
+        h, w = depth_img.shape[:2]
+        corners_i = np.rint(np.asarray(corners, dtype=np.float32)).astype(np.int32)
+        corners_i[:, 0] = np.clip(corners_i[:, 0], 0, w - 1)
+        corners_i[:, 1] = np.clip(corners_i[:, 1], 0, h - 1)
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, corners_i, 1)
+
+        depth_m = np.asarray(depth_img, dtype=np.float64) / 1000.0
+        valid = depth_m[
+            (mask > 0)
+            & np.isfinite(depth_m)
+            & (depth_m > 0.0)
+            & (depth_m >= self.depth_min_m)
+            & (depth_m <= self.depth_max_m)
+        ]
+        if valid.size == 0:
+            return None, 0
+        return float(np.median(valid)), int(valid.size)
+
+    def _median_depth_around_obb_m(self, depth_img, corners, dilate_px):
+        """Median depth of the ring just outside a body OBB.
+
+        Tools are flat on the tray, so the tray surface around them is what we
+        actually want for the grasp Z. The Lambertian cloth gives reliable
+        depth while the metallic tool body often does not.
+        """
+        if depth_img is None or dilate_px <= 0:
+            return None, 0
+
+        h, w = depth_img.shape[:2]
+        corners_i = np.rint(np.asarray(corners, dtype=np.float32)).astype(np.int32)
+        corners_i[:, 0] = np.clip(corners_i[:, 0], 0, w - 1)
+        corners_i[:, 1] = np.clip(corners_i[:, 1], 0, h - 1)
+
+        inside = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(inside, corners_i, 1)
+
+        k = 2 * int(dilate_px) + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+        dilated = cv2.dilate(inside, kernel)
+        ring = cv2.subtract(dilated, inside)
+
+        depth_m = np.asarray(depth_img, dtype=np.float64) / 1000.0
+        valid = depth_m[
+            (ring > 0)
+            & np.isfinite(depth_m)
+            & (depth_m > 0.0)
+            & (depth_m >= self.depth_min_m)
+            & (depth_m <= self.depth_max_m)
+        ]
+        if valid.size == 0:
+            return None, 0
+        return float(np.median(valid)), int(valid.size)
 
     def _lookup_tf_world_from_cam(self):
         try:
