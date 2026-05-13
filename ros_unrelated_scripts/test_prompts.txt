@@ -3,3 +3,11 @@ ros2 launch tracking_pkg test_world_model_launch.py -> hier kann ich den abstand
 ros2 run rqt_image_view rqt_image_view -> zeigt nur bild an 
 ros2 service call /build_world_model tracking_pkg/srv/BuildWorldModel -> service call.
 
+Für pick test:
+ros2 launch tracking_pkg tool_pick_test_launch.py ur_type:=ur3e -> moveit/rviz/kameras/world model/gripper starten.
+ros2 run tracking_pkg tool_pick_test_node --ros-args --params-file install/tracking_pkg/share/tracking_pkg/config/tool_pick_joint_states.yaml -> tool auswählen, pick, handover.
+
+Für joint jogger:
+ros2 launch tracking_pkg joint_state_jogger_launch.py ur_type:=ur3e -> moveit/rviz fürs joggen starten.
+ros2 run tracking_pkg joint_state_jogger_node -> 1 tray_left, 2 tray_center, 3 tray_right, 4 reclaim_holder, q quit.
+
