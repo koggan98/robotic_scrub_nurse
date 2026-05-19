@@ -176,6 +176,17 @@ bool hasUsableWorldXy(const tracking_pkg::msg::GraspCandidate &c) {
     return std::hypot(c.grasp_pose.pose.position.x, c.grasp_pose.pose.position.y) > 1e-4;
 }
 
+moveit_msgs::msg::RobotState makeStartStateFromPlanEnd(
+    const moveit::planning_interface::MoveGroupInterface::Plan &plan) {
+    moveit_msgs::msg::RobotState rs;
+    rs.is_diff = false;
+    rs.joint_state.name = plan.trajectory_.joint_trajectory.joint_names;
+    if (!plan.trajectory_.joint_trajectory.points.empty()) {
+        rs.joint_state.position = plan.trajectory_.joint_trajectory.points.back().positions;
+    }
+    return rs;
+}
+
 }  // namespace
 
 
@@ -201,6 +212,7 @@ public:
         post_open_pause_seconds_ = declare_parameter("post_open_pause_seconds", 1.0);
         return_home_after_handover_ = declare_parameter("return_home_after_handover", true);
         gripper_done_timeout_seconds_ = declare_parameter("gripper_done_timeout_seconds", 30.0);
+        cartesian_min_fraction_ = declare_parameter("cartesian_min_fraction", 0.95);
 
         joint_state_names_ = declare_parameter(
             "joint_state_names",
@@ -375,38 +387,22 @@ private:
         return true;
     }
 
-    bool selectCandidate(const std::string &tool_id,
-                         tracking_pkg::msg::GraspCandidate &out,
-                         std::string &err) {
-        std::vector<tracking_pkg::msg::GraspCandidate> cands;
-        if (!fetchCandidates(cands, err)) return false;
-
-        std::vector<tracking_pkg::msg::GraspCandidate> usable;
-        for (const auto &c : cands) {
-            if (hasUsableWorldXy(c)) usable.push_back(c);
+    bool collectCandidates(std::vector<tracking_pkg::msg::GraspCandidate> &out_sorted,
+                           std::string &err) {
+        std::vector<tracking_pkg::msg::GraspCandidate> all;
+        if (!fetchCandidates(all, err)) return false;
+        for (const auto &c : all) {
+            if (hasUsableWorldXy(c)) out_sorted.push_back(c);
         }
-        if (usable.empty()) {
+        std::sort(out_sorted.begin(), out_sorted.end(),
+                  [](const auto &a, const auto &b) {
+                      return a.grasp_confidence > b.grasp_confidence;
+                  });
+        if (out_sorted.empty()) {
             err = "no usable candidates from world model";
             return false;
         }
-
-        if (tool_id.empty()) {
-            auto best = std::max_element(
-                usable.begin(), usable.end(),
-                [](const auto &a, const auto &b) {
-                    return a.grasp_confidence < b.grasp_confidence;
-                });
-            out = *best;
-            return true;
-        }
-        for (const auto &c : usable) {
-            if (c.tool_id == tool_id) {
-                out = c;
-                return true;
-            }
-        }
-        err = "tool_id '" + tool_id + "' not in candidates";
-        return false;
+        return true;
     }
 
     // ── MoveIt primitives (ported from tool_pick_test_node.cpp) ──────
@@ -439,7 +435,7 @@ private:
         moveit_msgs::msg::RobotTrajectory traj;
         const double fraction = move_group_->computeCartesianPath(
             waypoints, 0.005, 0.0, traj);
-        if (fraction < 0.99) {
+        if (fraction < cartesian_min_fraction_) {
             err = "cartesian path only " + std::to_string(fraction * 100.0) + "%";
             return false;
         }
@@ -447,6 +443,50 @@ private:
         plan.trajectory_ = traj;
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             err = "cartesian path execution failed";
+            return false;
+        }
+        return true;
+    }
+
+    // ── Plan-only primitives (used for pre-flight pick validation) ───
+    // Caller is responsible for setStartState before calling.
+
+    bool planPoseTarget(const geometry_msgs::msg::Pose &pose,
+                        moveit::planning_interface::MoveGroupInterface::Plan &plan_out,
+                        std::string &err) {
+        move_group_->setMaxVelocityScalingFactor(velocity_scale_);
+        move_group_->setMaxAccelerationScalingFactor(acceleration_scale_);
+        move_group_->setPoseTarget(pose);
+        if (move_group_->plan(plan_out) != moveit::core::MoveItErrorCode::SUCCESS) {
+            err = "planning to pose target failed";
+            move_group_->clearPoseTargets();
+            return false;
+        }
+        move_group_->clearPoseTargets();
+        return true;
+    }
+
+    bool planLinearPose(const geometry_msgs::msg::Pose &pose,
+                        moveit::planning_interface::MoveGroupInterface::Plan &plan_out,
+                        std::string &err) {
+        move_group_->setMaxVelocityScalingFactor(velocity_scale_);
+        move_group_->setMaxAccelerationScalingFactor(acceleration_scale_);
+        std::vector<geometry_msgs::msg::Pose> waypoints{pose};
+        moveit_msgs::msg::RobotTrajectory traj;
+        const double fraction = move_group_->computeCartesianPath(
+            waypoints, 0.005, 0.0, traj);
+        if (fraction < cartesian_min_fraction_) {
+            err = "cartesian path only " + std::to_string(fraction * 100.0) + "%";
+            return false;
+        }
+        plan_out.trajectory_ = traj;
+        return true;
+    }
+
+    bool executePlan(const moveit::planning_interface::MoveGroupInterface::Plan &plan,
+                     std::string &err) {
+        if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+            err = "execute failed";
             return false;
         }
         return true;
@@ -512,51 +552,112 @@ private:
 
     // ── Skill: PickTool ──────────────────────────────────────────────
 
+    bool tryPlanPickSequence(
+        const tracking_pkg::msg::GraspCandidate &cand,
+        moveit::planning_interface::MoveGroupInterface::Plan &approach_plan,
+        moveit::planning_interface::MoveGroupInterface::Plan &descend_plan,
+        moveit::planning_interface::MoveGroupInterface::Plan &lift_plan,
+        geometry_msgs::msg::Pose &approach_pose_out,
+        geometry_msgs::msg::Pose &grasp_pose_out,
+        std::string &err) {
+        grasp_pose_out.position.x = cand.grasp_pose.pose.position.x;
+        grasp_pose_out.position.y = cand.grasp_pose.pose.position.y;
+        grasp_pose_out.position.z = cand.grasp_pose.pose.position.z + z_offset_m_;
+        grasp_pose_out.orientation = topDownQuaternionFromHandleAxis(
+            cand.handle_axis, tool_yaw_offset_rad_);
+        approach_pose_out = grasp_pose_out;
+        approach_pose_out.position.z = grasp_pose_out.position.z + approach_height_m_;
+
+        // 1. Plan approach from current state
+        move_group_->setStartStateToCurrentState();
+        if (!planPoseTarget(approach_pose_out, approach_plan, err)) {
+            err = "approach plan: " + err;
+            return false;
+        }
+
+        // 2. Plan descend (cartesian) from approach end state
+        move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
+        if (!planLinearPose(grasp_pose_out, descend_plan, err)) {
+            err = "descend plan: " + err;
+            return false;
+        }
+
+        // 3. Plan lift (cartesian) from descend end state
+        move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
+        if (!planLinearPose(approach_pose_out, lift_plan, err)) {
+            err = "lift plan: " + err;
+            return false;
+        }
+
+        return true;
+    }
+
     bool doPick(const std::string &tool_id_arg,
                 std::string &picked_id_out,
                 std::string &picked_class_out,
                 std::string &err) {
-        tracking_pkg::msg::GraspCandidate cand;
-        if (!selectCandidate(tool_id_arg, cand, err)) {
+        std::vector<tracking_pkg::msg::GraspCandidate> candidates;
+        if (!collectCandidates(candidates, err)) return false;
+
+        // Restrict to a specific tool_id when explicitly requested.
+        if (!tool_id_arg.empty()) {
+            candidates.erase(
+                std::remove_if(candidates.begin(), candidates.end(),
+                    [&](const auto &c) { return c.tool_id != tool_id_arg; }),
+                candidates.end());
+            if (candidates.empty()) {
+                err = "tool_id '" + tool_id_arg + "' not in candidates";
+                return false;
+            }
+        }
+
+        // Pre-flight: try each candidate in confidence order. Only when
+        // approach + descend + lift all plan successfully do we commit to
+        // a pick. No motion happens before this loop succeeds.
+        moveit::planning_interface::MoveGroupInterface::Plan approach_plan, descend_plan, lift_plan;
+        geometry_msgs::msg::Pose approach_pose, grasp_pose;
+        tracking_pkg::msg::GraspCandidate chosen;
+        std::vector<std::string> rejection_log;
+        bool found = false;
+        for (const auto &cand : candidates) {
+            std::string plan_err;
+            if (tryPlanPickSequence(cand, approach_plan, descend_plan, lift_plan,
+                                    approach_pose, grasp_pose, plan_err)) {
+                chosen = cand;
+                found = true;
+                break;
+            }
+            rejection_log.push_back(
+                cand.tool_id + " (" + cand.tool_class + "): " + plan_err);
+            RCLCPP_WARN(get_logger(), "Pre-flight rejected %s: %s",
+                        cand.tool_id.c_str(), plan_err.c_str());
+        }
+        if (!found) {
+            err = "no reachable candidate. Tried " +
+                  std::to_string(rejection_log.size()) + ": ";
+            for (const auto &r : rejection_log) err += "[" + r + "] ";
             return false;
         }
-        picked_id_out = cand.tool_id;
-        picked_class_out = cand.tool_class;
 
-        publishState("PICKING", cand.tool_id, cand.tool_class);
-
-        geometry_msgs::msg::Pose grasp_pose;
-        grasp_pose.position.x = cand.grasp_pose.pose.position.x;
-        grasp_pose.position.y = cand.grasp_pose.pose.position.y;
-        grasp_pose.position.z = cand.grasp_pose.pose.position.z + z_offset_m_;
-        grasp_pose.orientation = topDownQuaternionFromHandleAxis(
-            cand.handle_axis, tool_yaw_offset_rad_);
-
-        geometry_msgs::msg::Pose approach_pose = grasp_pose;
-        approach_pose.position.z = grasp_pose.position.z + approach_height_m_;
+        picked_id_out = chosen.tool_id;
+        picked_class_out = chosen.tool_class;
 
         RCLCPP_INFO(get_logger(),
-            "PickTool: id=%s class=%s, grasp z=%.4f approach z=%.4f",
-            cand.tool_id.c_str(), cand.tool_class.c_str(),
+            "Pre-flight OK for %s (%s). grasp z=%.4f approach z=%.4f. Executing.",
+            chosen.tool_id.c_str(), chosen.tool_class.c_str(),
             grasp_pose.position.z, approach_pose.position.z);
 
-        if (!moveToPoseTarget(approach_pose, err)) {
-            err = "approach: " + err;
-            return false;
-        }
+        publishState("PICKING", chosen.tool_id, chosen.tool_class);
+
+        if (!executePlan(approach_plan, err)) { err = "approach exec: " + err; return false; }
         publishGripper(true);   // open
         sleepForGripper();
-        if (!moveLinearToPose(grasp_pose, err)) {
-            err = "descend: " + err;
-            return false;
-        }
+        if (!executePlan(descend_plan, err))  { err = "descend exec: "  + err; return false; }
         publishGripper(false);  // close
         sleepForGripper();
-        if (!moveLinearToPose(approach_pose, err)) {
-            err = "lift: " + err;
-            return false;
-        }
-        publishState("TRANSPORTING", cand.tool_id, cand.tool_class);
+        if (!executePlan(lift_plan, err))     { err = "lift exec: "     + err; return false; }
+
+        publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
         return true;
     }
 
@@ -836,6 +937,7 @@ private:
     double post_open_pause_seconds_;
     bool return_home_after_handover_;
     double gripper_done_timeout_seconds_;
+    double cartesian_min_fraction_;
     std::vector<std::string> joint_state_names_;
     geometry_msgs::msg::Point hand_offset_;
     geometry_msgs::msg::Quaternion handover_orientation_;

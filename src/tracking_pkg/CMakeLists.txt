@@ -40,6 +40,7 @@ install(
     src/interfaces/handover_sound_publisher.py
     src/interfaces/annotated_image_viewer.py
     src/interfaces/scrub_nurse_logger.py
+    src/interfaces/scrub_nurse_cli.py
     # Scene / visualization helpers
     src/publisher/mir_publisher.py
     src/publisher/tray_camera_volume_publisher.py

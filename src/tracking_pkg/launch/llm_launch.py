@@ -287,7 +287,7 @@ def generate_launch_description():
                         'inference_rate_hz': 5.0,
                         # Fixed-plane projection while RealSense is mounted
                         # closer than its min depth. Set to NaN to revert.
-                        'fixed_tool_plane_z_m': 0.030,
+                        'fixed_tool_plane_z_m': 0.035,
                         'publish_annotated_image': True,
                     }],
                 ),
@@ -434,6 +434,9 @@ def generate_launch_description():
                         'post_open_pause_seconds': 1.0,
                         'return_home_after_handover': True,
                         'gripper_done_timeout_seconds': 30.0,
+                        # Pre-flight cartesian path tolerance (was 0.99,
+                        # too strict — caused mid-pick aborts).
+                        'cartesian_min_fraction': 0.95,
                         'hand_offset': [-0.08, 0.0, 0.05],
                         'handover_orientation': [-0.63, 0.63, -0.321, 0.321],
                         'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,
