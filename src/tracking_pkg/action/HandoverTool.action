@@ -1,0 +1,11 @@
+# Goal: deliver the currently-held tool to a receiver hand.
+# If hand_pose.header.frame_id is empty, the executor uses the last
+# /hand_state from world_model_node.
+geometry_msgs/PoseStamped hand_pose
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string phase         # MOVING_TO_HAND | AWAITING_RELEASE | RELEASED

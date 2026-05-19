@@ -16,3 +16,11 @@ geometry_msgs/Vector3 handle_axis           # Long axis of the handle
 string handover_rule                        # e.g. "functional_end_away", "blade_away", "neutral"
 geometry_msgs/PoseStamped handover_pose     # Suggested handover pose relative to hand
 float32 grasp_confidence                    # Combined detection + geometry confidence
+
+# Semantic enrichment (filled by tool_semantics_node from tool_knowledge_base.yaml).
+# Upstream producers (grasp_geometry_node, world_model_builder) leave these empty/zero.
+string display_name                         # e.g. "Needle Holder"
+string handover_description                 # e.g. "Hand over with jaws away from surgeon"
+string grip_strategy                        # "parallel" | "pinch" | "wrap"
+string functional_end_label                 # "jaws" | "blade" | "tips" | "hook" | "blades"
+float32 lift_height                         # meters above tray surface

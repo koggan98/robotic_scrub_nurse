@@ -1,0 +1,8 @@
+# Goal: immediately open the gripper (without force-guided release).
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string phase

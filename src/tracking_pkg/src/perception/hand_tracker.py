@@ -28,6 +28,7 @@ Parameters:
 """
 
 import cv2
+import math
 import time
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -38,13 +39,87 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Pose, Point, PoseStamped
 from visualization_msgs.msg import Marker
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 from cv_bridge import CvBridge
 import tf2_ros
 import mediapipe as mp
 
-# Will be available after first build + source with new messages:
-# from tracking_pkg.msg import HandState
+from tracking_pkg.msg import HandState
+
+
+def _angle_at(p_a, p_b, p_c):
+    """2D angle (radians) at vertex p_b between vectors p_a-p_b and p_c-p_b.
+
+    p_* have .x and .y attributes (MediaPipe landmarks in normalized coords).
+    """
+    ax, ay = p_a.x - p_b.x, p_a.y - p_b.y
+    cx, cy = p_c.x - p_b.x, p_c.y - p_b.y
+    dot = ax * cx + ay * cy
+    na = math.hypot(ax, ay)
+    nc = math.hypot(cx, cy)
+    if na < 1e-9 or nc < 1e-9:
+        return math.pi
+    cos_a = max(-1.0, min(1.0, dot / (na * nc)))
+    return math.acos(cos_a)
+
+
+class _GestureDetector:
+    """Detects a 'double open-close' hand gesture: a sequence of
+    open→close→open→close→open transitions within a sliding time window.
+
+    State for the hand is derived per frame from finger curl: angles at PIP
+    joints of index/middle/ring/pinky. If at least min_curled fingers have
+    an angle below threshold (i.e. curled), the hand is 'closed'.
+    """
+
+    _FINGER_JOINTS = (
+        (5, 6, 8),    # index
+        (9, 10, 12),  # middle
+        (13, 14, 16), # ring
+        (17, 18, 20), # pinky
+    )
+
+    def __init__(self, window_s, debounce_s, angle_threshold_deg, min_curled):
+        self.window_s = float(window_s)
+        self.debounce_s = float(debounce_s)
+        self.angle_threshold = math.radians(float(angle_threshold_deg))
+        self.min_curled = int(min_curled)
+        self.current_state = None
+        self.transitions = []
+        self.last_gesture_time = 0.0
+
+    def classify(self, hand_landmarks):
+        landmarks = hand_landmarks.landmark
+        curled = 0
+        for mcp, pip, tip in self._FINGER_JOINTS:
+            a = _angle_at(landmarks[mcp], landmarks[pip], landmarks[tip])
+            if a < self.angle_threshold:
+                curled += 1
+        return 'closed' if curled >= self.min_curled else 'open'
+
+    def update(self, classified_state, now_s):
+        if self.current_state is None:
+            self.current_state = classified_state
+            return False
+        if classified_state != self.current_state:
+            self.transitions.append((now_s, self.current_state, classified_state))
+            self.current_state = classified_state
+        self.transitions = [
+            t for t in self.transitions if now_s - t[0] <= self.window_s
+        ]
+        if len(self.transitions) >= 4:
+            recent = self.transitions[-4:]
+            pattern = [(t[1], t[2]) for t in recent]
+            expected = [
+                ('open', 'closed'), ('closed', 'open'),
+                ('open', 'closed'), ('closed', 'open'),
+            ]
+            if (pattern == expected
+                    and now_s - self.last_gesture_time > self.debounce_s):
+                self.last_gesture_time = now_s
+                self.transitions = []
+                return True
+        return False
 
 
 class HandTrackerNode(Node):
@@ -59,6 +134,10 @@ class HandTrackerNode(Node):
         self.declare_parameter('annotated_image_max_hz', 12.0)
         self.declare_parameter('camera_frame', 'scene_camera_color_optical_frame')
         self.declare_parameter('world_frame', 'world')
+        self.declare_parameter('gesture_window_sec', 1.5)
+        self.declare_parameter('gesture_debounce_sec', 3.0)
+        self.declare_parameter('gesture_angle_threshold_deg', 130.0)
+        self.declare_parameter('gesture_min_fingers_curled', 3)
 
         max_hands = int(self.get_parameter('max_num_hands').value)
         det_conf = float(self.get_parameter('min_detection_confidence').value)
@@ -67,6 +146,12 @@ class HandTrackerNode(Node):
         ann_hz = float(self.get_parameter('annotated_image_max_hz').value)
         self.camera_frame = self.get_parameter('camera_frame').value
         self.world_frame = self.get_parameter('world_frame').value
+        self.gesture_detector = _GestureDetector(
+            window_s=float(self.get_parameter('gesture_window_sec').value),
+            debounce_s=float(self.get_parameter('gesture_debounce_sec').value),
+            angle_threshold_deg=float(self.get_parameter('gesture_angle_threshold_deg').value),
+            min_curled=int(self.get_parameter('gesture_min_fingers_curled').value),
+        )
 
         self.publish_interval = 1.0 / pub_hz if pub_hz > 0 else 0.0
         self.annotated_interval = 1.0 / ann_hz if ann_hz > 0 else 0.0
@@ -100,9 +185,9 @@ class HandTrackerNode(Node):
         self.create_subscription(CameraInfo, 'camera_info', self._cam_info_cb, 10)
 
         # Publishers
-        # TODO: Uncomment after first build with new messages
-        # self.hand_state_pub = self.create_publisher(HandState, 'hand_state', 10)
+        self.hand_state_pub = self.create_publisher(HandState, 'hand_state', 10)
         self.hand_pose_pub = self.create_publisher(Pose, 'hand_pose', 10)
+        self.gesture_pub = self.create_publisher(String, 'hand_gesture', 10)
         self.marker_pub = self.create_publisher(Marker, 'hand_pose_marker', 10)
         self.annotated_pub = self.create_publisher(Image, 'annotated_hand_image', 10)
 
@@ -220,6 +305,13 @@ class HandTrackerNode(Node):
                 # Track closest / first hand for now
                 # TODO: Multi-hand tracking with persistent IDs
                 best_hand = results.multi_hand_landmarks[0]
+
+                # Gesture detection (every frame; independent of publish rate)
+                gesture_state = self.gesture_detector.classify(best_hand)
+                if self.gesture_detector.update(gesture_state, now):
+                    self.gesture_pub.publish(String(data='double_open_close'))
+                    self.get_logger().info('Gesture detected: double_open_close')
+
                 cx, cy = self._get_palm_center_px(best_hand, frame.shape)
 
                 if (0 <= cy < depth.shape[0] and 0 <= cx < depth.shape[1]):
@@ -230,7 +322,9 @@ class HandTrackerNode(Node):
                         if cam_pt is not None:
                             world_pt = self._camera_to_world(cam_pt)
                             if world_pt is not None:
-                                # Continuous hand pose publish
+                                stamp = self.get_clock().now().to_msg()
+
+                                # Legacy continuous hand pose publish
                                 pose_msg = Pose()
                                 pose_msg.position.x = float(world_pt[0])
                                 pose_msg.position.y = float(world_pt[1])
@@ -238,12 +332,23 @@ class HandTrackerNode(Node):
                                 pose_msg.orientation.w = 1.0
                                 self.hand_pose_pub.publish(pose_msg)
 
+                                # HandState for world_model_node
+                                self._publish_hand_state(
+                                    best_hand, frame.shape, world_pt, stamp,
+                                )
+
                                 self._publish_marker(world_pt)
                                 self.last_publish_time = now
 
                 cv2.circle(frame, (cx, cy), 5, (0, 255, 0), 2)
                 cv2.putText(frame, f'{depth[cy, cx] / 1000.0:.2f}m',
                             (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            else:
+                # No hand detected — publish empty HandState at the configured rate
+                # so world_model_node sees "no hand" instead of stale data.
+                if now - self.last_publish_time >= self.publish_interval:
+                    self._publish_empty_hand_state()
+                    self.last_publish_time = now
 
             # Annotated image
             if now - self.last_annotated_time >= self.annotated_interval:
@@ -255,6 +360,59 @@ class HandTrackerNode(Node):
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+
+    def _publish_hand_state(self, hand_lm, frame_shape, palm_world, stamp):
+        """Build and publish a HandState with palm + keypoint world positions."""
+        hs = HandState()
+        hs.header.stamp = stamp
+        hs.header.frame_id = self.world_frame
+        hs.hand_pose.header.stamp = stamp
+        hs.hand_pose.header.frame_id = self.world_frame
+        hs.hand_pose.pose.position.x = float(palm_world[0])
+        hs.hand_pose.pose.position.y = float(palm_world[1])
+        hs.hand_pose.pose.position.z = float(palm_world[2])
+        hs.hand_pose.pose.orientation.w = 1.0
+        hs.confidence = 1.0
+        hs.is_tracked = True
+        hs.hand_id = 'hand_0'
+
+        # palm_center duplicates hand_pose.position but lives on the keypoint side
+        hs.palm_center = Point(
+            x=float(palm_world[0]),
+            y=float(palm_world[1]),
+            z=float(palm_world[2]),
+        )
+
+        # Project specific MediaPipe landmarks to world
+        landmarks = self.mp_hands.HandLandmark
+        for attr, idx in (
+            ('wrist', landmarks.WRIST),
+            ('index_tip', landmarks.INDEX_FINGER_TIP),
+            ('middle_tip', landmarks.MIDDLE_FINGER_TIP),
+        ):
+            world_pt = self._landmark_to_world(hand_lm.landmark[idx], frame_shape)
+            if world_pt is not None:
+                setattr(hs, attr, Point(
+                    x=float(world_pt[0]),
+                    y=float(world_pt[1]),
+                    z=float(world_pt[2]),
+                ))
+
+        self.hand_state_pub.publish(hs)
+
+    def _publish_empty_hand_state(self):
+        """Publish a HandState with is_tracked=False so consumers know no hand is visible."""
+        stamp = self.get_clock().now().to_msg()
+        hs = HandState()
+        hs.header.stamp = stamp
+        hs.header.frame_id = self.world_frame
+        hs.hand_pose.header.stamp = stamp
+        hs.hand_pose.header.frame_id = self.world_frame
+        hs.hand_pose.pose.orientation.w = 1.0
+        hs.confidence = 0.0
+        hs.is_tracked = False
+        hs.hand_id = ''
+        self.hand_state_pub.publish(hs)
 
     def _publish_marker(self, position):
         """Publish RViz sphere marker at hand position."""

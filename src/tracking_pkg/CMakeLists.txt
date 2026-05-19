@@ -9,6 +9,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(action_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -25,9 +27,10 @@ install(
     src/perception/camera_publisher.py
     src/perception/aruco_marker_manager.py
     src/perception/hand_tracker.py
-    src/perception/instrument_tray_perception_node.py
+    src/perception/tool_detection_node.py
     # Reasoning
-    src/reasoning/grasp_reasoning_node.py
+    src/reasoning/grasp_geometry_node.py
+    src/reasoning/tool_semantics_node.py
     src/reasoning/world_model_node.py
     src/reasoning/world_model_builder.py
     # LLM
@@ -82,7 +85,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetWorldState.srv"
   "srv/GetToolCandidates.srv"
   "srv/BuildWorldModel.srv"
-  DEPENDENCIES geometry_msgs std_msgs
+  "srv/GetWorldModel.srv"
+  "action/PickTool.action"
+  "action/HandoverTool.action"
+  "action/ReleaseTool.action"
+  "action/ReturnHome.action"
+  DEPENDENCIES geometry_msgs std_msgs action_msgs
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
@@ -101,10 +109,18 @@ target_link_libraries(tool_pick_test_node "${cpp_typesupport_target}")
 add_executable(joint_state_jogger_node src/execution/joint_state_jogger_node.cpp)
 ament_target_dependencies(joint_state_jogger_node rclcpp moveit_ros_planning_interface)
 
+# Skill executor: ROS Action wrapper around MoveIt pick / handover / release / return_home
+add_executable(skill_executor_node src/execution/skill_executor_node.cpp)
+ament_target_dependencies(skill_executor_node
+  rclcpp rclcpp_action action_msgs geometry_msgs sensor_msgs std_msgs
+  moveit_msgs moveit_ros_planning_interface)
+target_link_libraries(skill_executor_node "${cpp_typesupport_target}")
+
 install(TARGETS
   loop_mover
   tool_pick_test_node
   joint_state_jogger_node
+  skill_executor_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

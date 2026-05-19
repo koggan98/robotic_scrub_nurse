@@ -1,0 +1,7 @@
+# Request: empty. Returns a JSON snapshot of the current world model for
+# LLM consumption (available tools with grasp geometry + semantics, receiver
+# hand pose, system state, robot state).
+---
+bool success
+string message
+string world_model_json
