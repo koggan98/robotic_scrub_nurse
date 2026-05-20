@@ -442,6 +442,9 @@ def generate_launch_description():
                         # indefinitely.
                         'gesture_wait_timeout_sec': 0.0,
                         'post_gesture_settle_sec': 0.5,
+                        # return_tool drops the wrong tool this far above
+                        # its original pickup pose.
+                        'return_release_height_m': 0.005,
                         'hand_offset': [-0.08, 0.0, 0.05],
                         'handover_orientation': [-0.63, 0.63, -0.321, 0.321],
                         'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,

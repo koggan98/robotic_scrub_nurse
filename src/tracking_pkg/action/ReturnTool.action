@@ -1,0 +1,9 @@
+# Goal: return the currently-held tool to its pickup spot and release it
+# slightly above the original grasp pose. Preempts a running handover.
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string phase

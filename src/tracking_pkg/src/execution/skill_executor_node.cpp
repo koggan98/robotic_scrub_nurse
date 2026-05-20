@@ -30,6 +30,7 @@
 #include <tracking_pkg/action/handover_tool.hpp>
 #include <tracking_pkg/action/release_tool.hpp>
 #include <tracking_pkg/action/return_home.hpp>
+#include <tracking_pkg/action/return_tool.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -50,11 +51,13 @@ using PickTool = tracking_pkg::action::PickTool;
 using HandoverTool = tracking_pkg::action::HandoverTool;
 using ReleaseTool = tracking_pkg::action::ReleaseTool;
 using ReturnHome = tracking_pkg::action::ReturnHome;
+using ReturnTool = tracking_pkg::action::ReturnTool;
 
 using GoalHandlePick = rclcpp_action::ServerGoalHandle<PickTool>;
 using GoalHandleHandover = rclcpp_action::ServerGoalHandle<HandoverTool>;
 using GoalHandleRelease = rclcpp_action::ServerGoalHandle<ReleaseTool>;
 using GoalHandleHome = rclcpp_action::ServerGoalHandle<ReturnHome>;
+using GoalHandleReturnTool = rclcpp_action::ServerGoalHandle<ReturnTool>;
 
 struct Vec3 {
     double x;
@@ -217,6 +220,8 @@ public:
         // moving to the hand. 0.0 = wait indefinitely.
         gesture_wait_timeout_sec_ = declare_parameter("gesture_wait_timeout_sec", 0.0);
         post_gesture_settle_sec_ = declare_parameter("post_gesture_settle_sec", 0.5);
+        // return_tool releases the wrong tool this far above the pickup pose.
+        return_release_height_m_ = declare_parameter("return_release_height_m", 0.005);
 
         joint_state_names_ = declare_parameter(
             "joint_state_names",
@@ -321,6 +326,15 @@ public:
             std::bind(&SkillExecutor::homeHandleCancel, this,
                       std::placeholders::_1),
             std::bind(&SkillExecutor::homeHandleAccepted, this,
+                      std::placeholders::_1));
+
+        return_srv_ = rclcpp_action::create_server<ReturnTool>(
+            this, "return_tool",
+            std::bind(&SkillExecutor::returnToolHandleGoal, this,
+                      std::placeholders::_1, std::placeholders::_2),
+            std::bind(&SkillExecutor::returnToolHandleCancel, this,
+                      std::placeholders::_1),
+            std::bind(&SkillExecutor::returnToolHandleAccepted, this,
                       std::placeholders::_1));
 
         publishState("IDLE", "", "");
@@ -569,17 +583,18 @@ private:
     // Blocks until a fresh double_open_close gesture arrives. Any gesture
     // seen before this call is discarded so a gesture made while the tool
     // was being picked does not count. Wakes every 250 ms to check whether
-    // the goal is being cancelled, so an external cancel stays responsive.
-    // gesture_wait_timeout_sec_ <= 0 means wait indefinitely.
-    // Returns true only on a real gesture (false on cancel or timeout).
+    // the goal is being cancelled or return_tool is preempting the handover,
+    // so both stay responsive. gesture_wait_timeout_sec_ <= 0 means wait
+    // indefinitely. Returns true only on a real gesture (false on cancel,
+    // preemption or timeout).
     bool waitForGesture(const std::shared_ptr<GoalHandleHandover> &goal_handle) {
         std::unique_lock<std::mutex> lock(gesture_mutex_);
         gesture_received_ = false;
         const auto start = std::chrono::steady_clock::now();
         while (rclcpp::ok()) {
             if (gesture_cv_.wait_for(lock, std::chrono::milliseconds(250),
-                                     [this] { return gesture_received_; })) {
-                return true;
+                    [this] { return gesture_received_ || abort_handover_; })) {
+                return !abort_handover_;  // true only on a real gesture
             }
             if (goal_handle->is_canceling()) return false;
             if (gesture_wait_timeout_sec_ > 0.0) {
@@ -707,6 +722,14 @@ private:
         if (!executePlan(lift_plan, err))     { err = "lift exec: "     + err; return false; }
 
         publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
+
+        // Remember where this tool came from so return_tool can put it back.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            last_pick_grasp_pose_ = grasp_pose;
+            last_pick_approach_pose_ = approach_pose;
+            have_last_pick_ = true;
+        }
         return true;
     }
 
@@ -804,6 +827,12 @@ private:
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, post_open_pause_seconds_))));
 
+        // Tool delivered — nothing to return any more.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_last_pick_ = false;
+        }
+
         if (return_home_after_handover_) {
             std::string home_err;
             if (!doReturnHomeInternal(home_err)) {
@@ -827,6 +856,10 @@ private:
         publishState("RELEASING", tool_id_snapshot, tool_class_snapshot);
         publishGripper(true);  // open
         sleepForGripper();
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_last_pick_ = false;
+        }
         return true;
     }
 
@@ -839,6 +872,70 @@ private:
             return false;
         }
         return moveToJointPositions(home_joints_, err);
+    }
+
+    // ── Skill: ReturnTool ────────────────────────────────────────────
+
+    // Brings the currently-held tool back to where it was picked from and
+    // releases it return_release_height_m_ above the original grasp pose.
+    bool doReturnTool(std::string &err) {
+        geometry_msgs::msg::Pose grasp_pose, approach_pose;
+        std::string tool_id_snapshot, tool_class_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            if (!have_last_pick_) {
+                err = "no recorded pick to return";
+                return false;
+            }
+            grasp_pose = last_pick_grasp_pose_;
+            approach_pose = last_pick_approach_pose_;
+            tool_id_snapshot = active_tool_id_;
+            tool_class_snapshot = active_tool_class_;
+        }
+
+        publishState("RETURNING", tool_id_snapshot, tool_class_snapshot);
+
+        geometry_msgs::msg::Pose release_pose = grasp_pose;
+        release_pose.position.z += return_release_height_m_;
+
+        // Pre-flight: plan approach + descend + lift before any motion.
+        moveit::planning_interface::MoveGroupInterface::Plan approach_plan,
+            descend_plan, lift_plan;
+        move_group_->setStartStateToCurrentState();
+        if (!planPoseTarget(approach_pose, approach_plan, err)) {
+            err = "return approach plan: " + err; return false;
+        }
+        move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
+        if (!planLinearPose(release_pose, descend_plan, err)) {
+            err = "return descend plan: " + err; return false;
+        }
+        move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
+        if (!planLinearPose(approach_pose, lift_plan, err)) {
+            err = "return lift plan: " + err; return false;
+        }
+
+        RCLCPP_INFO(get_logger(),
+            "ReturnTool: putting %s back at (%.3f, %.3f, %.3f).",
+            tool_id_snapshot.c_str(), release_pose.position.x,
+            release_pose.position.y, release_pose.position.z);
+
+        if (!executePlan(approach_plan, err)) { err = "return approach exec: " + err; return false; }
+        if (!executePlan(descend_plan, err))  { err = "return descend exec: "  + err; return false; }
+        publishGripper(true);  // open — release the tool
+        sleepForGripper();
+        if (!executePlan(lift_plan, err))     { err = "return lift exec: "     + err; return false; }
+
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_last_pick_ = false;
+        }
+
+        std::string home_err;
+        if (!doReturnHomeInternal(home_err)) {
+            err = "return-home after return-tool failed: " + home_err;
+            return false;
+        }
+        return true;
     }
 
     // ── Action: PickTool ─────────────────────────────────────────────
@@ -985,6 +1082,51 @@ private:
         else    goal_handle->abort(result);
     }
 
+    // ── Action: ReturnTool ───────────────────────────────────────────
+
+    rclcpp_action::GoalResponse returnToolHandleGoal(
+        const rclcpp_action::GoalUUID &,
+        std::shared_ptr<const ReturnTool::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }
+    rclcpp_action::CancelResponse returnToolHandleCancel(
+        const std::shared_ptr<GoalHandleReturnTool>) {
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+    void returnToolHandleAccepted(
+        const std::shared_ptr<GoalHandleReturnTool> goal_handle) {
+        std::thread([this, goal_handle] { this->returnExecute(goal_handle); }).detach();
+    }
+    void returnExecute(const std::shared_ptr<GoalHandleReturnTool> goal_handle) {
+        // Preempt a running handover: tell waitForGesture to stop, then take
+        // over the executor as soon as that handover releases the mutex.
+        {
+            std::lock_guard<std::mutex> lock(gesture_mutex_);
+            abort_handover_ = true;
+        }
+        gesture_cv_.notify_all();
+
+        std::unique_lock<std::mutex> lock(execution_mutex_);  // blocking
+        {
+            std::lock_guard<std::mutex> glock(gesture_mutex_);
+            abort_handover_ = false;
+        }
+
+        auto result = std::make_shared<ReturnTool::Result>();
+        std::string err;
+        const bool ok = doReturnTool(err);
+        result->success = ok;
+        result->message = ok ? "ok" : err;
+        publishState("IDLE", "", "");
+        if (ok) {
+            goal_handle->succeed(result);
+        } else if (goal_handle->is_canceling()) {
+            goal_handle->canceled(result);
+        } else {
+            goal_handle->abort(result);
+        }
+    }
+
     // ── Members ──────────────────────────────────────────────────────
 
     // Params
@@ -1008,6 +1150,7 @@ private:
     double cartesian_min_fraction_;
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;
+    double return_release_height_m_;
     std::vector<std::string> joint_state_names_;
     geometry_msgs::msg::Point hand_offset_;
     geometry_msgs::msg::Quaternion handover_orientation_;
@@ -1027,6 +1170,7 @@ private:
     rclcpp_action::Server<HandoverTool>::SharedPtr handover_srv_;
     rclcpp_action::Server<ReleaseTool>::SharedPtr release_srv_;
     rclcpp_action::Server<ReturnHome>::SharedPtr home_srv_;
+    rclcpp_action::Server<ReturnTool>::SharedPtr return_srv_;
 
     // MoveIt
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
@@ -1040,11 +1184,16 @@ private:
     std::mutex gesture_mutex_;
     std::condition_variable gesture_cv_;
     bool gesture_received_ = false;
+    bool abort_handover_ = false;
     tracking_pkg::msg::HandState last_hand_state_;
     bool have_hand_state_ = false;
     std::string current_state_ = "IDLE";
     std::string active_tool_id_;
     std::string active_tool_class_;
+    // Last successful pick — used by return_tool to put a wrong tool back.
+    geometry_msgs::msg::Pose last_pick_grasp_pose_;
+    geometry_msgs::msg::Pose last_pick_approach_pose_;
+    bool have_last_pick_ = false;
 };
 
 

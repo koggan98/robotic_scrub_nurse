@@ -30,6 +30,7 @@ import threading
 
 import rclpy
 import yaml
+from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from pydantic import BaseModel, Field
@@ -38,7 +39,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from tracking_pkg.action import HandoverTool, PickTool, ReleaseTool, ReturnHome
+from tracking_pkg.action import (
+    HandoverTool, PickTool, ReleaseTool, ReturnHome, ReturnTool)
 from tracking_pkg.srv import GetWorldModel
 
 
@@ -56,9 +58,6 @@ class PickAndHandoverArgs(BaseModel):
 
 
 _EMPTY_SCHEMA = {"type": "object", "properties": {}, "required": []}
-
-# Sentinel for _send_action: fall back to the node's default action timeout.
-_DEFAULT_TIMEOUT = object()
 
 
 class LLMOrchestratorNode(Node):
@@ -89,6 +88,11 @@ class LLMOrchestratorNode(Node):
         self._client = None  # lazy OpenAI client
         self._busy = threading.Lock()
         self._active_goal_handle = None
+        # Handover runs asynchronously so the orchestrator stays free to take
+        # new commands (e.g. "wrong tool") while the robot waits for the
+        # surgeon's gesture. _pending_handover holds that in-flight goal.
+        self._pending_lock = threading.Lock()
+        self._pending_handover = None
 
         # ── ROS interfaces ───────────────────────────────────────
         cb = ReentrantCallbackGroup()
@@ -102,6 +106,8 @@ class LLMOrchestratorNode(Node):
             self, ReleaseTool, 'release_tool', callback_group=cb)
         self.home_client = ActionClient(
             self, ReturnHome, 'return_home', callback_group=cb)
+        self.return_client = ActionClient(
+            self, ReturnTool, 'return_tool', callback_group=cb)
 
         self.create_subscription(
             String, '/user_speech', self._speech_cb, 10, callback_group=cb)
@@ -155,6 +161,8 @@ Functions:
 - get_world_model(): tools currently on the tray (ids, classes) and system state.
 - pick_and_handover(tool_id): the robot immediately picks the tool, then
   delivers it. Empty tool_id = highest-confidence reachable tool.
+- return_tool(): the robot puts the tool it is currently holding back where
+  it was picked up. Use when the picked tool is the wrong one.
 - release_tool(): open the gripper now.
 - return_home(): move the arm to its home pose.
 - abort(): cancel the running robot action.
@@ -164,8 +172,10 @@ Rules:
 2. Match the request to exactly one tool id, then call pick_and_handover(tool_id).
    The robot picks the tool up right away. Never ask the surgeon to do
    anything, and never mention gestures or handoff signals.
-3. If several tools match and you truly cannot choose, ask one short question.
-4. Always reply in English, in extremely terse caveman style: drop articles
+3. If the surgeon says the tool is wrong / "not that one" / "put it back",
+   call return_tool().
+4. If several tools match and you truly cannot choose, ask one short question.
+5. Always reply in English, in extremely terse caveman style: drop articles
    and filler words, max ~6 words. Examples: "Needle holder. Picking." /
    "Done." / "No scalpel on tray." / "Which scissors?"
 """
@@ -183,6 +193,12 @@ Rules:
                                "delivers it. Empty tool_id = "
                                "highest-confidence tool.",
                 "parameters": PickAndHandoverArgs.model_json_schema()}},
+            {"type": "function", "function": {
+                "name": "return_tool",
+                "description": "Put the currently held tool back where it "
+                               "was picked up. Use when the wrong tool was "
+                               "picked.",
+                "parameters": _EMPTY_SCHEMA}},
             {"type": "function", "function": {
                 "name": "release_tool",
                 "description": "Open the gripper immediately.",
@@ -290,6 +306,8 @@ Rules:
             return self._tool_get_world_model()
         if name == 'pick_and_handover':
             return self._tool_pick_and_handover(args)
+        if name == 'return_tool':
+            return self._tool_return_tool()
         if name == 'release_tool':
             return self._tool_simple_action(
                 self.release_client, ReleaseTool.Goal(), 'release_tool')
@@ -333,36 +351,56 @@ Rules:
             return json.dumps({"success": False, "stage": "pick",
                                "message": pick_result.message})
 
-        # Tool is in the gripper. The handover action below blocks until the
-        # surgeon's gesture, so emit feedback now — the LLM is unreachable
-        # while that call is in flight.
+        # Tool is in the gripper. Start the handover but do NOT wait for it:
+        # it blocks indefinitely on the surgeon's gesture. Running it async
+        # keeps the orchestrator free to take new commands ("wrong tool").
         self._publish_response('waiting for handoff')
 
         handover_goal = HandoverTool.Goal()
-        # Empty pose -> skill_executor waits for the surgeon's
-        # double_open_close gesture before delivering. That wait has no
-        # timeout, so neither can this action call.
-        handover_goal.hand_pose = PoseStamped()
-        ho_result, err = self._send_action(
-            self.handover_client, handover_goal, 'handover_tool',
-            result_timeout=None)
-        if ho_result is None:
+        handover_goal.hand_pose = PoseStamped()  # empty -> wait for gesture
+        gh, err = self._start_action(
+            self.handover_client, handover_goal, 'handover_tool')
+        if gh is None:
             return json.dumps({
                 "success": False, "stage": "handover", "message": err,
                 "picked_tool_id": pick_result.picked_tool_id,
                 "picked_tool_class": pick_result.picked_tool_class})
-        if not ho_result.success:
-            return json.dumps({
-                "success": False, "stage": "handover",
-                "message": ho_result.message,
-                "picked_tool_id": pick_result.picked_tool_id,
-                "picked_tool_class": pick_result.picked_tool_class})
+
+        with self._pending_lock:
+            self._pending_handover = gh
+        gh.get_result_async().add_done_callback(self._on_handover_done)
 
         return json.dumps({
-            "success": True,
+            "success": True, "stage": "handover_started",
             "picked_tool_id": pick_result.picked_tool_id,
             "picked_tool_class": pick_result.picked_tool_class,
-            "message": "tool picked and handed over"})
+            "message": "tool picked; robot now waiting for handoff"})
+
+    def _on_handover_done(self, future):
+        """Result callback for the async handover. Runs on an executor
+        thread once the robot finishes (or the handover is preempted)."""
+        with self._pending_lock:
+            self._pending_handover = None
+        try:
+            wrapped = future.result()
+        except Exception as e:
+            self.get_logger().warn(f'handover result error: {e}')
+            return
+        if (wrapped.status == GoalStatus.STATUS_SUCCEEDED
+                and getattr(wrapped.result, 'success', False)):
+            self._publish_response('handoff done')
+        # canceled / aborted (e.g. preempted by return_tool): stay silent —
+        # the return_tool path reports its own result.
+
+    def _tool_return_tool(self):
+        # skill_executor preempts a running handover on its own, so just
+        # send the goal and wait for the return motion to finish.
+        result, err = self._send_action(
+            self.return_client, ReturnTool.Goal(), 'return_tool')
+        if result is None:
+            return json.dumps({"success": False, "message": err})
+        return json.dumps({"success": bool(result.success),
+                           "message": result.message})
 
     def _tool_simple_action(self, client, goal, label):
         result, err = self._send_action(client, goal, label)
@@ -372,7 +410,10 @@ Rules:
                            "message": result.message})
 
     def _tool_abort(self):
-        gh = self._active_goal_handle
+        with self._pending_lock:
+            gh = self._pending_handover
+        if gh is None:
+            gh = self._active_goal_handle
         if gh is None:
             return json.dumps({"success": True,
                                "message": "nothing to abort"})
@@ -387,9 +428,9 @@ Rules:
 
     # ── Action / future helpers ─────────────────────────────────────
 
-    def _send_action(self, client, goal, label, result_timeout=_DEFAULT_TIMEOUT):
-        # result_timeout: _DEFAULT_TIMEOUT -> self.action_timeout_sec,
-        # None -> block indefinitely, or an explicit seconds value.
+    def _start_action(self, client, goal, label):
+        """Send a goal and wait until it is accepted (not for the result).
+        Returns (goal_handle, None) or (None, error)."""
         if not client.wait_for_server(timeout_sec=5.0):
             return None, f'{label}: action server unavailable'
         send_future = client.send_goal_async(goal)
@@ -398,11 +439,17 @@ Rules:
             return None, f'{label}: goal-send timed out'
         if not gh.accepted:
             return None, f'{label}: goal rejected by server'
+        return gh, None
+
+    def _send_action(self, client, goal, label):
+        """Send a goal and block until the result. Returns (result, None)
+        or (None, error)."""
+        gh, err = self._start_action(client, goal, label)
+        if gh is None:
+            return None, err
         self._active_goal_handle = gh
-        if result_timeout is _DEFAULT_TIMEOUT:
-            result_timeout = self.action_timeout_sec
         result_future = gh.get_result_async()
-        wrapped = self._wait_for_future(result_future, result_timeout)
+        wrapped = self._wait_for_future(result_future, self.action_timeout_sec)
         self._active_goal_handle = None
         if wrapped is None:
             return None, f'{label}: result timed out'

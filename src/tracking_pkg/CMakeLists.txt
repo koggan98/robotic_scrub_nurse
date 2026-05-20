@@ -91,6 +91,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/HandoverTool.action"
   "action/ReleaseTool.action"
   "action/ReturnHome.action"
+  "action/ReturnTool.action"
   DEPENDENCIES geometry_msgs std_msgs action_msgs
 )
 

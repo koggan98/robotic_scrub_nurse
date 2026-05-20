@@ -30,6 +30,7 @@ from tracking_pkg.action import (
     PickTool,
     ReleaseTool,
     ReturnHome,
+    ReturnTool,
 )
 from tracking_pkg.srv import GetWorldModel
 
@@ -41,6 +42,7 @@ Commands:
   p N            pick tool at list index N
   p <tool_id>    pick by persistent id (e.g. 'p tool_3')
   h              handover (skill_executor uses last /hand_state)
+  b              bring picked tool back to its pickup spot
   r              release gripper now
   H              return home
   ? / help       this help
@@ -58,6 +60,7 @@ class ScrubNurseCLI(Node):
         self.handover_client = ActionClient(self, HandoverTool, 'handover_tool')
         self.release_client = ActionClient(self, ReleaseTool, 'release_tool')
         self.home_client = ActionClient(self, ReturnHome, 'return_home')
+        self.return_client = ActionClient(self, ReturnTool, 'return_tool')
 
         self._cancel_requested = threading.Event()
 
@@ -207,6 +210,10 @@ class ScrubNurseCLI(Node):
         goal.hand_pose = PoseStamped()
         self._send_action('HANDOVER', self.handover_client, goal)
 
+    def send_return(self):
+        goal = ReturnTool.Goal()
+        self._send_action('RETURN', self.return_client, goal)
+
     def send_release(self):
         goal = ReleaseTool.Goal()
         self._send_action('RELEASE', self.release_client, goal)
@@ -240,6 +247,9 @@ class ScrubNurseCLI(Node):
                 continue
             if raw == 'h':
                 self.send_handover()
+                continue
+            if raw == 'b':
+                self.send_return()
                 continue
             if raw == 'r':
                 self.send_release()
