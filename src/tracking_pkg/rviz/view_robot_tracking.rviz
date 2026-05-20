@@ -291,6 +291,24 @@ Visualization Manager:
       Transport Hint: raw
       Value: true
     - Alpha: 1
+      Class: rviz_default_plugins/Image
+      Enabled: true
+      Image Rendering: background and overlay
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /tool_detection/annotated_image
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Tool Detection Annotated Image
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Value: true
+    - Alpha: 1
       Class: rviz_default_plugins/Marker
       Enabled: true
       Topic:

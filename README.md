@@ -409,6 +409,7 @@ ros2 launch tracking_pkg loop_with_moveit_launch.py ur_type:=ur3e
 
 This launch starts `ur_moveit_config` without its default RViz and opens RViz with a preloaded config that already includes:
 - `/annotated_hand_image`
+- `/tool_detection/annotated_image`
 - `/gesture_pose_marker`
 - `/hand_pose_marker`
 - `/hand_pose`
