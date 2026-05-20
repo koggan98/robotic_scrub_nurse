@@ -174,6 +174,7 @@ class HandTrackerNode(Node):
         self.last_publish_time = 0.0
         self.last_annotated_time = 0.0
         self.last_tf_warn_time = 0.0
+        self.last_depth_bounds_warn_time = 0.0
 
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -313,12 +314,13 @@ class HandTrackerNode(Node):
                     self.get_logger().info('Gesture detected: double_open_close')
 
                 cx, cy = self._get_palm_center_px(best_hand, frame.shape)
+                palm_depth_m = None
 
                 if (0 <= cy < depth.shape[0] and 0 <= cx < depth.shape[1]):
-                    depth_m = depth[cy, cx] / 1000.0
+                    palm_depth_m = depth[cy, cx] / 1000.0
 
-                    if depth_m > 0.0 and now - self.last_publish_time >= self.publish_interval:
-                        cam_pt = self._pixel_to_camera(cx, cy, depth_m)
+                    if palm_depth_m > 0.0 and now - self.last_publish_time >= self.publish_interval:
+                        cam_pt = self._pixel_to_camera(cx, cy, palm_depth_m)
                         if cam_pt is not None:
                             world_pt = self._camera_to_world(cam_pt)
                             if world_pt is not None:
@@ -339,10 +341,19 @@ class HandTrackerNode(Node):
 
                                 self._publish_marker(world_pt)
                                 self.last_publish_time = now
+                elif now - self.last_depth_bounds_warn_time >= 2.0:
+                    self.get_logger().warn(
+                        'Hand detected but palm center pixel is outside depth image '
+                        f'({cx}, {cy}) for depth size {depth.shape[1]}x{depth.shape[0]}; '
+                        'skipping this frame.'
+                    )
+                    self.last_depth_bounds_warn_time = now
 
-                cv2.circle(frame, (cx, cy), 5, (0, 255, 0), 2)
-                cv2.putText(frame, f'{depth[cy, cx] / 1000.0:.2f}m',
-                            (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                if 0 <= cy < frame.shape[0] and 0 <= cx < frame.shape[1]:
+                    cv2.circle(frame, (cx, cy), 5, (0, 255, 0), 2)
+                    if palm_depth_m is not None:
+                        cv2.putText(frame, f'{palm_depth_m:.2f}m',
+                                    (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             else:
                 # No hand detected — publish empty HandState at the configured rate
                 # so world_model_node sees "no hand" instead of stale data.

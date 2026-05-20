@@ -287,7 +287,7 @@ def generate_launch_description():
                         'inference_rate_hz': 5.0,
                         # Fixed-plane projection while RealSense is mounted
                         # closer than its min depth. Set to NaN to revert.
-                        'fixed_tool_plane_z_m': 0.035,
+                        'fixed_tool_plane_z_m': 0.038,
                         'publish_annotated_image': True,
                     }],
                 ),
