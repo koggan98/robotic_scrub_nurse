@@ -735,53 +735,12 @@ private:
 
     // ── Skill: HandoverTool ──────────────────────────────────────────
 
-    bool doHandover(const std::shared_ptr<GoalHandleHandover> &goal_handle,
-                    std::string &err) {
-        const auto goal = goal_handle->get_goal();
-        const geometry_msgs::msg::PoseStamped &goal_pose = goal->hand_pose;
-
-        geometry_msgs::msg::Pose hand_pose;
-
-        if (!goal_pose.header.frame_id.empty()) {
-            // Explicit pose bypass (manual testing) — skip the gesture wait.
-            hand_pose = goal_pose.pose;
-        } else {
-            // Gesture-triggered path: hold the tool and wait for the
-            // surgeon's double_open_close gesture, then go to the open
-            // (flat) hand — that pose reads more accurately than a moving
-            // or closed hand.
-            publishHandoverFeedback(goal_handle, "AWAITING_GESTURE");
-            RCLCPP_INFO(get_logger(),
-                "HandoverTool: tool ready — waiting for double_open_close gesture.");
-            if (!waitForGesture(goal_handle)) {
-                err = goal_handle->is_canceling()
-                      ? "handover cancelled while waiting for gesture"
-                      : "no double_open_close gesture detected";
-                return false;
-            }
-            RCLCPP_INFO(get_logger(),
-                "HandoverTool: gesture detected — capturing open-hand pose.");
-            rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::duration<double>(std::max(0.0, post_gesture_settle_sec_))));
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            if (!have_hand_state_ || !last_hand_state_.is_tracked) {
-                err = "hand not tracked after gesture";
-                return false;
-            }
-            hand_pose = last_hand_state_.hand_pose.pose;
-        }
-
-        std::string tool_id_snapshot, tool_class_snapshot;
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            tool_id_snapshot = active_tool_id_;
-            tool_class_snapshot = active_tool_class_;
-        }
-
-        publishState("HANDOVER", tool_id_snapshot, tool_class_snapshot);
-        publishHandoverFeedback(goal_handle, "MOVING_TO_HAND");
-
-        geometry_msgs::msg::Pose target = hand_pose;
+    bool planHandoverToPose(
+        const geometry_msgs::msg::Pose &hand_pose,
+        moveit::planning_interface::MoveGroupInterface::Plan &plan,
+        geometry_msgs::msg::Pose &target,
+        std::string &err) {
+        target = hand_pose;
         target.position.x += hand_offset_.x;
         target.position.y += hand_offset_.y;
         target.position.z += hand_offset_.z;
@@ -797,18 +756,109 @@ private:
         move_group_->setMaxAccelerationScalingFactor(handover_acceleration_scale_);
         move_group_->setPoseTarget(target);
 
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
         if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             move_group_->clearPoseTargets();
             err = "handover plan failed";
             return false;
         }
+        move_group_->clearPoseTargets();
+        return true;
+    }
+
+    bool doHandover(const std::shared_ptr<GoalHandleHandover> &goal_handle,
+                    std::string &err) {
+        const auto goal = goal_handle->get_goal();
+        const geometry_msgs::msg::PoseStamped &goal_pose = goal->hand_pose;
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        geometry_msgs::msg::Pose target;
+
+        if (!goal_pose.header.frame_id.empty()) {
+            // Explicit pose bypass (manual testing) — skip the gesture wait.
+            RCLCPP_INFO(get_logger(), "Hand detected: using explicit HandoverTool goal pose.");
+            if (!planHandoverToPose(goal_pose.pose, plan, target, err)) {
+                return false;
+            }
+            RCLCPP_INFO(get_logger(), "Reachability decision: reachable.");
+        } else {
+            // Gesture-triggered path: hold the tool and wait until a
+            // reachable gesture arrives. Unreachable gestures are ignored
+            // before any state, feedback, gripper, or motion side effect.
+            RCLCPP_INFO(get_logger(),
+                "HandoverTool: tool ready — waiting for double_open_close gesture.");
+            while (rclcpp::ok()) {
+                publishHandoverFeedback(goal_handle, "AWAITING_GESTURE");
+                if (!waitForGesture(goal_handle)) {
+                    bool preempted = false;
+                    {
+                        std::lock_guard<std::mutex> lock(gesture_mutex_);
+                        preempted = abort_handover_;
+                    }
+                    err = goal_handle->is_canceling()
+                          ? "handover cancelled while waiting for gesture"
+                          : preempted
+                              ? "handover preempted while waiting for gesture"
+                              : "no double_open_close gesture detected";
+                    return false;
+                }
+
+                RCLCPP_INFO(get_logger(),
+                    "HandoverTool: gesture detected — capturing open-hand pose.");
+                rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::duration<double>(std::max(0.0, post_gesture_settle_sec_))));
+
+                if (goal_handle->is_canceling()) {
+                    err = "handover cancelled after gesture";
+                    return false;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(gesture_mutex_);
+                    if (abort_handover_) {
+                        err = "handover preempted after gesture";
+                        return false;
+                    }
+                }
+
+                geometry_msgs::msg::Pose hand_pose;
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    if (!have_hand_state_ || !last_hand_state_.is_tracked) {
+                        err = "hand not tracked after gesture";
+                        return false;
+                    }
+                    hand_pose = last_hand_state_.hand_pose.pose;
+                }
+                RCLCPP_INFO(get_logger(), "Hand detected: using tracked hand pose after gesture.");
+
+                std::string plan_err;
+                if (!planHandoverToPose(hand_pose, plan, target, plan_err)) {
+                    RCLCPP_WARN(get_logger(), "Reachability decision: unreachable.");
+                    RCLCPP_WARN(get_logger(),
+                        "Action rejected: handover target unreachable; ignoring gesture and waiting for next gesture.");
+                    continue;
+                }
+                RCLCPP_INFO(get_logger(), "Reachability decision: reachable.");
+                break;
+            }
+            if (!rclcpp::ok()) {
+                err = "shutdown while waiting for gesture";
+                return false;
+            }
+        }
+
+        std::string tool_id_snapshot, tool_class_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            tool_id_snapshot = active_tool_id_;
+            tool_class_snapshot = active_tool_class_;
+        }
+
+        publishState("HANDOVER", tool_id_snapshot, tool_class_snapshot);
+        publishHandoverFeedback(goal_handle, "MOVING_TO_HAND");
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-            move_group_->clearPoseTargets();
             err = "handover execute failed";
             return false;
         }
-        move_group_->clearPoseTargets();
 
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, pre_release_dwell_seconds_))));

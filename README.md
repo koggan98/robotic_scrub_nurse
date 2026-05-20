@@ -423,6 +423,8 @@ The instrument-camera/world-model path now starts `world -> tray_camera_color_op
 
 The same launch now also starts `grasp_approach_pose_service.py`, which exposes `/get_grasp_approach_pose` for on-demand conversion of a TF target frame such as `tool_holder_frame` into a top-down robot grasp pose in `world`.
 
+In the LLM/action handover path, unreachable gesture targets are ignored before any motion, state change, or release-side effect. The robot keeps holding the tool in the previous state, waits for the next reachable gesture, and can still be preempted by `return_tool`.
+
 `loop_launch.py` now starts the camera publisher and static board TF first, then starts tracking consumers slightly later. `loop_with_moveit_launch.py` also delays RViz briefly so the TF tree is usually already populated when RViz opens, which reduces startup-time warning noise on slower hosts such as the NUC.
 
 During handover, the robot now holds briefly at the target pose before force-guided release sensing is enabled. Audio events are queued sequentially so the initial `gesture_detected` tone is not overwritten by a following `unreachable` tone.
