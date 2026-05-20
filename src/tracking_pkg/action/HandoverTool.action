@@ -1,6 +1,8 @@
 # Goal: deliver the currently-held tool to a receiver hand.
-# If hand_pose.header.frame_id is empty, the executor uses the last
-# /hand_state from world_model_node.
+# If hand_pose.header.frame_id is empty, the executor waits for the
+# surgeon's double_open_close gesture and then uses the last /hand_state.
+# If hand_pose.header.frame_id is set, that pose is used directly (no
+# gesture wait — manual / test bypass).
 geometry_msgs/PoseStamped hand_pose
 ---
 # Result
@@ -8,4 +10,4 @@ bool success
 string message
 ---
 # Feedback
-string phase         # MOVING_TO_HAND | AWAITING_RELEASE | RELEASED
+string phase         # AWAITING_GESTURE | MOVING_TO_HAND | RELEASED

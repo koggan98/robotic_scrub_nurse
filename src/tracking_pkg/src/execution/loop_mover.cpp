@@ -799,15 +799,11 @@ private:
     }
 
     void handPositionCallback(const geometry_msgs::msg::Pose::SharedPtr msg) {
-        RCLCPP_INFO(this->get_logger(), "Hand detected: received /hand_pose message in world frame.");
-
         if (!waiting_for_hand_pose_) {
-            RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but system is not waiting for a gesture.");
             return;
         }
 
         if (!tool_has_been_picked_up_) {
-            RCLCPP_INFO(this->get_logger(), "Action rejected: hand pose received but no tool has been picked up yet.");
             return;
         }
 

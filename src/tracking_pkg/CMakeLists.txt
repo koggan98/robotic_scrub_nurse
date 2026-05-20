@@ -34,7 +34,7 @@ install(
     src/reasoning/world_model_node.py
     src/reasoning/world_model_builder.py
     # LLM
-    src/llm/llm_reasoning_node.py
+    src/llm/llm_orchestrator_node.py
     # Interfaces
     src/interfaces/asr_node.py
     src/interfaces/handover_sound_publisher.py

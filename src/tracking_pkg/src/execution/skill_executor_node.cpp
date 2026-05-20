@@ -213,6 +213,10 @@ public:
         return_home_after_handover_ = declare_parameter("return_home_after_handover", true);
         gripper_done_timeout_seconds_ = declare_parameter("gripper_done_timeout_seconds", 30.0);
         cartesian_min_fraction_ = declare_parameter("cartesian_min_fraction", 0.95);
+        // Handover waits for the surgeon's double_open_close gesture before
+        // moving to the hand. 0.0 = wait indefinitely.
+        gesture_wait_timeout_sec_ = declare_parameter("gesture_wait_timeout_sec", 0.0);
+        post_gesture_settle_sec_ = declare_parameter("post_gesture_settle_sec", 0.5);
 
         joint_state_names_ = declare_parameter(
             "joint_state_names",
@@ -254,6 +258,9 @@ public:
         hand_state_sub_ = create_subscription<tracking_pkg::msg::HandState>(
             "/hand_state", 10,
             std::bind(&SkillExecutor::handStateCb, this, std::placeholders::_1));
+        gesture_sub_ = create_subscription<std_msgs::msg::String>(
+            "/hand_gesture", 10,
+            std::bind(&SkillExecutor::gestureCb, this, std::placeholders::_1));
         gripper_done_sub_ = create_subscription<std_msgs::msg::Bool>(
             "/gripper_done", 10,
             std::bind(&SkillExecutor::gripperDoneCb, this, std::placeholders::_1));
@@ -327,6 +334,15 @@ private:
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_hand_state_ = *msg;
         have_hand_state_ = true;
+    }
+
+    void gestureCb(const std_msgs::msg::String::SharedPtr msg) {
+        if (msg->data != "double_open_close") return;
+        {
+            std::lock_guard<std::mutex> lock(gesture_mutex_);
+            gesture_received_ = true;
+        }
+        gesture_cv_.notify_all();
     }
 
     void gripperDoneCb(const std_msgs::msg::Bool::SharedPtr msg) {
@@ -550,6 +566,39 @@ private:
         return ok;
     }
 
+    // Blocks until a fresh double_open_close gesture arrives. Any gesture
+    // seen before this call is discarded so a gesture made while the tool
+    // was being picked does not count. Wakes every 250 ms to check whether
+    // the goal is being cancelled, so an external cancel stays responsive.
+    // gesture_wait_timeout_sec_ <= 0 means wait indefinitely.
+    // Returns true only on a real gesture (false on cancel or timeout).
+    bool waitForGesture(const std::shared_ptr<GoalHandleHandover> &goal_handle) {
+        std::unique_lock<std::mutex> lock(gesture_mutex_);
+        gesture_received_ = false;
+        const auto start = std::chrono::steady_clock::now();
+        while (rclcpp::ok()) {
+            if (gesture_cv_.wait_for(lock, std::chrono::milliseconds(250),
+                                     [this] { return gesture_received_; })) {
+                return true;
+            }
+            if (goal_handle->is_canceling()) return false;
+            if (gesture_wait_timeout_sec_ > 0.0) {
+                const double elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start).count();
+                if (elapsed >= gesture_wait_timeout_sec_) return false;
+            }
+        }
+        return false;
+    }
+
+    void publishHandoverFeedback(
+        const std::shared_ptr<GoalHandleHandover> &goal_handle,
+        const std::string &phase) {
+        auto fb = std::make_shared<HandoverTool::Feedback>();
+        fb->phase = phase;
+        goal_handle->publish_feedback(fb);
+    }
+
     // ── Skill: PickTool ──────────────────────────────────────────────
 
     bool tryPlanPickSequence(
@@ -663,26 +712,40 @@ private:
 
     // ── Skill: HandoverTool ──────────────────────────────────────────
 
-    bool doHandover(const geometry_msgs::msg::PoseStamped &goal_pose,
+    bool doHandover(const std::shared_ptr<GoalHandleHandover> &goal_handle,
                     std::string &err) {
-        geometry_msgs::msg::Pose hand_pose;
-        bool have_pose = false;
+        const auto goal = goal_handle->get_goal();
+        const geometry_msgs::msg::PoseStamped &goal_pose = goal->hand_pose;
 
-        // Honor explicit goal pose if frame is set, else fall back to last
-        // /hand_state.
+        geometry_msgs::msg::Pose hand_pose;
+
         if (!goal_pose.header.frame_id.empty()) {
+            // Explicit pose bypass (manual testing) — skip the gesture wait.
             hand_pose = goal_pose.pose;
-            have_pose = true;
         } else {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            if (have_hand_state_ && last_hand_state_.is_tracked) {
-                hand_pose = last_hand_state_.hand_pose.pose;
-                have_pose = true;
+            // Gesture-triggered path: hold the tool and wait for the
+            // surgeon's double_open_close gesture, then go to the open
+            // (flat) hand — that pose reads more accurately than a moving
+            // or closed hand.
+            publishHandoverFeedback(goal_handle, "AWAITING_GESTURE");
+            RCLCPP_INFO(get_logger(),
+                "HandoverTool: tool ready — waiting for double_open_close gesture.");
+            if (!waitForGesture(goal_handle)) {
+                err = goal_handle->is_canceling()
+                      ? "handover cancelled while waiting for gesture"
+                      : "no double_open_close gesture detected";
+                return false;
             }
-        }
-        if (!have_pose) {
-            err = "no hand pose available (no goal pose and last /hand_state not tracked)";
-            return false;
+            RCLCPP_INFO(get_logger(),
+                "HandoverTool: gesture detected — capturing open-hand pose.");
+            rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>(std::max(0.0, post_gesture_settle_sec_))));
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            if (!have_hand_state_ || !last_hand_state_.is_tracked) {
+                err = "hand not tracked after gesture";
+                return false;
+            }
+            hand_pose = last_hand_state_.hand_pose.pose;
         }
 
         std::string tool_id_snapshot, tool_class_snapshot;
@@ -693,6 +756,7 @@ private:
         }
 
         publishState("HANDOVER", tool_id_snapshot, tool_class_snapshot);
+        publishHandoverFeedback(goal_handle, "MOVING_TO_HAND");
 
         geometry_msgs::msg::Pose target = hand_pose;
         target.position.x += hand_offset_.x;
@@ -842,14 +906,18 @@ private:
             goal_handle->abort(result);
             return;
         }
-        const auto goal = goal_handle->get_goal();
         std::string err;
-        const bool ok = doHandover(goal->hand_pose, err);
+        const bool ok = doHandover(goal_handle, err);
         result->success = ok;
         result->message = ok ? "ok" : err;
         publishState("IDLE", "", "");
-        if (ok) goal_handle->succeed(result);
-        else    goal_handle->abort(result);
+        if (ok) {
+            goal_handle->succeed(result);
+        } else if (goal_handle->is_canceling()) {
+            goal_handle->canceled(result);
+        } else {
+            goal_handle->abort(result);
+        }
     }
 
     // ── Action: ReleaseTool ──────────────────────────────────────────
@@ -938,6 +1006,8 @@ private:
     bool return_home_after_handover_;
     double gripper_done_timeout_seconds_;
     double cartesian_min_fraction_;
+    double gesture_wait_timeout_sec_;
+    double post_gesture_settle_sec_;
     std::vector<std::string> joint_state_names_;
     geometry_msgs::msg::Point hand_offset_;
     geometry_msgs::msg::Quaternion handover_orientation_;
@@ -948,6 +1018,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_zeroer_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
     rclcpp::Subscription<tracking_pkg::msg::HandState>::SharedPtr hand_state_sub_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_done_sub_;
     rclcpp::Client<tracking_pkg::srv::GetWorldState>::SharedPtr world_state_client_;
 
@@ -966,6 +1037,9 @@ private:
     std::mutex gripper_done_mutex_;
     std::condition_variable gripper_done_cv_;
     bool gripper_done_received_ = false;
+    std::mutex gesture_mutex_;
+    std::condition_variable gesture_cv_;
+    bool gesture_received_ = false;
     tracking_pkg::msg::HandState last_hand_state_;
     bool have_hand_state_ = false;
     std::string current_state_ = "IDLE";

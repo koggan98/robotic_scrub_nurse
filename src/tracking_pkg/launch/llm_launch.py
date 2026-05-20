@@ -437,6 +437,11 @@ def generate_launch_description():
                         # Pre-flight cartesian path tolerance (was 0.99,
                         # too strict — caused mid-pick aborts).
                         'cartesian_min_fraction': 0.95,
+                        # Handover waits for the surgeon's double_open_close
+                        # gesture before moving to the hand. 0.0 = wait
+                        # indefinitely.
+                        'gesture_wait_timeout_sec': 0.0,
+                        'post_gesture_settle_sec': 0.5,
                         'hand_offset': [-0.08, 0.0, 0.05],
                         'handover_orientation': [-0.63, 0.63, -0.321, 0.321],
                         'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,
@@ -495,30 +500,34 @@ def generate_launch_description():
                     name='asr_node',
                     output='screen',
                     parameters=[{
-                        'whisper_model': 'base',
-                        'language': 'de',
-                        'silence_threshold_seconds': 0.8,
+                        'whisper_model': 'base.en',
+                        'language': 'en',
+                        'silence_threshold_seconds': 0.5,
                     }],
                 ),
             ]
         ),
 
         # ── Layer 7: LLM ─────────────────────────────────────────
-        # TODO: Enable when OpenAI API key is configured
-        # TimerAction(
-        #     period=4.0,
-        #     actions=[
-        #         Node(
-        #             package='tracking_pkg',
-        #             executable='llm_reasoning_node.py',
-        #             name='llm_reasoning',
-        #             output='screen',
-        #             parameters=[{
-        #                 'model_name': 'gpt-4o',
-        #             }],
-        #         ),
-        #     ]
-        # ),
+        # High-level planner: consumes /user_speech, runs an OpenAI
+        # tool-calling loop, drives the skill actions. Needs OPENAI_API_KEY
+        # in the environment (or openai_api_key parameter).
+        TimerAction(
+            period=4.0,
+            actions=[
+                Node(
+                    package='tracking_pkg',
+                    executable='llm_orchestrator_node.py',
+                    name='llm_orchestrator_node',
+                    output='screen',
+                    parameters=[{
+                        'model_name': 'gpt-4o-mini',
+                        'max_tool_turns': 8,
+                        'action_timeout_sec': 120.0,
+                    }],
+                ),
+            ]
+        ),
 
         # ── Layer 8: RViz (optional, conditional on tracking_rviz) ─
         TimerAction(

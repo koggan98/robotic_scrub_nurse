@@ -13,6 +13,8 @@
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>action_msgs</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
@@ -32,6 +34,10 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
+  <!-- llm_orchestrator_node needs pydantic + the OpenAI SDK.
+       pydantic is available via rosdep; the OpenAI SDK is pip-only:
+       pip install openai -->
+  <exec_depend>python3-pydantic</exec_depend>
 
   <member_of_group>rosidl_interface_packages</member_of_group>
 

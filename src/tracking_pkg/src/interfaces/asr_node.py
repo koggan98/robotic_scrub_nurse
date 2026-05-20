@@ -13,9 +13,9 @@ Publishers:
   /user_speech (std_msgs/String) - transcribed speech segments
 
 Parameters:
-  whisper_model (str): Model size: tiny, base, small, medium, large-v3
-                       Recommendation: 'base' for CPU (fast, decent quality)
-  language (str): Expected language code (de, en) or empty for auto-detect
+  whisper_model (str): Model size: tiny.en, base.en, small.en, medium, large-v3
+                       Recommendation: 'base.en' for CPU (fast, English-only)
+  language (str): Expected language code (en) or empty for auto-detect
   sample_rate (int): Audio sample rate in Hz (default: 16000, Whisper native)
   silence_threshold_seconds (float): Seconds of silence to end a segment
   energy_threshold (float): RMS energy threshold for speech detection
@@ -217,15 +217,14 @@ class ASRNode(Node):
             return None
 
         try:
+            # Speed-tuned: energy-based VAD already trims silence upstream,
+            # so faster-whisper's internal Silero VAD pass is redundant.
+            # Greedy decoding (beam_size=1) is ~2x faster than beam search.
             segments, info = self._model.transcribe(
                 audio_data,
                 language=self.language,
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters=dict(
-                    min_silence_duration_ms=500,
-                    speech_pad_ms=200,
-                ),
+                beam_size=1,
+                vad_filter=False,
             )
 
             full_text = ' '.join(seg.text.strip() for seg in segments).strip()
