@@ -29,7 +29,8 @@ Parameters:
   handle_class_name (str):     OBB class that represents handles, default "handle"
   grasp_offset_fraction (float): grasp point offset along long axis from handle
                                  center toward body center, in fractions of image
-                                 height. Default 1/16 = 0.0625.
+                                 height. Used for forceps and fallback classes.
+                                 Default 1/16 = 0.0625.
   fixed_tool_plane_z_m (float):  optional world-frame z plane for grasp pixel
                                  projection. If finite, grasp/world directions
                                  use ray-plane projection instead of depth.
@@ -41,9 +42,11 @@ Parameters:
 Grasp geometry:
   - Long axis of body OBB = the longer side direction.
   - Sign of (handle_center - body_center) projected on long axis tells which
-    "side" the handle is on; grasp point is on the opposite side along the
-    axis from the handle.
-  - grasp_point_px = handle_center - sign * (grasp_offset_fraction * image_h) * long_axis_unit
+    "side" the handle is on; -sign * long_axis_unit points from the handle
+    toward the tool center.
+  - hammer grips 40 mm past the handle edge toward center.
+  - scissors_* and needle_holder grip 20 mm past that edge toward center.
+  - forceps_* and unknown classes keep the configured fallback offset.
   - 3D = depth-projection at that pixel + TF lookup.
 """
 
@@ -79,6 +82,12 @@ from tracking_pkg.msg import (
     ToolDetectionArray,
 )
 from tracking_pkg.srv import BuildWorldModel
+from grasp_point_utils import (
+    CLASS_OFFSET_M,
+    HAMMER_CENTER_OFFSET_M,
+    class_specific_grasp_px,
+    grasp_rule_for_class,
+)
 
 
 # ─── Geometry helpers ────────────────────────────────────────────────
@@ -573,13 +582,6 @@ class WorldModelBuilder(Node):
             sign = 1.0 if handle_proj >= 0.0 else -1.0
             handle_side = 'positive' if sign > 0 else 'negative'
 
-            # Grasp point: from handle center, move toward body center along axis
-            offset_px = self.grasp_offset_fraction * float(image_h)
-            grasp_px = handle.center - sign * offset_px * axis_unit
-            grasp_px = np.clip(
-                grasp_px, [0.0, 0.0], [float(image_w - 1), float(image_h - 1)]
-            )
-
             # 3D projection. The grasp Z we want is the tray surface, not the
             # tool body — tools are essentially flat and metal returns junk
             # depth. Sample a ring just outside the body OBB (cloth/tray) and
@@ -596,6 +598,30 @@ class WorldModelBuilder(Node):
                 body_depth_m = tool_depth_m
                 depth_source = 'tool_obb_fallback'
                 depth_sample_count = tool_depth_count
+
+            use_fixed_plane = math.isfinite(self.fixed_tool_plane_z_m)
+            meters_per_px = self._meters_per_pixel_along_axis(
+                handle.center, axis_unit, cam_matrix, tf_world_from_cam,
+                body_depth_m, use_fixed_plane,
+            )
+            class_offset_m = (
+                HAMMER_CENTER_OFFSET_M
+                if grasp_rule_for_class(body.cls_name) == 'hammer_inner_plus'
+                else CLASS_OFFSET_M
+            )
+            class_offset_px = (
+                class_offset_m / meters_per_px
+                if meters_per_px is not None and meters_per_px > 1e-9 else None
+            )
+            fallback_offset_px = self.grasp_offset_fraction * float(image_h)
+            grasp_px, grasp_rule = class_specific_grasp_px(
+                body.cls_name, handle.center, handle.corners,
+                axis_unit, sign, fallback_offset_px, class_offset_px,
+            )
+            grasp_px = np.clip(
+                grasp_px, [0.0, 0.0], [float(image_w - 1), float(image_h - 1)]
+            )
+
             grasp_camera_xyz = (
                 self._pixel_to_camera_at_depth(grasp_px[0], grasp_px[1], body_depth_m, cam_matrix)
                 if body_depth_m is not None else None
@@ -606,7 +632,6 @@ class WorldModelBuilder(Node):
             functional_end_world = None
             grasp_rot_z = None
 
-            use_fixed_plane = math.isfinite(self.fixed_tool_plane_z_m)
             if tf_world_from_cam is not None:
                 if use_fixed_plane:
                     grasp_world_xyz = self._pixel_to_world_on_plane(
@@ -727,7 +752,8 @@ class WorldModelBuilder(Node):
                         f'{tool_id} ({body.cls_name}) depth={body_depth_m:.4f}m '
                         f'src={depth_source} (tray_ring={tray_depth_count}px, '
                         f'tool_obb={tool_depth_count}px) -> '
-                        f'world_z={grasp_world_xyz[2]:.4f}m'
+                        f'world_z={grasp_world_xyz[2]:.4f}m '
+                        f'grasp_rule={grasp_rule}'
                     )
                 grasps_msg.candidates.append(
                     self._build_grasp_candidate_msg(
@@ -981,13 +1007,65 @@ class WorldModelBuilder(Node):
             return None
         return origin_world + t * ray_world
 
+    def _meters_per_pixel_along_axis(self, pt_px, axis_unit, cam_matrix,
+                                     tf_world_from_cam, depth_m,
+                                     use_fixed_plane):
+        """Estimate metric scale at a pixel along the tool long axis."""
+        axis = np.asarray(axis_unit, dtype=float)
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm < 1e-9 or cam_matrix is None:
+            return None
+        axis = axis / axis_norm
+
+        pt = np.asarray(pt_px, dtype=float)
+        step_px = 20.0
+        p1 = pt - 0.5 * step_px * axis
+        p2 = pt + 0.5 * step_px * axis
+
+        if use_fixed_plane:
+            if tf_world_from_cam is None:
+                return None
+            w1 = self._pixel_to_world_on_plane(
+                p1[0], p1[1], cam_matrix,
+                tf_world_from_cam, self.fixed_tool_plane_z_m,
+            )
+            w2 = self._pixel_to_world_on_plane(
+                p2[0], p2[1], cam_matrix,
+                tf_world_from_cam, self.fixed_tool_plane_z_m,
+            )
+        elif depth_m is not None:
+            c1 = self._pixel_to_camera_at_depth(p1[0], p1[1], depth_m, cam_matrix)
+            c2 = self._pixel_to_camera_at_depth(p2[0], p2[1], depth_m, cam_matrix)
+            if c1 is None or c2 is None:
+                return None
+            if tf_world_from_cam is not None:
+                w1 = self._transform(tf_world_from_cam, c1)
+                w2 = self._transform(tf_world_from_cam, c2)
+            else:
+                w1 = c1
+                w2 = c2
+        else:
+            return None
+
+        if w1 is None or w2 is None:
+            return None
+        delta = np.asarray(w2, dtype=float) - np.asarray(w1, dtype=float)
+        delta[2] = 0.0
+        dist_m = float(np.linalg.norm(delta))
+        if dist_m <= 1e-9:
+            return None
+        return dist_m / step_px
+
     def _lookup_tool_kb(self, tool_class):
         tools = self.knowledge_base.get('tools', {})
         if tool_class in tools:
             return tools[tool_class]
-        # Synonym match
+        raw_lower = (tool_class or '').lower()
+        # Variant/synonym match
         for cls_name, info in tools.items():
-            if tool_class.lower() in [s.lower() for s in info.get('synonyms', [])]:
+            aliases = list(info.get('variants', []) or [])
+            aliases.extend(info.get('synonyms', []) or [])
+            if raw_lower in [s.lower() for s in aliases]:
                 return info
         return self.knowledge_base.get('default', {}) or {}
 

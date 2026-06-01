@@ -5,7 +5,7 @@ Grasp Geometry Node
 Subscribes to /detected_tools_obb (ToolDetectionArray from tool_detection_node)
 and derives per-tool robot-relevant geometry features:
   - tool long axis (world XY plane) from body_center_3d - handle_center_3d
-  - grasp point (handle center, offset toward body along the long axis)
+  - class-specific grasp point near the detected handle
   - functional_end_direction and handle_axis (world frame)
   - grasp rotation around world Z
 
@@ -26,6 +26,11 @@ from tracking_pkg.msg import (
     GraspCandidate,
     GraspCandidateArray,
     ToolDetectionArray,
+)
+from grasp_point_utils import (
+    class_specific_grasp_distance_m,
+    grasp_rule_for_class,
+    handle_inner_projection,
 )
 
 
@@ -91,7 +96,8 @@ class GraspGeometryNode(Node):
         functional_end_dir = delta_xy / norm
         handle_dir = -functional_end_dir
 
-        grasp_point = handle_c + self.grasp_offset_m * functional_end_dir
+        grasp_distance_m, _ = self._grasp_distance_from_handle(det, norm)
+        grasp_point = handle_c + grasp_distance_m * functional_end_dir
 
         grasp_rot_z = math.atan2(functional_end_dir[1], functional_end_dir[0])
         quat = R.from_euler('z', grasp_rot_z).as_quat()  # x, y, z, w
@@ -130,6 +136,38 @@ class GraspGeometryNode(Node):
         cand.handover_pose.pose.orientation.w = 1.0
 
         return cand
+
+    def _grasp_distance_from_handle(self, det, center_dist_m):
+        """Class-specific distance from handle center toward tool center."""
+        if grasp_rule_for_class(det.tool_class) == 'fallback':
+            return self.grasp_offset_m, 'fallback'
+
+        body_px = np.array(
+            [det.body_obb.center_x, det.body_obb.center_y],
+            dtype=float,
+        )
+        handle_px = np.array(
+            [det.handle_obb.center_x, det.handle_obb.center_y],
+            dtype=float,
+        )
+        center_delta_px = body_px - handle_px
+        center_delta_px_norm = float(np.linalg.norm(center_delta_px))
+        if center_delta_px_norm < 1e-6 or center_dist_m <= 1e-9:
+            return self.grasp_offset_m, 'fallback_no_pixel_scale'
+
+        toward_center_px = center_delta_px / center_delta_px_norm
+        handle_corners_px = np.array(
+            [[p.x, p.y] for p in det.handle_obb.corners],
+            dtype=float,
+        )
+        inner_edge_px = handle_inner_projection(
+            handle_px, handle_corners_px, toward_center_px,
+        )
+        meters_per_px = center_dist_m / center_delta_px_norm
+        inner_edge_m = inner_edge_px * meters_per_px
+        return class_specific_grasp_distance_m(
+            det.tool_class, inner_edge_m, self.grasp_offset_m,
+        )
 
 
 def main(args=None):

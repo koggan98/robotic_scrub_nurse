@@ -42,6 +42,7 @@ tools:
       - "scissors_straight"
       - "scissors_curved"
       - "scissors_long"
+      - "scissors_short"
     description: "Cutting instrument with two blades."
     grip_strategy: "parallel"
     handover_rule: "functional_end_away"
@@ -51,8 +52,11 @@ tools:
 
   forceps:
     display_name: "Forceps"
-    synonyms: ["pinzette", "tweezers", "tissue forceps", "adson", "debakey"]
+    synonyms: ["pinzette", "tweezers", "tissue forceps", "adson", "debakey", "tweezer"]
     variants:
+      - "forceps_big"
+      - "forceps_mid"
+      - "forceps_short"
       - "forceps_toothed"
       - "forceps_atraumatic"
     description: "Grasping instrument for holding tissue."
@@ -74,6 +78,18 @@ tools:
     handover_description: "Hand over with handle toward the surgeon, hook end away."
     functional_end: "hook"
     lift_height: 0.15
+
+  hammer:
+    display_name: "Hammer"
+    synonyms: ["mallet", "surgical hammer", "hammer"]
+    variants:
+      - "hammer"
+    description: "Impact instrument with a handle and striking head."
+    grip_strategy: "parallel"
+    handover_rule: "functional_end_away"
+    handover_description: "Hand over with the hammer head away from the surgeon."
+    functional_end: "head"
+    lift_height: 0.10
 
   clamp:
     display_name: "Clamp"

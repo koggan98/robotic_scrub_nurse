@@ -57,7 +57,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 2. Scene camera serial `239222300719` is started through the official `realsense2_camera` package and publishes RGB/depth/camera parameters under `/scene_camera/...` for marker localization and hand tracking.
 3. The instrument tray camera is opened directly by `world_model_builder.py` in direct RealSense mode.
 4. Pick-test launches publish the MiR base and a two-primitive tray-camera volume as MoveIt collision objects on `/collision_object`.
-5. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, estimates grasp height from filtered tray-camera depth over the full tool OBB, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
+5. `/build_world_model` captures one tray frame, runs OBB inference, pairs body/handle detections, computes class-specific grasp points from handle geometry, estimates grasp height from filtered tray-camera depth over the full tool OBB, and projects grasp candidates into `world` through `tray_camera_color_optical_frame`.
 6. ArUco marker 105 localizes the scene camera for hand tracking; marker 120 has been removed from the active configuration.
 7. Grasp approach pose service can resolve a tracked TF frame such as `tool_holder_frame` into a `PoseStamped` in `world` on request.
 8. Hand tracker detects gesture and publishes `hand_pose` in `world`.
@@ -108,6 +108,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Marker 120 is no longer part of the active TF configuration.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
 - World-model grasp coordinates use the fixed tray-camera TF, not marker 120.
+- Tray-tool grasp points are class-specific: hammer grasps 40 mm past the handle edge toward the tool center, scissors and needle holders grasp 20 mm past that edge toward the tool center, and forceps use the configured fallback offset.
 - Pick-test world-model height supports median valid depth over the full detected tool OBB, but the current calibrated `tool_pick_test_launch.py` path uses `fixed_tool_plane_z_m = 0.05` for robust candidate publication. Pick execution defaults to a `0.04 m` pre-pick approach and `z_offset = 0.003 m`, so the final grasp height is 3 mm above the projected fixed plane.
 - `tool_pick_test_node` uses the selected tool detection's OBB `center_x` to choose `tray_left`, `tray_center`, or `tray_right` from `config/tool_pick_joint_states.yaml`, performs the camera pick, returns to `tray_left`, waits there for `/hand_pose`, moves to `hand_pose + hand_offset`, activates `/gripper_zeroer`, waits for `/gripper_done`, and optionally returns home; `tray_left` is the default home/hold position.
 - Tray-region waypoint moves avoid direct `tray_left <-> tray_right` transitions by routing through `tray_center`; the same rule is used by the interactive joint-state jogger.

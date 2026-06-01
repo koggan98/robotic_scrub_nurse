@@ -54,6 +54,7 @@ install(
 install(
   FILES
     src/execution/grasp_orientation_utils.py
+    src/reasoning/grasp_point_utils.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

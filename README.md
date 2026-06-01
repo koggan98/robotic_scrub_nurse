@@ -280,6 +280,9 @@ The world-model builder supports aligned tray-camera depth for grasp height.
 The current pick-test calibration projects grasp pixels onto
 `fixed_tool_plane_z_m = 0.05` while the depth thresholds remain available for
 depth-mode tuning.
+Grasp pixels are class-specific: hammers grip 40 mm past the handle edge toward
+the tool center, scissors and needle holders grip 20 mm past that edge toward
+the center, and forceps keep the configured fallback offset.
 The ArUco manager publishes the configured marker-105 frame as
 `world -> aruco_marker_105_frame` in general launches. The pick-test launches
 publish that static frame directly so it is always visible in RViz; once marker
