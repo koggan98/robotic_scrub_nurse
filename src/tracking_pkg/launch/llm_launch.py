@@ -8,7 +8,7 @@ Cameras use the official realsense2_camera ROS2 package.
 Set SCENE_CAM_SERIAL / TRAY_CAM_SERIAL env vars or edit serial_no below.
 
 Startup order:
-  1. Static TFs (world→base, world→tray_camera_color_optical_frame)
+  1. Static TFs (world→base, world→aruco_marker_110_frame for tray camera)
   2. Scene camera (realsense2_camera, side: hand tracking + marker)
   3. Tray camera  (realsense2_camera, top-down: instrument detection) [when available]
   4. ArUco marker manager (config-driven static + detection TFs)
@@ -149,12 +149,12 @@ def generate_launch_description():
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            name='world_to_tray_camera_tf',
+            name='world_to_aruco_marker_110_tf',
             output='screen',
             arguments=[
-                '--x', '-0.075', '--y', '0.349', '--z', '0.4325',
-                '--qx', '0.0', '--qy', '1.0', '--qz', '0.0', '--qw', '0.0',
-                '--frame-id', 'world', '--child-frame-id', 'tray_camera_color_optical_frame',
+                '--x', '-0.375', '--y', '0.0', '--z', '-0.01',
+                '--qx', '0.0', '--qy', '0.0', '--qz', '1.0', '--qw', '0.0',
+                '--frame-id', 'world', '--child-frame-id', 'aruco_marker_110_frame',
             ]
         ),
         Node(
@@ -287,7 +287,7 @@ def generate_launch_description():
                         'inference_rate_hz': 5.0,
                         # Fixed-plane projection while RealSense is mounted
                         # closer than its min depth. Set to NaN to revert.
-                        'fixed_tool_plane_z_m': 0.038,
+                        'fixed_tool_plane_z_m': 0.04,
                         'publish_annotated_image': True,
                     }],
                 ),
@@ -376,7 +376,7 @@ def generate_launch_description():
                         'device': 'cpu',
                         'handle_class_name': 'handle',
                         'grasp_offset_fraction': 1.0 / 16.0,
-                        'fixed_tool_plane_z_m': 0.05,
+                        'fixed_tool_plane_z_m': 0.04,
                         'max_image_age_sec': 1.0,
                     }],
                 ),
@@ -396,13 +396,6 @@ def generate_launch_description():
             name='tray_camera_volume_publisher',
             output='screen',
             parameters=[{
-                'frame_id': 'tray_camera_color_optical_frame',
-                'collision_topic': '/collision_object',
-                'object_id': 'tray_camera_volume',
-                'width_m': 0.05,
-                'height_m': 0.05,
-                'length_m': 0.60,
-                'start_offset_m': -0.10,
                 'publish_hz': 2.0,
             }],
         ),
@@ -421,7 +414,8 @@ def generate_launch_description():
                     name='skill_executor_node',
                     output='screen',
                     parameters=[{
-                        'approach_height_m': 0.05,
+                        'z_offset': 0.004,
+                        'approach_height_m': 0.04,
                         'tool_yaw_offset_rad': 1.57079632679,
                         'velocity_scale': 0.6,
                         'acceleration_scale': 0.6,

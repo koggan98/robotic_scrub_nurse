@@ -198,8 +198,8 @@ public:
     SkillExecutor()
     : Node("skill_executor_node") {
         // ── Parameters (same defaults as tool_pick_test_node.cpp) ──────
-        z_offset_m_ = declare_parameter("z_offset", -0.000);
-        approach_height_m_ = declare_parameter("approach_height_m", 0.05);
+        z_offset_m_ = declare_parameter("z_offset", 0.004);
+        approach_height_m_ = declare_parameter("approach_height_m", 0.04);
         tool_yaw_offset_rad_ = declare_parameter("tool_yaw_offset_rad", 1.57079632679);
         move_group_name_ = declare_parameter("move_group_name", std::string("ur_manipulator"));
         end_effector_link_ = declare_parameter("end_effector_link", std::string("gripper_tip_link"));

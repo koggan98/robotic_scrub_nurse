@@ -1,16 +1,17 @@
 """
 Minimal Test Launch for World Model Builder
 ============================================
-Starts the world_model_builder node in DIRECT mode for the tray camera:
-the node opens its own pyrealsense2 pipeline for tray frames. Frames are pulled
-from the open tray pipeline only when /build_world_model is called.
+Starts the world_model_builder node in STREAMING mode: a realsense2_camera
+node publishes /tray_camera/* topics, the builder subscribes and pulls a
+fresh frame only when /build_world_model is called.
 
-This keeps idle CPU low - good for the NUC.
+The tray camera is localized via ArUco marker 110 detected by
+aruco_marker_manager; the resulting aruco_marker_110_frame ->
+tray_camera_color_optical_frame TF chains together with the static
+world -> aruco_marker_110_frame so service results land in world frame.
 
 No MoveIt and no execution. The official realsense2_camera node starts the
-scene camera for marker-105 localization and hand tracking. A static
-world -> tray_camera_color_optical_frame TF is started so the service can return
-world-frame grasp coordinates during instrument-camera pick tests.
+scene camera for marker-105 localization and hand tracking.
 The MiR base and tray-camera volume are also published as collision objects
 for quick Planning Scene / RViz checks when a consumer is available.
 
@@ -56,12 +57,12 @@ def generate_launch_description():
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            name='world_to_tray_camera_tf',
+            name='world_to_aruco_marker_110_tf',
             output='screen',
             arguments=[
-                '--x', '-0.075', '--y', '0.349', '--z', '0.4325',
-                '--qx', '0.0', '--qy', '1.0', '--qz', '0.0', '--qw', '0.0',
-                '--frame-id', 'world', '--child-frame-id', 'tray_camera_color_optical_frame',
+                '--x', '-0.375', '--y', '0.0', '--z', '-0.01',
+                '--qx', '0.0', '--qy', '0.0', '--qz', '1.0', '--qw', '0.0',
+                '--frame-id', 'world', '--child-frame-id', 'aruco_marker_110_frame',
             ],
         ),
         Node(
@@ -97,6 +98,30 @@ def generate_launch_description():
                 'publish_tf': 'false',
             }.items(),
         ),
+        # Tray Camera (realsense2_camera) — publishes /tray_camera/* topics.
+        # Consumed by aruco_marker_manager (marker 110 detection) and
+        # world_model_builder (camera_mode='streaming', on-demand).
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(rs_launch_file),
+            launch_arguments={
+                'camera_name': 'tray_camera',
+                'camera_namespace': '',
+                'serial_no': f"'{tray_cam_serial}'",
+                'enable_color': 'true',
+                'enable_depth': 'true',
+                'rgb_camera.color_profile': '1280,720,30',
+                'depth_module.depth_profile': '1280,720,30',
+                'align_depth.enable': 'true',
+                'spatial_filter.enable': 'true',
+                'temporal_filter.enable': 'true',
+                'hole_filling_filter.enable': 'true',
+                'decimation_filter.enable': 'false',
+                'enable_sync': 'true',
+                # The ArUco manager connects the detected camera pose into
+                # the world tree through aruco_marker_110_frame.
+                'publish_tf': 'false',
+            }.items(),
+        ),
         Node(
             package='tracking_pkg',
             executable='aruco_marker_manager.py',
@@ -113,15 +138,9 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'model_path': obb_model_path,
-                # Direct mode: builder opens pyrealsense2 pipeline itself
-                'camera_mode': 'direct',
-                'realsense_serial': tray_cam_serial,
-                'color_width': 1280,
-                'color_height': 720,
-                'color_fps': 30,
-                'warmup_frames': 5,
-                # Matches the static TF above; no fixed ArUco marker is
-                # required for this pick-test path.
+                # Streaming mode: builder subscribes to /tray_camera/*
+                'camera_mode': 'streaming',
+                'tray_camera_namespace': '/tray_camera',
                 'tray_camera_frame': 'tray_camera_color_optical_frame',
                 'world_frame': 'world',
                 'conf_threshold': 0.35,
@@ -129,10 +148,9 @@ def generate_launch_description():
                 'device': 'cpu',
                 'handle_class_name': 'handle',
                 'grasp_offset_fraction': 1.0 / 8.0,
-                'fixed_tool_plane_z_m': 0.03,
+                'fixed_tool_plane_z_m': 0.04,
                 'depth_min_m': 0.25,
                 'depth_max_m': 0.55,
-                # streaming-mode-only safeguard, ignored in direct mode
                 'max_image_age_sec': 5.0,
             }],
         ),
@@ -171,13 +189,6 @@ def generate_launch_description():
             name='tray_camera_volume_publisher',
             output='screen',
             parameters=[{
-                'frame_id': 'tray_camera_color_optical_frame',
-                'collision_topic': '/collision_object',
-                'object_id': 'tray_camera_volume',
-                'width_m': 0.05,
-                'height_m': 0.05,
-                'length_m': 0.60,
-                'start_offset_m': -0.10,
                 'publish_hz': 2.0,
             }],
         ),

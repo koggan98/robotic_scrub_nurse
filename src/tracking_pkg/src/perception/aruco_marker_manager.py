@@ -109,6 +109,8 @@ class _MarkerTracker:
         self.camera_matrix = None
         self.dist_coeffs = None
         self.detection_locked = False
+        self.locked_tf = None
+        self.rebroadcast_timer = None
 
         self.last_log_time = 0.0
         self.log_interval = 2.0
@@ -216,10 +218,24 @@ class _MarkerTracker:
         )
         self.tf_broadcaster.sendTransform([tf_msg])
         self.detection_locked = True
+        self.locked_tf = tf_msg
+        # Re-broadcast every 1s so any late-joining TF listener picks up the
+        # transform reliably (TRANSIENT_LOCAL on /tf_static can miss subscribers
+        # that connect after the first send when multiple static TFs are sent).
+        if self.rebroadcast_timer is None:
+            self.rebroadcast_timer = self.node.create_timer(
+                1.0, self._rebroadcast_locked_tf
+            )
         self.node.get_logger().info(
             f"[{self.cfg['name']}] Locked: published static TF "
             f"{self.child_frame} -> {self.camera_output_frame}"
         )
+
+    def _rebroadcast_locked_tf(self):
+        if self.locked_tf is None:
+            return
+        self.locked_tf.header.stamp = self.node.get_clock().now().to_msg()
+        self.tf_broadcaster.sendTransform([self.locked_tf])
 
 
 class ArucoMarkerManager(Node):

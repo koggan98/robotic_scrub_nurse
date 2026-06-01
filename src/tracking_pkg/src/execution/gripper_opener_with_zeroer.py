@@ -111,7 +111,7 @@ class SocketControllerNode(Node):
             self.ur_node.command_gripper(100, speed=255, force=1)
         else:
             self.get_logger().info(f"Closing gripper")
-            self.ur_node.command_gripper(250, speed=255, force=1)           
+            self.ur_node.command_gripper(250, speed=255, force=255)
 
 
     def gripper_zeroer_callback(self, bool_msg):

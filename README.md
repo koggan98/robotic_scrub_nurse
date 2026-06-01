@@ -278,7 +278,7 @@ The launch starts the static tray-camera TF directly, so marker 120 is no
 longer part of this pick-test path.
 The world-model builder supports aligned tray-camera depth for grasp height.
 The current pick-test calibration projects grasp pixels onto
-`fixed_tool_plane_z_m = 0.04` while the depth thresholds remain available for
+`fixed_tool_plane_z_m = 0.05` while the depth thresholds remain available for
 depth-mode tuning.
 The ArUco manager publishes the configured marker-105 frame as
 `world -> aruco_marker_105_frame` in general launches. The pick-test launches
@@ -346,8 +346,10 @@ The joint-state waypoints live in
 
 The pick-test launch currently uses the calibrated world-z plane from
 `fixed_tool_plane_z_m`. `z_offset` is added to the detected/projected surface
-height; set a negative value to grip slightly below the top surface. The default
-gripper yaw is rotated by `pi/2` relative to the detected tool axis.
+height. The default is `z_offset = 0.003 m`, so the robot grasps 3 mm above the
+projected fixed plane; with the current `0.05 m` plane this is `0.053 m`.
+The default pre-pick approach height is `0.04 m`. The default gripper yaw is
+rotated by `pi/2` relative to the detected tool axis.
 The handover orientation uses the same configurable quaternion style as the
 main MoveIt handover path.
 Useful parameter overrides:
@@ -355,8 +357,8 @@ Useful parameter overrides:
 ```bash
 ros2 run tracking_pkg tool_pick_test_node --ros-args \
   --params-file install/tracking_pkg/share/tracking_pkg/config/tool_pick_joint_states.yaml \
-  -p z_offset:=-0.005 \
-  -p approach_height_m:=0.05 \
+  -p z_offset:=0.003 \
+  -p approach_height_m:=0.04 \
   -p tool_yaw_offset_rad:=1.57079632679 \
   -p hand_offset:="[-0.08, 0.0, 0.05]" \
   -p handover_orientation:="[-0.63, 0.63, -0.321, 0.321]" \

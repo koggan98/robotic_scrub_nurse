@@ -50,7 +50,11 @@ Visualization Manager:
           Value: true
         aruco_marker_105_frame:
           Value: true
+        aruco_marker_110_frame:
+          Value: true
         scene_camera_color_optical_frame:
+          Value: true
+        tray_camera_color_optical_frame:
           Value: true
         base:
           Value: false

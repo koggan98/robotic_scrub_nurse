@@ -121,12 +121,12 @@ def generate_launch_description():
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
-            name="world_to_tray_camera_tf",
+            name="world_to_aruco_marker_110_tf",
             output="screen",
             arguments=[
-                "--x", "-0.075", "--y", "0.349", "--z", "0.4325",
-                "--qx", "0.0", "--qy", "1.0", "--qz", "0.0", "--qw", "0.0",
-                "--frame-id", "world", "--child-frame-id", "tray_camera_color_optical_frame",
+                "--x", "-0.375", "--y", "0.0", "--z", "-0.01",
+                "--qx", "0.0", "--qy", "0.0", "--qz", "1.0", "--qw", "0.0",
+                "--frame-id", "world", "--child-frame-id", "aruco_marker_110_frame",
             ],
         ),
         Node(
@@ -162,6 +162,30 @@ def generate_launch_description():
                 "publish_tf": "false",
             }.items(),
         ),
+        # Tray Camera (realsense2_camera) — publishes /tray_camera/* topics.
+        # Consumed by aruco_marker_manager (marker 110 detection) and
+        # world_model_builder (camera_mode='streaming', on-demand).
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(rs_launch_file),
+            launch_arguments={
+                "camera_name": "tray_camera",
+                "camera_namespace": "",
+                "serial_no": f"'{tray_cam_serial}'",
+                "enable_color": "true",
+                "enable_depth": "true",
+                "rgb_camera.color_profile": "1280,720,30",
+                "depth_module.depth_profile": "1280,720,30",
+                "align_depth.enable": "true",
+                "spatial_filter.enable": "true",
+                "temporal_filter.enable": "true",
+                "hole_filling_filter.enable": "true",
+                "decimation_filter.enable": "false",
+                "enable_sync": "true",
+                # The ArUco manager connects the detected camera pose into
+                # the world tree through aruco_marker_110_frame.
+                "publish_tf": "false",
+            }.items(),
+        ),
         Node(
             package="tracking_pkg",
             executable="aruco_marker_manager.py",
@@ -181,12 +205,8 @@ def generate_launch_description():
                     output="screen",
                     parameters=[{
                         "model_path": obb_model_path,
-                        "camera_mode": "direct",
-                        "realsense_serial": tray_cam_serial,
-                        "color_width": 1280,
-                        "color_height": 720,
-                        "color_fps": 30,
-                        "warmup_frames": 5,
+                        "camera_mode": "streaming",
+                        "tray_camera_namespace": "/tray_camera",
                         "tray_camera_frame": "tray_camera_color_optical_frame",
                         "world_frame": "world",
                         "conf_threshold": 0.35,
@@ -245,13 +265,6 @@ def generate_launch_description():
             name="tray_camera_volume_publisher",
             output="screen",
             parameters=[{
-                "frame_id": "tray_camera_color_optical_frame",
-                "collision_topic": "/collision_object",
-                "object_id": "tray_camera_volume",
-                "width_m": 0.05,
-                "height_m": 0.05,
-                "length_m": 0.60,
-                "start_offset_m": -0.10,
                 "publish_hz": 2.0,
             }],
         ),
