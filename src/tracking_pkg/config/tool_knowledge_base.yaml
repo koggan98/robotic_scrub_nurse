@@ -104,6 +104,19 @@ tools:
     functional_end: "jaws"
     lift_height: 0.10
 
+  awl:
+     display_name: "Awl"
+     synonyms: ["awl", "stechbeitel"]
+     variants:
+       - "awl"
+     description: "Pointed instrument for making holes in bone."
+     grip_strategy: "parallel"
+     handover_rule: "functional_end_away"
+     handover_description: "Hand over with the pointed end away from the surgeon."
+     functional_end: "point"
+     lift_height: 0.10
+
+
 # Default fallback for unknown tool classes
 default:
   grip_strategy: "parallel"

@@ -230,6 +230,14 @@ public:
         // present the tool. 250 deg = 4.36332 rad (requires the widened
         // shoulder_pan limit on the live robot).
         present_shoulder_pan_rad_ = declare_parameter("present_shoulder_pan_rad", 4.36332313);
+        // Wrist angles for the presentation/handover tool orientation, applied
+        // as a joint-space move (no IK) after the pan rotation so the tool is
+        // already oriented before the move to the hand. Tune by jogging the arm
+        // to the desired turned-around handover orientation and reading
+        // wrist_2_joint / wrist_3_joint. Defaults = home-pose wrist values.
+        present_wrist1_rad_ = declare_parameter("present_wrist1_rad", -1.5248240244);
+        present_wrist2_rad_ = declare_parameter("present_wrist2_rad", -1.2305892150);
+        present_wrist3_rad_ = declare_parameter("present_wrist3_rad", -4.8166621367);
 
         joint_state_names_ = declare_parameter(
             "joint_state_names",
@@ -585,6 +593,31 @@ private:
         return moveToJointPositions(joints, err);
     }
 
+    // Rotate wrist_1, wrist_2 and wrist_3 to their presentation/handover angles,
+    // holding every other joint at its current value. Joint-space (no IK), so it
+    // cannot fail to "sample valid goal states" the way a pose target can.
+    bool preorientWrists(std::string &err) {
+        std::vector<double> joints = move_group_->getCurrentJointValues();
+        if (joints.size() != joint_state_names_.size()) {
+            err = "could not read current joint values";
+            return false;
+        }
+        const auto set_joint = [&](const std::string &name, double val) {
+            auto it = std::find(joint_state_names_.begin(),
+                                joint_state_names_.end(), name);
+            if (it == joint_state_names_.end()) return false;
+            joints[std::distance(joint_state_names_.begin(), it)] = val;
+            return true;
+        };
+        if (!set_joint("wrist_1_joint", present_wrist1_rad_) ||
+            !set_joint("wrist_2_joint", present_wrist2_rad_) ||
+            !set_joint("wrist_3_joint", present_wrist3_rad_)) {
+            err = "wrist_1/wrist_2/wrist_3 not in joint_state_names";
+            return false;
+        }
+        return moveToJointPositions(joints, err);
+    }
+
     // ── Attached tool collision object ───────────────────────────────
     // A single conservative box for every tool: 30 cm along the TCP Y axis,
     // 5 cm in X and Z, centered on gripper_tip_link (tool gripped in the
@@ -817,6 +850,15 @@ private:
         // tool box + the tray-camera stand in the scene keep this collision-free.
         if (!rotateShoulderPanTo(present_shoulder_pan_rad_, err)) {
             err = "present rotation: " + err;
+            return false;
+        }
+
+        // Pre-orient the wrist into the handover tool orientation now (while
+        // turned away), as a joint-space move on wrist_2/wrist_3 only. A pose
+        // target here needs IK and RRTConnect could not sample a collision-free
+        // goal; a joint goal cannot.
+        if (!preorientWrists(err)) {
+            err = "pre-orient wrists: " + err;
             return false;
         }
 
@@ -1309,6 +1351,9 @@ private:
     double post_gesture_settle_sec_;
     double return_release_height_m_;
     double present_shoulder_pan_rad_;
+    double present_wrist1_rad_;
+    double present_wrist2_rad_;
+    double present_wrist3_rad_;
     std::vector<std::string> joint_state_names_;
     geometry_msgs::msg::Point hand_offset_;
     geometry_msgs::msg::Quaternion handover_orientation_;

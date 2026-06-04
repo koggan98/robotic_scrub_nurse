@@ -443,6 +443,14 @@ def generate_launch_description():
                         'handover_orientation': [-0.63, 0.63, -0.321, 0.321],
                         'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,
                                         -1.5248240244, -1.2305892150, -4.8166621367],
+                        # Presentation pose after a pick: turn the base to this
+                        # angle, then reorient the tool via wrist_2/wrist_3 only.
+                        # 4.36332 rad = 250 deg. Tune the wrist values by jogging
+                        # to the desired handover orientation.
+                        'present_shoulder_pan_rad': 4.36332313,
+                        'present_wrist1_rad': -1.5248240244,
+                        'present_wrist2_rad': -1.2305892150,
+                        'present_wrist3_rad': -1.507562509029,
                     }],
                 ),
             ]
