@@ -104,7 +104,7 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 - Pick-test launches publish `world -> aruco_marker_105_frame` directly for RViz visibility and run `aruco_marker_manager.py` with marker static TF publishing disabled; after marker ID 105 is detected, the manager publishes `aruco_marker_105_frame -> scene_camera_color_optical_frame`.
 - Instrument camera static translation in `world`: `[-0.075, 0.349, 0.4325] m`.
 - Instrument camera static orientation maps camera axes as `x -> -world_x`, `y -> +world_y`, `z -> -world_z`; quaternion `xyzw = [0.0, 1.0, 0.0, 0.0]`.
-- `tray_camera_volume` is expressed in `tray_camera_color_optical_frame` and contains two boxes: a `[0.05, 0.05, 0.60] m` volume starting at camera-frame `z = 0.10 m` and centered at `z = 0.40 m`, plus a `[0.14, 0.05, 0.05] m` box centered at the camera frame.
+- `tray_camera_volume` publishes a `[0.14, 0.04, 0.04] m` frame box in `tray_camera_color_optical_frame` and a world-frame camera stand. The stand uses a `[0.05, 0.05, 0.52] m` vertical post with its top aligned to the camera height, plus bottom-mounted horizontal boxes that follow the post bottom.
 - Marker 120 is no longer part of the active TF configuration.
 - `world -> base` and `base -> aruco_board_frame` are published independently of `frame_publisher.py` so startup races in the camera/ArUco node do not remove the upstream tracking frames.
 - World-model grasp coordinates use the fixed tray-camera TF, not marker 120.

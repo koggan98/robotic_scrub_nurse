@@ -291,9 +291,11 @@ ID 105 is visible in the scene camera image, the ArUco manager locks
 scene_camera_color_optical_frame` for hand tracking in `world`.
 It also publishes the MiR base collision object and a
 `tray_camera_volume` collision object on `/collision_object`. The camera volume
-contains a 50 x 50 mm box that starts 100 mm down the tray camera optical axis
-from `tray_camera_color_optical_frame` and then extends another 600 mm, plus a
-140 x 50 x 50 mm box centered exactly at the tray camera frame.
+contains a 140 x 40 x 40 mm frame box centered at
+`tray_camera_color_optical_frame`, plus a world-frame camera stand. The stand
+uses a 50 x 50 x 520 mm vertical post whose top stays aligned with the camera
+height; its bottom-mounted horizontal arm and cross block therefore sit 10 mm
+lower with the longer post.
 You can verify the transform with:
 
 ```bash

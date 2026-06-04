@@ -36,10 +36,12 @@ from threading import Thread
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (
+    QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy)
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Pose, Point, PoseStamped
 from visualization_msgs.msg import Marker
-from std_msgs.msg import Header, String
+from std_msgs.msg import Header, String, Bool
 from cv_bridge import CvBridge
 import tf2_ros
 import mediapipe as mp
@@ -180,10 +182,23 @@ class HandTrackerNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # Gate gesture publication: only forward /hand_gesture while the skill
+        # executor is actively waiting for a handover. Outside that window
+        # gestures are detected but not published, so stray gestures never
+        # interfere. Latched (transient_local) so we get the current value on
+        # connect.
+        self.handover_waiting = False
+        handover_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE)
+
         # Subscribers
         self.create_subscription(Image, 'color_image', self._rgb_cb, 10)
         self.create_subscription(Image, 'depth_image', self._depth_cb, 10)
         self.create_subscription(CameraInfo, 'camera_info', self._cam_info_cb, 10)
+        self.create_subscription(
+            Bool, '/handover_waiting', self._handover_waiting_cb, handover_qos)
 
         # Publishers
         self.hand_state_pub = self.create_publisher(HandState, 'hand_state', 10)
@@ -204,6 +219,9 @@ class HandTrackerNode(Node):
 
     def _cam_info_cb(self, msg):
         self.camera_matrix = np.array(msg.k).reshape(3, 3)
+
+    def _handover_waiting_cb(self, msg):
+        self.handover_waiting = bool(msg.data)
 
     # ── Coordinate transforms ─────────────────────────────────────
 
@@ -310,8 +328,15 @@ class HandTrackerNode(Node):
                 # Gesture detection (every frame; independent of publish rate)
                 gesture_state = self.gesture_detector.classify(best_hand)
                 if self.gesture_detector.update(gesture_state, now):
-                    self.gesture_pub.publish(String(data='double_open_close'))
-                    self.get_logger().info('Gesture detected: double_open_close')
+                    # Only forward the gesture while the robot is waiting for a
+                    # handover; otherwise detect-and-drop so stray gestures
+                    # never interfere.
+                    if self.handover_waiting:
+                        self.gesture_pub.publish(String(data='double_open_close'))
+                        self.get_logger().info('Gesture detected: double_open_close')
+                    else:
+                        self.get_logger().debug(
+                            'Gesture ignored (not waiting for handover)')
 
                 cx, cy = self._get_palm_center_px(best_hand, frame.shape)
                 palm_depth_m = None

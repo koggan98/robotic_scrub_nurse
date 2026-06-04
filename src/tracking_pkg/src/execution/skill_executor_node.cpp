@@ -16,7 +16,11 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
+#include <moveit_msgs/msg/attached_collision_object.hpp>
+#include <moveit_msgs/msg/collision_object.hpp>
+#include <shape_msgs/msg/solid_primitive.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
@@ -222,6 +226,10 @@ public:
         post_gesture_settle_sec_ = declare_parameter("post_gesture_settle_sec", 0.5);
         // return_tool releases the wrong tool this far above the pickup pose.
         return_release_height_m_ = declare_parameter("return_release_height_m", 0.005);
+        // After a successful pick the arm rotates shoulder_pan to this angle to
+        // present the tool. 250 deg = 4.36332 rad (requires the widened
+        // shoulder_pan limit on the live robot).
+        present_shoulder_pan_rad_ = declare_parameter("present_shoulder_pan_rad", 4.36332313);
 
         joint_state_names_ = declare_parameter(
             "joint_state_names",
@@ -258,6 +266,13 @@ public:
         gripper_mover_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
         gripper_zeroer_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
         state_pub_ = create_publisher<std_msgs::msg::String>("/system_state_update", 10);
+        // Latched so a late-joining hand_tracker picks up the current value.
+        // True only while a handover is actively waiting for the gesture; the
+        // hand_tracker gates /hand_gesture publication on this flag.
+        handover_waiting_pub_ = create_publisher<std_msgs::msg::Bool>(
+            "/handover_waiting",
+            rclcpp::QoS(1).transient_local());
+        publishHandoverWaiting(false);
 
         // ── Subscribers ──────────────────────────────────────────────
         hand_state_sub_ = create_subscription<tracking_pkg::msg::HandState>(
@@ -550,6 +565,70 @@ private:
         return true;
     }
 
+    // Rotate shoulder_pan to a target angle, holding all other joints at their
+    // current values. Uses a joint-space goal (not a pose target) so the path
+    // stays deterministic instead of wandering through random IK solutions.
+    bool rotateShoulderPanTo(double target_rad, std::string &err) {
+        std::vector<double> joints = move_group_->getCurrentJointValues();
+        if (joints.size() != joint_state_names_.size()) {
+            err = "could not read current joint values";
+            return false;
+        }
+        // shoulder_pan_joint is the first entry of joint_state_names_.
+        auto it = std::find(joint_state_names_.begin(), joint_state_names_.end(),
+                            std::string("shoulder_pan_joint"));
+        if (it == joint_state_names_.end()) {
+            err = "shoulder_pan_joint not in joint_state_names";
+            return false;
+        }
+        joints[std::distance(joint_state_names_.begin(), it)] = target_rad;
+        return moveToJointPositions(joints, err);
+    }
+
+    // ── Attached tool collision object ───────────────────────────────
+    // A single conservative box for every tool: 30 cm along the TCP Y axis,
+    // 5 cm in X and Z, centered on gripper_tip_link (tool gripped in the
+    // middle). Attaching it makes the held tool visible to the planner so it
+    // avoids the tray-camera stand during the rotation and handover, and
+    // explains the real reach of the gripper beyond its own collision box.
+
+    void attachToolBox() {
+        moveit_msgs::msg::AttachedCollisionObject aco;
+        aco.link_name = end_effector_link_;
+        aco.object.id = "held_tool";
+        aco.object.header.frame_id = end_effector_link_;
+        aco.object.operation = moveit_msgs::msg::CollisionObject::ADD;
+
+        shape_msgs::msg::SolidPrimitive box;
+        box.type = shape_msgs::msg::SolidPrimitive::BOX;
+        box.dimensions = {0.05, 0.30, 0.05};  // x, y (long axis), z
+
+        geometry_msgs::msg::Pose pose;  // identity = centered on the TCP
+        pose.orientation.w = 1.0;
+
+        aco.object.primitives.push_back(box);
+        aco.object.primitive_poses.push_back(pose);
+        // Links the box is allowed to touch (the gripper body it is held by).
+        aco.touch_links = {
+            "gripper_tip_link", "dummy_gripper_link", "wrist_3_link",
+            "flange", "tool0",
+        };
+        psi_.applyAttachedCollisionObject(aco);
+        RCLCPP_INFO(get_logger(), "Attached held_tool collision box to %s.",
+                    end_effector_link_.c_str());
+    }
+
+    void detachToolBox() {
+        // Detach from the gripper and remove from the scene. Idempotent: if no
+        // tool is attached this is a harmless no-op.
+        moveit_msgs::msg::AttachedCollisionObject aco;
+        aco.link_name = end_effector_link_;
+        aco.object.id = "held_tool";
+        aco.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+        psi_.applyAttachedCollisionObject(aco);
+        psi_.removeCollisionObjects({"held_tool"});
+    }
+
     // ── Gripper primitives ───────────────────────────────────────────
 
     void publishGripper(bool open) {
@@ -562,6 +641,12 @@ private:
         std_msgs::msg::Bool m;
         m.data = active;
         gripper_zeroer_pub_->publish(m);
+    }
+
+    void publishHandoverWaiting(bool waiting) {
+        std_msgs::msg::Bool m;
+        m.data = waiting;
+        handover_waiting_pub_->publish(m);
     }
 
     void sleepForGripper() {
@@ -721,7 +806,19 @@ private:
         sleepForGripper();
         if (!executePlan(lift_plan, err))     { err = "lift exec: "     + err; return false; }
 
+        // Tool is now in the gripper: make it visible to the planner so the
+        // presentation rotation (and later handover) avoids the tray-camera
+        // stand and accounts for the tool's reach beyond the gripper box.
+        attachToolBox();
+
         publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
+
+        // Immediately turn the arm around to present the tool. The attached
+        // tool box + the tray-camera stand in the scene keep this collision-free.
+        if (!rotateShoulderPanTo(present_shoulder_pan_rad_, err)) {
+            err = "present rotation: " + err;
+            return false;
+        }
 
         // Remember where this tool came from so return_tool can put it back.
         {
@@ -786,6 +883,10 @@ private:
             // before any state, feedback, gripper, or motion side effect.
             RCLCPP_INFO(get_logger(),
                 "HandoverTool: tool ready — waiting for double_open_close gesture.");
+            // Open the gesture gate: hand_tracker only publishes /hand_gesture
+            // while this is true, so stray gestures outside a handover are
+            // ignored. Reset to false unconditionally in handoverExecute.
+            publishHandoverWaiting(true);
             while (rclcpp::ok()) {
                 publishHandoverFeedback(goal_handle, "AWAITING_GESTURE");
                 if (!waitForGesture(goal_handle)) {
@@ -877,7 +978,8 @@ private:
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, post_open_pause_seconds_))));
 
-        // Tool delivered — nothing to return any more.
+        // Tool delivered — drop the attached collision box and forget the pick.
+        detachToolBox();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             have_last_pick_ = false;
@@ -906,6 +1008,7 @@ private:
         publishState("RELEASING", tool_id_snapshot, tool_class_snapshot);
         publishGripper(true);  // open
         sleepForGripper();
+        detachToolBox();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             have_last_pick_ = false;
@@ -973,6 +1076,7 @@ private:
         if (!executePlan(descend_plan, err))  { err = "return descend exec: "  + err; return false; }
         publishGripper(true);  // open — release the tool
         sleepForGripper();
+        detachToolBox();
         if (!executePlan(lift_plan, err))     { err = "return lift exec: "     + err; return false; }
 
         {
@@ -1057,6 +1161,9 @@ private:
         const bool ok = doHandover(goal_handle, err);
         result->success = ok;
         result->message = ok ? "ok" : err;
+        // Close the gesture gate on every exit (success, abort, cancel,
+        // timeout, preemption).
+        publishHandoverWaiting(false);
         publishState("IDLE", "", "");
         if (ok) {
             goal_handle->succeed(result);
@@ -1201,6 +1308,7 @@ private:
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;
     double return_release_height_m_;
+    double present_shoulder_pan_rad_;
     std::vector<std::string> joint_state_names_;
     geometry_msgs::msg::Point hand_offset_;
     geometry_msgs::msg::Quaternion handover_orientation_;
@@ -1209,6 +1317,7 @@ private:
     // Pubs / subs
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_mover_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_zeroer_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr handover_waiting_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
     rclcpp::Subscription<tracking_pkg::msg::HandState>::SharedPtr hand_state_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
@@ -1224,6 +1333,7 @@ private:
 
     // MoveIt
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
+    moveit::planning_interface::PlanningSceneInterface psi_;
 
     // State
     std::mutex execution_mutex_;

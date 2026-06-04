@@ -47,22 +47,22 @@ class TrayCameraVolumePublisher(Node):
             .double_value
         )
         self.frame_box_depth_m = (
-            self.declare_parameter("frame_box_depth_m", 0.05)
+            self.declare_parameter("frame_box_depth_m", 0.04)
             .get_parameter_value()
             .double_value
         )
         self.frame_box_height_m = (
-            self.declare_parameter("frame_box_height_m", 0.05)
+            self.declare_parameter("frame_box_height_m", 0.04)
             .get_parameter_value()
             .double_value
         )
         self.post_thickness_m = (
-            self.declare_parameter("post_thickness_m", 0.04)
+            self.declare_parameter("post_thickness_m", 0.05)
             .get_parameter_value()
             .double_value
         )
         self.post_length_m = (
-            self.declare_parameter("post_length_m", 0.51)
+            self.declare_parameter("post_length_m", 0.52)
             .get_parameter_value()
             .double_value
         )
