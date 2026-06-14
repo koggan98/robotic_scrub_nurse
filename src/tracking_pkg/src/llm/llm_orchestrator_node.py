@@ -93,6 +93,13 @@ class LLMOrchestratorNode(Node):
         # surgeon's gesture. _pending_handover holds that in-flight goal.
         self._pending_lock = threading.Lock()
         self._pending_handover = None
+        # Tool class of the in-flight async handover, so a tool_lost failure can
+        # drive an autonomous retry of the same instrument.
+        self._active_handover_class = ''
+        # Autonomous retries since the last real surgeon command, capped to avoid
+        # an endless pick→drop→retry loop when a tool keeps slipping.
+        self._handover_retry_count = 0
+        self._max_handover_retries = 2
 
         # ── ROS interfaces ───────────────────────────────────────
         cb = ReentrantCallbackGroup()
@@ -158,7 +165,9 @@ The surgeon speaks English. Identify the requested instrument and drive the robo
 Instruments on this system:
 {tools_desc}
 Functions:
-- get_world_model(): tools currently on the tray (ids, classes) and system state.
+- get_world_model(): tools currently on the tray (ids, classes) and system
+  state. The field gripper_holds_tool is ground truth from the gripper: true =
+  the robot physically holds a tool right now, even if system_state looks idle.
 - pick_and_handover(tool_id): the robot immediately picks the tool, then
   delivers it. Empty tool_id = highest-confidence reachable tool.
 - return_tool(): the robot puts the tool it is currently holding back where
@@ -175,9 +184,17 @@ Rules:
 3. If the surgeon says the tool is wrong / "not that one" / "put it back",
    call return_tool().
 4. If several tools match and you truly cannot choose, ask one short question.
-5. Always reply in English, in extremely terse caveman style: drop articles
+5. If pick_and_handover returns success:false with a grasp_failed or tool_lost
+   message, the robot missed the tool or it fell out, and the arm has already
+   returned home. Call get_world_model() again and retry the pick once or twice.
+   The tool id may have changed, so re-match the requested tool by class instead
+   of reusing the old id.
+6. If gripper_holds_tool is true but you did not intend to be holding anything
+   (e.g. a previous handover failed mid-way), call return_tool() or
+   release_tool() before starting a new pick.
+7. Always reply in English, in extremely terse caveman style: drop articles
    and filler words, max ~6 words. Examples: "Needle holder. Picking." /
-   "Done." / "No scalpel on tray." / "Which scissors?"
+   "Done." / "No scalpel on tray." / "Which scissors?" / "Missed. Retrying."
 """
 
     def _build_tool_defs(self):
@@ -223,6 +240,17 @@ Rules:
             self.get_logger().warn(f'Busy — dropping speech: "{text}"')
             return
         self.get_logger().info(f'User speech: "{text}"')
+        self._handover_retry_count = 0  # fresh command resets autonomous retries
+        threading.Thread(
+            target=self._conversation_thread, args=(text,), daemon=True).start()
+
+    def _start_autonomous_turn(self, text):
+        """Kick off an LLM turn that the robot initiates itself (e.g. after an
+        async handover failed), reusing the same conversation machinery."""
+        if not self._busy.acquire(blocking=False):
+            self.get_logger().warn(f'Busy — dropping autonomous turn: "{text}"')
+            return
+        self.get_logger().info(f'Autonomous turn: "{text}"')
         threading.Thread(
             target=self._conversation_thread, args=(text,), daemon=True).start()
 
@@ -368,6 +396,8 @@ Rules:
 
         with self._pending_lock:
             self._pending_handover = gh
+        self._active_handover_class = (
+            pick_result.picked_tool_class or parsed.tool_id)
         gh.get_result_async().add_done_callback(self._on_handover_done)
 
         return json.dumps({
@@ -381,6 +411,8 @@ Rules:
         thread once the robot finishes (or the handover is preempted)."""
         with self._pending_lock:
             self._pending_handover = None
+        cls = self._active_handover_class
+        self._active_handover_class = ''
         try:
             wrapped = future.result()
         except Exception as e:
@@ -388,7 +420,25 @@ Rules:
             return
         if (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and getattr(wrapped.result, 'success', False)):
+            self._handover_retry_count = 0
             self._publish_response('handoff done')
+            return
+
+        # Tool slipped out during the handover phase: drive an autonomous retry.
+        message = (getattr(wrapped.result, 'message', '') or '')
+        if 'tool_lost' in message or 'grasp_failed' in message:
+            if self._handover_retry_count >= self._max_handover_retries:
+                self._handover_retry_count = 0
+                self._publish_response('Cannot pick. Tool keeps dropping.')
+                return
+            self._handover_retry_count += 1
+            note = (
+                f"System note: the handover failed because the {cls or 'tool'} "
+                f"was lost (gripper empty). The arm has already returned home. "
+                f"Re-read the tray with get_world_model and pick the "
+                f"{cls or 'requested tool'} again. If it is no longer on the "
+                f"tray, tell the surgeon.")
+            self._start_autonomous_turn(note)
         # canceled / aborted (e.g. preempted by return_tool): stay silent —
         # the return_tool path reports its own result.
 

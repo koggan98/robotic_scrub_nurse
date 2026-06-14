@@ -25,6 +25,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include <tracking_pkg/msg/grasp_candidate.hpp>
@@ -204,6 +205,11 @@ public:
         // ── Parameters (same defaults as tool_pick_test_node.cpp) ──────
         z_offset_m_ = declare_parameter("z_offset", 0.004);
         approach_height_m_ = declare_parameter("approach_height_m", 0.04);
+        // Fast local re-grasp: on a failed/slipped grasp, retry at the tray with
+        // an escalating pose nudge instead of present→home→re-perceive.
+        max_regrasp_retries_ = declare_parameter("max_regrasp_retries", 2);
+        regrasp_deeper_step_m_ = declare_parameter("regrasp_deeper_step_m", 0.0015);
+        regrasp_center_step_m_ = declare_parameter("regrasp_center_step_m", 0.005);
         tool_yaw_offset_rad_ = declare_parameter("tool_yaw_offset_rad", 1.57079632679);
         move_group_name_ = declare_parameter("move_group_name", std::string("ur_manipulator"));
         end_effector_link_ = declare_parameter("end_effector_link", std::string("gripper_tip_link"));
@@ -219,6 +225,11 @@ public:
         post_open_pause_seconds_ = declare_parameter("post_open_pause_seconds", 1.0);
         return_home_after_handover_ = declare_parameter("return_home_after_handover", true);
         gripper_done_timeout_seconds_ = declare_parameter("gripper_done_timeout_seconds", 30.0);
+        // Max wait for the robotiq grasp-result (/tool_grasped) after closing.
+        grasp_check_timeout_sec_ = declare_parameter("grasp_check_timeout_sec", 5.0);
+        // Settle time after the lift before re-verifying the grasp (a marginal
+        // grip can relax in the first moment after lifting).
+        post_lift_settle_sec_ = declare_parameter("post_lift_settle_sec", 0.5);
         cartesian_min_fraction_ = declare_parameter("cartesian_min_fraction", 0.95);
         // Handover waits for the surgeon's double_open_close gesture before
         // moving to the hand. 0.0 = wait indefinitely.
@@ -273,6 +284,9 @@ public:
         // ── Publishers ───────────────────────────────────────────────
         gripper_mover_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
         gripper_zeroer_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
+        // Requests an on-demand fresh grasp re-check (e.g. right after a lift,
+        // where the async loss monitor may still be lagging).
+        verify_grasp_pub_ = create_publisher<std_msgs::msg::Empty>("/verify_grasp", 10);
         state_pub_ = create_publisher<std_msgs::msg::String>("/system_state_update", 10);
         // Latched so a late-joining hand_tracker picks up the current value.
         // True only while a handover is actively waiting for the gesture; the
@@ -292,6 +306,9 @@ public:
         gripper_done_sub_ = create_subscription<std_msgs::msg::Bool>(
             "/gripper_done", 10,
             std::bind(&SkillExecutor::gripperDoneCb, this, std::placeholders::_1));
+        tool_grasped_sub_ = create_subscription<std_msgs::msg::Bool>(
+            "/tool_grasped", 10,
+            std::bind(&SkillExecutor::toolGraspedCb, this, std::placeholders::_1));
 
         // ── Service client ───────────────────────────────────────────
         world_state_client_ =
@@ -389,6 +406,25 @@ private:
             gripper_done_received_ = true;
         }
         gripper_done_cv_.notify_all();
+    }
+
+    // Robotiq grasp result: true = a tool is held, false = gripper empty.
+    // Published once after each close and continuously by the loss monitor.
+    void toolGraspedCb(const std_msgs::msg::Bool::SharedPtr msg) {
+        {
+            std::lock_guard<std::mutex> lock(tool_grasped_mutex_);
+            tool_grasped_value_ = msg->data;
+            tool_grasped_received_ = true;
+            tool_grasped_ever_ = true;
+        }
+        tool_grasped_cv_.notify_all();
+        // React immediately if the tool is lost mid-transport: stop the running
+        // motion instead of finishing the (now pointless) present moves.
+        if (!msg->data && transporting_.load()) {
+            RCLCPP_WARN(get_logger(),
+                "Tool lost during transport — stopping motion.");
+            move_group_->stop();
+        }
     }
 
     // ── State publish ────────────────────────────────────────────────
@@ -662,6 +698,20 @@ private:
         psi_.removeCollisionObjects({"held_tool"});
     }
 
+    // Tool was lost while we believed we were holding it: drop the planner's
+    // attached box, open the gripper, return home so the tray camera is free,
+    // and set a tool_lost error the action surfaces to the orchestrator.
+    void abortHoldingAndGoHome(const std::string &reason, std::string &err) {
+        RCLCPP_WARN(get_logger(),
+            "Tool lost (%s). Detaching, releasing and returning home.",
+            reason.c_str());
+        detachToolBox();
+        publishGripper(true);   // open
+        std::string home_err;
+        doReturnHomeInternal(home_err);
+        err = "tool_lost: " + reason;
+    }
+
     // ── Gripper primitives ───────────────────────────────────────────
 
     void publishGripper(bool open) {
@@ -698,6 +748,53 @@ private:
         return ok;
     }
 
+    // Waits for a fresh /tool_grasped after a close command and returns whether
+    // a tool is held. A timeout counts as "not grasped".
+    bool waitForFreshToolGrasped(double timeout_s) {
+        std::unique_lock<std::mutex> lock(tool_grasped_mutex_);
+        tool_grasped_received_ = false;
+        const bool ok = tool_grasped_cv_.wait_for(
+            lock,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<double>(timeout_s)),
+            [this] { return tool_grasped_received_; });
+        if (!ok) return false;
+        return tool_grasped_value_;
+    }
+
+    // Latest known grasp state without waiting. have_data is false until the
+    // first /tool_grasped message arrives (so callers don't act on a default).
+    bool lastToolGrasped(bool &have_data) {
+        std::lock_guard<std::mutex> lock(tool_grasped_mutex_);
+        have_data = tool_grasped_ever_;
+        return tool_grasped_value_;
+    }
+
+    // Forces a fresh grasp reading after a lift. The async loss monitor only
+    // polls every ~0.5 s, so lastToolGrasped() can still report "held" right
+    // after a lift even though the tool already slipped. Triggering an explicit
+    // re-check via /verify_grasp gives a deterministic answer before we commit
+    // to the (expensive) present rotation. A timed-out re-check assumes the tool
+    // is still held (the close-time check already confirmed the grasp).
+    bool verifyGraspAfterLift() {
+        std::unique_lock<std::mutex> lock(tool_grasped_mutex_);
+        tool_grasped_received_ = false;
+        lock.unlock();
+        verify_grasp_pub_->publish(std_msgs::msg::Empty());
+        lock.lock();
+        const bool ok = tool_grasped_cv_.wait_for(
+            lock,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<double>(grasp_check_timeout_sec_)),
+            [this] { return tool_grasped_received_; });
+        if (!ok) {
+            RCLCPP_WARN(get_logger(),
+                "Post-lift grasp re-verify timed out; assuming still held.");
+            return true;
+        }
+        return tool_grasped_value_;
+    }
+
     // Blocks until a fresh double_open_close gesture arrives. Any gesture
     // seen before this call is discarded so a gesture made while the tool
     // was being picked does not count. Wakes every 250 ms to check whether
@@ -715,6 +812,9 @@ private:
                 return !abort_handover_;  // true only on a real gesture
             }
             if (goal_handle->is_canceling()) return false;
+            // Don't keep waiting to hand over a tool that fell out meanwhile.
+            bool have_grasp_data = false;
+            if (!lastToolGrasped(have_grasp_data) && have_grasp_data) return false;
             if (gesture_wait_timeout_sec_ > 0.0) {
                 const double elapsed = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - start).count();
@@ -834,10 +934,93 @@ private:
         if (!executePlan(approach_plan, err)) { err = "approach exec: " + err; return false; }
         publishGripper(true);   // open
         sleepForGripper();
-        if (!executePlan(descend_plan, err))  { err = "descend exec: "  + err; return false; }
-        publishGripper(false);  // close
-        sleepForGripper();
-        if (!executePlan(lift_plan, err))     { err = "lift exec: "     + err; return false; }
+
+        // Two failure modes are handled differently:
+        //  - gripper closes on nothing (empty at close): the tool isn't where we
+        //    expected -> go home and let the LLM re-perceive and retry. We do
+        //    NOT keep stabbing at the tray blindly.
+        //  - tool grasped but slips while lifting: the grasp was just marginal
+        //    -> re-grasp locally with an escalating pose nudge (deeper + toward
+        //    the tool centre along functional_end_dir), up to
+        //    max_regrasp_retries_ times, without the slow present→home cycle.
+        bool secured = false;
+        for (int attempt = 0; attempt <= max_regrasp_retries_ && !secured; ++attempt) {
+            moveit::planning_interface::MoveGroupInterface::Plan descend_try = descend_plan;
+            moveit::planning_interface::MoveGroupInterface::Plan lift_try = lift_plan;
+
+            if (attempt > 0) {
+                geometry_msgs::msg::Pose grasp_try = grasp_pose;
+                grasp_try.position.z -= attempt * regrasp_deeper_step_m_;
+                const double fx = chosen.functional_end_dir.x;
+                const double fy = chosen.functional_end_dir.y;
+                const double fn = std::hypot(fx, fy);
+                if (fn > 1e-6) {
+                    grasp_try.position.x += attempt * regrasp_center_step_m_ * fx / fn;
+                    grasp_try.position.y += attempt * regrasp_center_step_m_ * fy / fn;
+                }
+                RCLCPP_INFO(get_logger(),
+                    "Re-grasp attempt %d for %s: %.1f mm deeper, %.1f mm toward center.",
+                    attempt, chosen.tool_id.c_str(),
+                    attempt * regrasp_deeper_step_m_ * 1000.0,
+                    attempt * regrasp_center_step_m_ * 1000.0);
+
+                std::string perr;
+                move_group_->setStartStateToCurrentState();
+                if (!planLinearPose(grasp_try, descend_try, perr)) {
+                    RCLCPP_WARN(get_logger(), "Re-grasp descend plan failed: %s", perr.c_str());
+                    continue;
+                }
+                move_group_->setStartState(makeStartStateFromPlanEnd(descend_try));
+                if (!planLinearPose(approach_pose, lift_try, perr)) {
+                    RCLCPP_WARN(get_logger(), "Re-grasp lift plan failed: %s", perr.c_str());
+                    continue;
+                }
+            }
+
+            if (!executePlan(descend_try, err)) { err = "descend exec: " + err; return false; }
+            publishGripper(false);  // close
+            const bool grasped = waitForFreshToolGrasped(grasp_check_timeout_sec_);
+
+            if (!grasped) {
+                // Empty at close -> re-perceive instead of re-grasping blindly.
+                RCLCPP_WARN(get_logger(),
+                    "Grasp check failed (gripper empty at close). Returning home.");
+                publishGripper(true);
+                std::string lift_err;
+                executePlan(lift_try, lift_err);   // raise empty gripper off the tray
+                std::string home_err;
+                doReturnHomeInternal(home_err);
+                err = "grasp_failed: no tool in gripper after close";
+                return false;
+            }
+
+            // Grasped -> lift, briefly settle, then force a fresh check. The
+            // settle lets a marginal grip relax before we commit, and the fresh
+            // check avoids the async monitor's ~0.5 s lag.
+            if (!executePlan(lift_try, err)) { err = "lift exec: " + err; return false; }
+            rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>(std::max(0.0, post_lift_settle_sec_))));
+            if (verifyGraspAfterLift()) {
+                secured = true;
+                break;
+            }
+
+            // Slipped during the lift -> open and re-grasp locally with a bigger
+            // nudge. No present rotation, no home.
+            RCLCPP_WARN(get_logger(),
+                "Tool slipped during lift on attempt %d. Re-grasping.", attempt);
+            publishGripper(true);
+            sleepForGripper();
+        }
+
+        if (!secured) {
+            publishGripper(true);
+            std::string home_err;
+            doReturnHomeInternal(home_err);   // best-effort: free the tray camera
+            err = "grasp_failed: tool slips during lift after " +
+                  std::to_string(max_regrasp_retries_ + 1) + " attempts";
+            return false;
+        }
 
         // Tool is now in the gripper: make it visible to the planner so the
         // presentation rotation (and later handover) avoids the tray-camera
@@ -845,10 +1028,24 @@ private:
         attachToolBox();
 
         publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
+        // From here the tool is in transit: a /tool_grasped=false stops the
+        // current motion immediately (see toolGraspedCb). After each move we
+        // check whether that happened and bail to home if so.
+        transporting_.store(true);
 
         // Immediately turn the arm around to present the tool. The attached
         // tool box + the tray-camera stand in the scene keep this collision-free.
-        if (!rotateShoulderPanTo(present_shoulder_pan_rad_, err)) {
+        const bool present_ok = rotateShoulderPanTo(present_shoulder_pan_rad_, err);
+        {
+            bool hd = false;
+            if (!lastToolGrasped(hd) && hd) {
+                transporting_.store(false);
+                abortHoldingAndGoHome("tool dropped during present rotation", err);
+                return false;
+            }
+        }
+        if (!present_ok) {
+            transporting_.store(false);
             err = "present rotation: " + err;
             return false;
         }
@@ -857,10 +1054,22 @@ private:
         // turned away), as a joint-space move on wrist_2/wrist_3 only. A pose
         // target here needs IK and RRTConnect could not sample a collision-free
         // goal; a joint goal cannot.
-        if (!preorientWrists(err)) {
+        const bool preorient_ok = preorientWrists(err);
+        {
+            bool hd = false;
+            if (!lastToolGrasped(hd) && hd) {
+                transporting_.store(false);
+                abortHoldingAndGoHome("tool dropped during pre-orient", err);
+                return false;
+            }
+        }
+        if (!preorient_ok) {
+            transporting_.store(false);
             err = "pre-orient wrists: " + err;
             return false;
         }
+
+        transporting_.store(false);
 
         // Remember where this tool came from so return_tool can put it back.
         {
@@ -932,6 +1141,12 @@ private:
             while (rclcpp::ok()) {
                 publishHandoverFeedback(goal_handle, "AWAITING_GESTURE");
                 if (!waitForGesture(goal_handle)) {
+                    // Tool fell out while waiting? Treat as a loss and retry.
+                    bool have_grasp_data = false;
+                    if (!lastToolGrasped(have_grasp_data) && have_grasp_data) {
+                        abortHoldingAndGoHome("gripper empty during handover", err);
+                        return false;
+                    }
                     bool preempted = false;
                     {
                         std::lock_guard<std::mutex> lock(gesture_mutex_);
@@ -994,6 +1209,15 @@ private:
             std::lock_guard<std::mutex> lock(state_mutex_);
             tool_id_snapshot = active_tool_id_;
             tool_class_snapshot = active_tool_class_;
+        }
+
+        // Make sure the tool is still in the gripper before driving to the hand.
+        // The loss monitor flips /tool_grasped to false if it fell out meanwhile.
+        bool have_grasp_data = false;
+        const bool still_holding = lastToolGrasped(have_grasp_data);
+        if (have_grasp_data && !still_holding) {
+            abortHoldingAndGoHome("gripper empty before handover", err);
+            return false;
         }
 
         publishState("HANDOVER", tool_id_snapshot, tool_class_snapshot);
@@ -1346,6 +1570,11 @@ private:
     double post_open_pause_seconds_;
     bool return_home_after_handover_;
     double gripper_done_timeout_seconds_;
+    double grasp_check_timeout_sec_;
+    double post_lift_settle_sec_;
+    int max_regrasp_retries_;
+    double regrasp_deeper_step_m_;
+    double regrasp_center_step_m_;
     double cartesian_min_fraction_;
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;
@@ -1362,11 +1591,13 @@ private:
     // Pubs / subs
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_mover_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_zeroer_pub_;
+    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr verify_grasp_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr handover_waiting_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
     rclcpp::Subscription<tracking_pkg::msg::HandState>::SharedPtr hand_state_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_done_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr tool_grasped_sub_;
     rclcpp::Client<tracking_pkg::srv::GetWorldState>::SharedPtr world_state_client_;
 
     // Action servers
@@ -1386,6 +1617,14 @@ private:
     std::mutex gripper_done_mutex_;
     std::condition_variable gripper_done_cv_;
     bool gripper_done_received_ = false;
+    std::mutex tool_grasped_mutex_;
+    std::condition_variable tool_grasped_cv_;
+    bool tool_grasped_received_ = false;
+    bool tool_grasped_value_ = false;
+    bool tool_grasped_ever_ = false;
+    // True while the arm is transporting a grasped tool (present/pre-orient).
+    // A /tool_grasped=false during this window stops the running motion.
+    std::atomic<bool> transporting_{false};
     std::mutex gesture_mutex_;
     std::condition_variable gesture_cv_;
     bool gesture_received_ = false;

@@ -26,7 +26,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from tracking_pkg.msg import (
     GraspCandidateArray,
@@ -128,6 +128,9 @@ class WorldModelNode(Node):
         self._robot_ready = True
         self._last_gesture = ''
         self._last_gesture_sec = 0.0
+        # Ground truth from the gripper (robotiq object register). None = unknown
+        # (no message yet), True = a tool is physically held, False = empty.
+        self._gripper_holds_tool = None
 
         self.create_subscription(
             GraspCandidateArray, candidates_topic, self._cand_cb, 10
@@ -143,6 +146,9 @@ class WorldModelNode(Node):
         )
         self.create_subscription(
             String, '/hand_gesture', self._gesture_cb, 10
+        )
+        self.create_subscription(
+            Bool, '/tool_grasped', self._tool_grasped_cb, 10
         )
 
         self.create_service(
@@ -187,6 +193,10 @@ class WorldModelNode(Node):
             f'State -> {self._state} (tool: {self._active_tool_id})'
         )
 
+    def _tool_grasped_cb(self, msg):
+        with self._lock:
+            self._gripper_holds_tool = bool(msg.data)
+
     def _joints_cb(self, msg):
         if len(msg.position) >= 6:
             with self._lock:
@@ -214,11 +224,12 @@ class WorldModelNode(Node):
                 self._robot_ready,
                 self._last_gesture,
                 self._last_gesture_sec,
+                self._gripper_holds_tool,
             )
 
     def _get_world_state_cb(self, request, response):
         del request
-        cands, hand, hand_avail, state, atid, atc, joints, robot_ready, _, _ = self._snapshot()
+        cands, hand, hand_avail, state, atid, atc, joints, robot_ready, _, _, _ = self._snapshot()
 
         s = SystemState()
         s.header.stamp = self.get_clock().now().to_msg()
@@ -251,7 +262,7 @@ class WorldModelNode(Node):
     def _get_world_model_cb(self, request, response):
         del request
         (cands, hand, _, state, atid, atc, joints, robot_ready,
-         last_gesture, last_gesture_sec) = self._snapshot()
+         last_gesture, last_gesture_sec, gripper_holds_tool) = self._snapshot()
         now_s = self.get_clock().now().nanoseconds * 1e-9
 
         available_tools = []
@@ -332,6 +343,7 @@ class WorldModelNode(Node):
             'system_state': state,
             'active_tool_id': atid,
             'active_tool_class': atc,
+            'gripper_holds_tool': gripper_holds_tool,
             'robot_ready': robot_ready,
             'joint_positions': joints,
             'available_tools': available_tools,

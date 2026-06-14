@@ -14,7 +14,7 @@ import socket
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import WrenchStamped
-from std_msgs.msg import Bool, Int32
+from std_msgs.msg import Bool, Empty, Int32
 
 
 class URCommand:
@@ -183,6 +183,8 @@ class SocketControllerNode(Node):
         self.subscription3 = self.create_subscription(Bool, '/gripper_zeroer', self.gripper_zeroer_callback, 10)
         # Subscriber für explizite Positionskommandos
         self.subscription4 = self.create_subscription(Int32, '/gripper_position_command', self.gripper_position_callback, 10)
+        # Subscriber für On-Demand-Frischprüfung des Greifzustands (z. B. nach Lift)
+        self.subscription5 = self.create_subscription(Empty, '/verify_grasp', self.verify_grasp_callback, 10)
 
         # Timer für die kontinuierliche Werkzeug-Überwachung
         if self.grasp_monitor_enabled:
@@ -216,7 +218,23 @@ class SocketControllerNode(Node):
         # sonst liest man Werte aus der noch laufenden Bewegung.
         obj = self.ur_node.wait_for_gripper_stopped()
         pos = self.ur_node.query_gripper_var("POS")
+        return self._evaluate_and_publish_grasp(obj, pos)
 
+
+    def verify_grasp_callback(self, _msg):
+        """On-Demand-Frischprüfung (z. B. direkt nach einem Lift). Der Greifer
+        steht still, daher direkt gOBJ/gPO abfragen — ohne den Bewegungs-Settle
+        von check_tool_grasped. Liefert einen frischen /tool_grasped-Wert, statt
+        den evtl. veralteten Monitor-Wert abwarten zu müssen."""
+        obj = self.ur_node.query_gripper_var("OBJ")
+        pos = self.ur_node.query_gripper_var("POS")
+        self.get_logger().info("On-demand Greif-Frischprüfung angefordert.")
+        self._evaluate_and_publish_grasp(obj, pos)
+
+
+    def _evaluate_and_publish_grasp(self, obj, pos):
+        """Bewertet gOBJ/gPO, publiziert /tool_grasped und (de)aktiviert den
+        Verlust-Monitor entsprechend."""
         grasped = (obj == 2)
         if self.grasp_use_pos_crosscheck and pos is not None:
             # Bei rausgefallenem Werkzeug fahren die Finger weiter zu (gPO nahe
