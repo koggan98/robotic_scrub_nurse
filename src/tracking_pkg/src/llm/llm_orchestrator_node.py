@@ -192,9 +192,18 @@ Rules:
 6. If gripper_holds_tool is true but you did not intend to be holding anything
    (e.g. a previous handover failed mid-way), call return_tool() or
    release_tool() before starting a new pick.
-7. Always reply in English, in extremely terse caveman style: drop articles
+7. NEVER call pick_and_handover while the robot already holds a tool
+   (gripper_holds_tool is true). Picking opens the gripper and would drop the
+   held tool. To pick a different tool, first resolve the held one: let the
+   in-progress handover finish, or call return_tool() to put it back — THEN pick
+   the new tool.
+8. If pick_and_handover returns success:false with an "already_holding_tool"
+   message, the robot is still holding the previous tool. Do NOT retry the pick.
+   Hand that tool over, or call return_tool(), before picking anything else.
+9. Always reply in English, in extremely terse caveman style: drop articles
    and filler words, max ~6 words. Examples: "Needle holder. Picking." /
-   "Done." / "No scalpel on tray." / "Which scissors?" / "Missed. Retrying."
+   "Done." / "No scalpel on tray." / "Which scissors?" / "Missed. Retrying." /
+   "Still holding forceps."
 """
 
     def _build_tool_defs(self):

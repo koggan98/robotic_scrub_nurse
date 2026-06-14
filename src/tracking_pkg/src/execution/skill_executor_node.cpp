@@ -748,6 +748,30 @@ private:
         return ok;
     }
 
+    // Waits indefinitely for the surgeon to take the tool (force-triggered
+    // /gripper_done). Unlike waitForGripperDone there is no time limit — the
+    // robot holds the tool out for as long as it takes. Still wakes every 250 ms
+    // to stay responsive to goal cancellation (abort) and return_tool
+    // preemption, so a stuck handover can be broken. Returns true on
+    // /gripper_done, false on cancel/preempt/shutdown.
+    bool waitForGripperDoneIndefinite(
+            const std::shared_ptr<GoalHandleHandover> &goal_handle) {
+        std::unique_lock<std::mutex> lock(gripper_done_mutex_);
+        gripper_done_received_ = false;
+        while (rclcpp::ok()) {
+            if (gripper_done_cv_.wait_for(lock, std::chrono::milliseconds(250),
+                    [this] { return gripper_done_received_; })) {
+                return true;
+            }
+            if (goal_handle->is_canceling()) return false;
+            {
+                std::lock_guard<std::mutex> g(gesture_mutex_);
+                if (abort_handover_) return false;
+            }
+        }
+        return false;
+    }
+
     // Waits for a fresh /tool_grasped after a close command and returns whether
     // a tool is held. A timeout counts as "not grasped".
     bool waitForFreshToolGrasped(double timeout_s) {
@@ -791,6 +815,29 @@ private:
             RCLCPP_WARN(get_logger(),
                 "Post-lift grasp re-verify timed out; assuming still held.");
             return true;
+        }
+        return tool_grasped_value_;
+    }
+
+    // Fresh check of whether the gripper currently holds a tool, used as a guard
+    // before a new pick. Forces a /verify_grasp query so the answer reflects the
+    // real gOBJ now (not a possibly-stale monitor value). A timeout assumes NOT
+    // holding, so a gripper-comms hiccup never blocks all picks.
+    bool freshGripperHoldsTool() {
+        std::unique_lock<std::mutex> lock(tool_grasped_mutex_);
+        tool_grasped_received_ = false;
+        lock.unlock();
+        verify_grasp_pub_->publish(std_msgs::msg::Empty());
+        lock.lock();
+        const bool ok = tool_grasped_cv_.wait_for(
+            lock,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<double>(grasp_check_timeout_sec_)),
+            [this] { return tool_grasped_received_; });
+        if (!ok) {
+            RCLCPP_WARN(get_logger(),
+                "Holding-guard re-check timed out; assuming gripper empty.");
+            return false;
         }
         return tool_grasped_value_;
     }
@@ -878,6 +925,24 @@ private:
                 std::string &picked_id_out,
                 std::string &picked_class_out,
                 std::string &err) {
+        // Holding-guard: never start a pick while the gripper already holds a
+        // tool — the approach phase opens the gripper and would drop it. A fresh
+        // check (not a possibly-stale monitor value) reflects the real state.
+        if (freshGripperHoldsTool()) {
+            std::string held_class;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                held_class = active_tool_class_;
+            }
+            err = "already_holding_tool" +
+                  (held_class.empty() ? std::string() : (": " + held_class));
+            RCLCPP_WARN(get_logger(),
+                "Pick refused: gripper already holds a tool (%s). "
+                "Hand it over or return it first.",
+                held_class.empty() ? "unknown" : held_class.c_str());
+            return false;
+        }
+
         std::vector<tracking_pkg::msg::GraspCandidate> candidates;
         if (!collectCandidates(candidates, err)) return false;
 
@@ -1235,9 +1300,10 @@ private:
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, post_zeroer_settle_seconds_))));
 
-        if (!waitForGripperDone(gripper_done_timeout_seconds_)) {
+        // Wait indefinitely for the surgeon to take the tool — no timeout.
+        if (!waitForGripperDoneIndefinite(goal_handle)) {
             publishGripperZeroer(false);
-            err = "timed out waiting for /gripper_done";
+            err = "handover cancelled while waiting for the surgeon to take the tool";
             return false;
         }
         publishGripperZeroer(false);

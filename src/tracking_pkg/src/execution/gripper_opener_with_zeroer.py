@@ -195,8 +195,8 @@ class SocketControllerNode(Node):
         gripper_state = bool_msg.data
         if gripper_state:
             self.get_logger().info(f"Opening gripper")
-            self.monitoring_active = False  # bewusstes Öffnen ist kein Verlust
             self.ur_node.command_gripper(100, speed=255, force=1)
+            self._publish_released()  # bewusstes Öffnen: nichts mehr gehalten
         else:
             self.get_logger().info(f"Closing gripper")
             self.ur_node.command_gripper(250, speed=255, force=255)
@@ -258,6 +258,17 @@ class SocketControllerNode(Node):
         return grasped
 
 
+    def _publish_released(self):
+        """Greifer wurde absichtlich geöffnet (Handover-Release / normales
+        Öffnen): Ground-Truth aktualisieren — nichts mehr gehalten — und den
+        Verlust-Monitor deaktivieren. Sonst bliebe /tool_grasped auf 'true'
+        hängen und der Holding-Guard würde künftige Picks fälschlich blockieren."""
+        self.monitoring_active = False
+        msg = Bool()
+        msg.data = False
+        self.tool_grasped_publisher.publish(msg)
+
+
     def _monitor_grasp(self):
         """Pollt gOBJ, solange ein Werkzeug gehalten wird. Kippt gOBJ von 2 (Objekt
         gehalten) auf 3 (leer durchgeschlossen), gilt das Werkzeug als verloren."""
@@ -302,6 +313,8 @@ class SocketControllerNode(Node):
         # Nur bei einem Schließbefehl prüfen, ob ein Werkzeug gegriffen wurde.
         if position >= self.grasp_empty_close_pos - self.grasp_pos_margin:
             self.check_tool_grasped()
+        elif position <= 110:
+            self._publish_released()  # Öffnen über Positionsbefehl
 
         done_msg = Bool()
         done_msg.data = True
@@ -326,8 +339,8 @@ class SocketControllerNode(Node):
         # Nur wenn sich die Kraft von der Nullposition signifikant ändert, soll der Greifer öffnen
         if abs(force_x) > 2 or abs(force_y) > 2 or abs(force_z) > 2:
             self.get_logger().info("Force threshold exceeded, opening gripper.")
-            self.monitoring_active = False  # bewusstes Öffnen ist kein Verlust
             self.ur_node.command_gripper(100, speed=255, force=1) # 0 = auf, 255 = ganz zu
+            self._publish_released()  # Werkzeug übergeben: nichts mehr gehalten
             msg = Bool()
             msg.data = True
             self.status_publisher.publish(msg)
