@@ -371,6 +371,19 @@ ros2 run tracking_pkg tool_pick_test_node --ros-args \
   -p acceleration_scale:=0.6
 ```
 
+### Live Force-Z Plot
+
+To observe the live TCP force in z direction while picking or handing over
+tools, run the standalone helper script:
+
+```bash
+python3 ros_unrelated_scripts/plot_force_z_live.py
+```
+
+It subscribes to `/force_torque_sensor_broadcaster/wrench` and plots
+`wrench.force.z` in Newton. Add `--zero-start` to subtract the first received
+sample as a baseline, or override the source with `--topic <wrench_topic>`.
+
 ### Joint-State Keyboard Jogger
 
 To manually move between the saved tray/handover joint waypoints, start the
