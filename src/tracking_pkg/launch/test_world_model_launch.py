@@ -185,8 +185,17 @@ def generate_launch_description():
         ),
         Node(
             package='tracking_pkg',
-            executable='tray_camera_volume_publisher.py',
-            name='tray_camera_volume_publisher',
+            executable='instrument_tray_collision_publisher.py',
+            name='instrument_tray_collision_publisher',
+            output='screen',
+            parameters=[{
+                'publish_hz': 2.0,
+            }],
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='reclaim_tray_collision_publisher.py',
+            name='reclaim_tray_collision_publisher',
             output='screen',
             parameters=[{
                 'publish_hz': 2.0,

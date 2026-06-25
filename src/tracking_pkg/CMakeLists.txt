@@ -43,7 +43,8 @@ install(
     src/interfaces/scrub_nurse_cli.py
     # Scene / visualization helpers
     src/publisher/mir_publisher.py
-    src/publisher/tray_camera_volume_publisher.py
+    src/publisher/instrument_tray_collision_publisher.py
+    src/publisher/reclaim_tray_collision_publisher.py
     # Execution
     src/execution/gripper_opener_with_zeroer.py
     src/execution/reclaim_controller.py

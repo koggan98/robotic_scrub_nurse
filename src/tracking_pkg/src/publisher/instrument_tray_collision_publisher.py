@@ -12,9 +12,9 @@ from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 
 
-class TrayCameraVolumePublisher(Node):
+class InstrumentTrayCollisionPublisher(Node):
     def __init__(self):
-        super().__init__("tray_camera_volume_publisher")
+        super().__init__("instrument_tray_collision_publisher")
 
         self.optical_frame = (
             self.declare_parameter("frame_id", "tray_camera_color_optical_frame")
@@ -32,12 +32,12 @@ class TrayCameraVolumePublisher(Node):
             .string_value
         )
         self.frame_box_id = (
-            self.declare_parameter("frame_box_id", "tray_camera_frame_box")
+            self.declare_parameter("frame_box_id", "instrument_tray_frame_box")
             .get_parameter_value()
             .string_value
         )
         self.post_id = (
-            self.declare_parameter("post_id", "tray_camera_vertical_post")
+            self.declare_parameter("post_id", "instrument_tray_vertical_post")
             .get_parameter_value()
             .string_value
         )
@@ -124,7 +124,7 @@ class TrayCameraVolumePublisher(Node):
         self.timer = self.create_timer(period, self.publish_collision_objects)
 
         self.get_logger().info(
-            "Publishing tray camera collision objects: "
+            "Publishing instrument tray collision objects: "
             f"frame_box='{self.frame_box_id}' (in {self.optical_frame}), "
             f"vertical_post='{self.post_id}' (in {self.world_frame}, "
             f"{self.post_thickness_m:.3f} x {self.post_thickness_m:.3f} x "
@@ -252,7 +252,7 @@ class TrayCameraVolumePublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrayCameraVolumePublisher()
+    node = InstrumentTrayCollisionPublisher()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
