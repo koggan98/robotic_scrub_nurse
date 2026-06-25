@@ -11,3 +11,5 @@ Für joint jogger:
 ros2 launch tracking_pkg joint_state_jogger_launch.py ur_type:=ur3e -> moveit/rviz fürs joggen starten.
 ros2 run tracking_pkg joint_state_jogger_node -> 1 tray_left, 2 tray_center, 3 tray_right, 4 reclaim_holder, q quit.
 
+Für LLM Pick Test:
+ros2 topic pub --once /user_speech std_msgs/msg/String "{data: 'give me the scissors'}"
