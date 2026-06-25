@@ -178,6 +178,28 @@ class ToolDetectionNode(Node):
             self.get_logger().error(f'Failed to load model: {e}')
             return False
 
+    def _predict(self, color):
+        """Run YOLO-OBB inference, falling back to CPU if a CUDA call fails.
+
+        On the Spark the default device is cuda:0; if CUDA is unavailable or
+        misconfigured we degrade to CPU (once) instead of failing every tick.
+        """
+        try:
+            return self._model.predict(
+                source=color, task='obb', imgsz=self.imgsz,
+                conf=self.conf_threshold, device=self.device, verbose=False,
+            )
+        except Exception as e:
+            if not str(self.device).startswith('cuda'):
+                raise
+            self.get_logger().warn(
+                f'CUDA inference failed ({e}); falling back to device=cpu')
+            self.device = 'cpu'
+            return self._model.predict(
+                source=color, task='obb', imgsz=self.imgsz,
+                conf=self.conf_threshold, device=self.device, verbose=False,
+            )
+
     def _tick(self):
         with self._lock:
             color = None if self._latest_image is None else self._latest_image.copy()
@@ -193,14 +215,7 @@ class ToolDetectionNode(Node):
             return
 
         try:
-            results = self._model.predict(
-                source=color,
-                task='obb',
-                imgsz=self.imgsz,
-                conf=self.conf_threshold,
-                device=self.device,
-                verbose=False,
-            )
+            results = self._predict(color)
         except Exception as e:
             self.get_logger().error(f'Inference failed: {e}')
             return

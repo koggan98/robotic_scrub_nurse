@@ -7,7 +7,7 @@
 - Implementation roadmap and milestones: `PLAN.md`.
 
 ## System Context
-The active baseline is a ROS 2 Humble workspace centered on `src/tracking_pkg`, integrating:
+The active baseline is a ROS 2 Jazzy workspace (Ubuntu 24.04, NVIDIA Spark / ARM64 + CUDA) centered on `src/tracking_pkg`, integrating:
 - RealSense perception,
 - OBB-based instrument tray detection and on-demand world-model building,
 - hand tracking and gesture-triggered hand pose publication,

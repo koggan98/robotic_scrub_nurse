@@ -1,0 +1,35 @@
+# Python dependencies for the Robotic Scrub Nurse on the NVIDIA Spark
+# (Ubuntu 24.04 / ROS 2 Jazzy / aarch64 / CUDA).
+#
+# Install into an environment ROS-Python (3.12) can import from. On Ubuntu
+# 24.04 system pip is PEP-668 "externally managed", so either:
+#   python3 -m venv --system-site-packages ~/rsn-venv && source ~/rsn-venv/bin/activate
+#   pip install -r requirements-spark.txt
+# or, deliberately:
+#   pip install --break-system-packages -r requirements-spark.txt
+#
+# NOT listed here on purpose (must be installed manually first, see
+# deployment_guide.md "Spark / Jazzy Setup"):
+#   torch         -> NVIDIA ARM/SBSA CUDA wheel for Blackwell (sm_121).
+#                    The plain PyPI wheel is CPU-only / wrong CUDA on aarch64.
+#                    Install BEFORE ultralytics so it does not pull a bad torch.
+#   pyrealsense2  -> often no aarch64 wheel; build librealsense + pyrealsense2
+#                    from source (RSUSB backend) or use ros-jazzy-librealsense2.
+
+# --- Perception / ML (GPU-accelerated via the torch installed above) ---
+ultralytics          # YOLOv8-OBB tool detection (tool_detection_node, world_model_builder)
+faster-whisper       # local speech-to-text (asr_node); CUDA via CTranslate2
+mediapipe            # hand tracking (hand_tracker); ensure an aarch64 wheel is available
+sounddevice          # microphone capture for asr_node
+
+# --- LLM orchestration ---
+openai               # OpenAI tool-calling loop (llm_orchestrator_node)
+pydantic             # tool-argument schemas (also available via rosdep python3-pydantic)
+
+# --- Math / geometry / IO used across nodes ---
+numpy
+scipy                # scipy.spatial.transform.Rotation
+transforms3d         # quaternion/TF helpers
+trimesh              # mesh handling for collision objects
+tabulate             # CLI tables
+PyYAML               # config loading

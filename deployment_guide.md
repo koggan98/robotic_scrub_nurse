@@ -2,7 +2,7 @@
 
 ## Robotic Scrub Nurse (UR3e)
 
-This document describes how to deploy and run the Robotic Scrub Nurse system on a local workstation connected to a physical UR3e robot.
+This document describes how to deploy and run the Robotic Scrub Nurse system on an NVIDIA Spark (ARM64 / Grace-Blackwell, CUDA) workstation connected to a physical UR3e robot.
 
 ---
 
@@ -33,7 +33,8 @@ Runtime is started across dedicated terminals; multiple components can be groupe
 
 Required:
 
-- Ubuntu 22.04 + ROS2 Humble
+- Ubuntu 24.04 + ROS 2 Jazzy
+- NVIDIA Spark (ARM64 / Grace-Blackwell) with CUDA drivers (`nvidia-smi` working)
 - colcon
 - MoveIt 2
 - Universal Robots ROS 2 Driver
@@ -42,9 +43,59 @@ Required:
 
 ### Python Dependencies
 
+Most pip dependencies are pinned in `requirements-spark.txt`. `torch` and
+`pyrealsense2` are installed manually first (see "Spark / Jazzy Setup" below),
+because on ARM64 + CUDA they are not plain PyPI wheels.
+
 ```bash
-pip install mediapipe pyrealsense2 tabulate ur_rtde
+pip install -r requirements-spark.txt
 ```
+
+---
+
+## 2b. Spark / Jazzy Setup (one-time)
+
+The Spark is **ARM64 + CUDA** running **Ubuntu 24.04 / ROS 2 Jazzy**. Set up the
+machine once in this order:
+
+1. **ROS 2 Jazzy** (Ubuntu 24.04 base):
+
+   ```bash
+   sudo apt install ros-jazzy-desktop
+   ```
+
+2. **ROS apt dependencies** (Jazzy package names):
+
+   ```bash
+   sudo apt install ros-jazzy-ur ros-jazzy-moveit ros-jazzy-cv-bridge \
+     ros-jazzy-realsense2-camera
+   # then resolve the rest from package.xml:
+   cd ~/robotic_scrub_nurse_ws
+   rosdep install --from-paths src --ignore-src -r -y
+   ```
+
+   If `ros-jazzy-realsense2-camera` / `pyrealsense2` is unavailable for ARM64,
+   build `librealsense` + `pyrealsense2` from source with the RSUSB backend.
+
+3. **GPU stack (Blackwell, CUDA 13):** install `torch` from NVIDIA's ARM/SBSA
+   CUDA index (Blackwell `sm_121`) — **not** the plain PyPI wheel — then install
+   the rest. `ultralytics` will reuse the torch you installed; `faster-whisper`
+   uses the CUDA build of CTranslate2.
+
+   ```bash
+   # install the NVIDIA CUDA torch wheel first (see NVIDIA Spark docs), then:
+   pip install -r requirements-spark.txt
+   ```
+
+4. **PEP 668 (Ubuntu 24.04):** system pip is "externally managed". Use a venv
+   created with `--system-site-packages` (so ROS-Python sees the packages) or
+   install with `--break-system-packages`.
+
+5. Verify CUDA before running the stack:
+
+   ```bash
+   python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   ```
 
 ---
 
@@ -60,21 +111,21 @@ The canonical replacement files are stored in this repository:
 Recommended: back up the currently installed vendor files first.
 
 ```bash
-sudo cp /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro \
-  /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro.bak
+sudo cp /opt/ros/jazzy/share/ur_description/urdf/ur.urdf.xacro \
+  /opt/ros/jazzy/share/ur_description/urdf/ur.urdf.xacro.bak
 
-sudo cp /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml \
-  /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml.bak
+sudo cp /opt/ros/jazzy/share/ur_description/config/ur3e/joint_limits.yaml \
+  /opt/ros/jazzy/share/ur_description/config/ur3e/joint_limits.yaml.bak
 ```
 
 Then copy the project-specific overrides into the installed `ur_description` package:
 
 ```bash
 sudo cp ~/robotic_scrub_nurse_ws/files/ur.urdf.xacro \
-  /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro
+  /opt/ros/jazzy/share/ur_description/urdf/ur.urdf.xacro
 
 sudo cp ~/robotic_scrub_nurse_ws/files/joint_limits.yaml \
-  /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
+  /opt/ros/jazzy/share/ur_description/config/ur3e/joint_limits.yaml
 ```
 
 The two overrides are required for the active setup:
@@ -85,11 +136,11 @@ The two overrides are required for the active setup:
 Optional verification:
 
 ```bash
-ls -l /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro
-ls -l /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
+ls -l /opt/ros/jazzy/share/ur_description/urdf/ur.urdf.xacro
+ls -l /opt/ros/jazzy/share/ur_description/config/ur3e/joint_limits.yaml
 ```
 
-Warning: these overrides modify installed `ur_description` files under `/opt/ros/humble`. Reapply them after ROS, `ur_description`, or UR driver updates, as package updates can overwrite them.
+Warning: these overrides modify installed `ur_description` files under `/opt/ros/jazzy`. Reapply them after ROS, `ur_description`, or UR driver updates, as package updates can overwrite them.
 
 ---
 
@@ -157,7 +208,7 @@ Start each component in a separate terminal, in the following order:
 ```bash
 cd ~/robotic_scrub_nurse_ws
 colcon build --symlink-install
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ```
 
@@ -165,7 +216,7 @@ source install/setup.bash
 
 ```bash
 cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
   ur_type:=ur3e \
@@ -181,7 +232,7 @@ Activate the robotiq gripper.
 
 ```bash
 cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 run tracking_pkg tool_selection.py
 ```
@@ -196,7 +247,7 @@ This starts:
 
 ```bash
 cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch tracking_pkg loop_with_moveit_launch.py \
   ur_type:=ur3e \
@@ -217,7 +268,7 @@ This launch replaces `loop_mover` with `socket_mover` and uses `ur_rtde` for mot
 
 ```bash
 cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch tracking_pkg web_socket_launch.py
 ```

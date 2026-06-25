@@ -46,7 +46,9 @@ Core experimental package containing:
 
 ### Universal_Robots_ROS2_Gazebo_Simulation
 
-Official UR simulation environment included as a git submodule for testing and development without hardware.
+Official UR simulation environment included as a git submodule. **Not built on
+the Jazzy/Spark target** (it is pinned to Humble/Gazebo Classic and excluded via
+`COLCON_IGNORE`); the Spark deployment is hardware-only.
 
 ---
 
@@ -71,18 +73,20 @@ Official UR simulation environment included as a git submodule for testing and d
 
 ### System Requirements
 
-- Ubuntu 22.04 LTS
-- ROS 2 Humble
+- Ubuntu 24.04 LTS
+- ROS 2 Jazzy
+- NVIDIA Spark (ARM64 / Grace-Blackwell) with CUDA for GPU-accelerated perception
 
 ### Hardware Requirements (for physical deployment)
 
+- NVIDIA Spark (ARM64, CUDA) host
 - Universal Robots UR3e manipulator
 - Intel RealSense D455 camera
 - Robotiq 2F gripper
 
 ### Software Dependencies
 
-- **ROS 2 Humble**: Core robotics framework
+- **ROS 2 Jazzy**: Core robotics framework
 - **MoveIt 2**: Motion planning
 - **ur_rtde**: Direct UR RTDE motion interface for the socket runtime path
 - **Intel RealSense SDK**: Camera integration
@@ -91,8 +95,12 @@ Official UR simulation environment included as a git submodule for testing and d
 
 ### Python Packages
 
+Most dependencies are pinned in `requirements-spark.txt`. On the Spark, install
+`torch` (NVIDIA ARM/CUDA wheel for Blackwell) and `pyrealsense2` first — see
+[deployment_guide.md](deployment_guide.md) "Spark / Jazzy Setup" — then:
+
 ```bash
-pip install mediapipe pyrealsense2 tabulate ur_rtde ultralytics transformers torch pillow
+pip install -r requirements-spark.txt
 ```
 
 ---
@@ -115,9 +123,9 @@ source install/setup.bash
 
 ### 3. Test with Simulation
 
-```bash
-ros2 launch ur_simulation_gazebo ur_sim_control.launch.py
-```
+> **Note:** The Gazebo simulation is not supported on the Jazzy/Spark build. It
+> is pinned to Humble (Gazebo Classic) and excluded from the colcon build via
+> `COLCON_IGNORE`. Migrating it to Jazzy (new Gazebo / `gz`) is out of scope.
 
 ### 4. Deploy on Hardware
 
