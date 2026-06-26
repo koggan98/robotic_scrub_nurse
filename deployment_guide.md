@@ -74,27 +74,57 @@ machine once in this order:
    rosdep install --from-paths src --ignore-src -r -y
    ```
 
-   If `ros-jazzy-realsense2-camera` / `pyrealsense2` is unavailable for ARM64,
-   build `librealsense` + `pyrealsense2` from source with the RSUSB backend.
+   `pyrealsense2` is installed separately via pip (see step 3); a source build
+   is not needed — an aarch64 wheel is available on PyPI.
 
-3. **GPU stack (Blackwell, CUDA 13):** install `torch` from NVIDIA's ARM/SBSA
-   CUDA index (Blackwell `sm_121`) — **not** the plain PyPI wheel — then install
-   the rest. `ultralytics` will reuse the torch you installed; `faster-whisper`
-   uses the CUDA build of CTranslate2.
+3. **GPU stack (Blackwell, CUDA 13):** The plain PyPI `torch` wheel for aarch64
+   is CPU-only. Install the CUDA build from PyTorch's `cu128` index, which has
+   aarch64 CUDA wheels (CUDA 12.8 libs run on the CUDA 13 driver via backward
+   compatibility). The `+cu128` local version tag is required — without it pip
+   matches the already-installed CPU wheel and skips the download.
 
    ```bash
-   # install the NVIDIA CUDA torch wheel first (see NVIDIA Spark docs), then:
-   pip install -r requirements-spark.txt
+   # pyrealsense2: ARM64 wheel available on PyPI (no source build needed)
+   pip install --break-system-packages pyrealsense2
+
+   # torch with CUDA — must use +cu128 tag to get the GPU wheel
+   pip install --break-system-packages \
+     "torch==2.10.0+cu128" "torchvision==0.25.0+cu128" \
+     --index-url https://download.pytorch.org/whl/cu128/
+
+   # remaining ML deps
+   pip install --break-system-packages -r requirements-spark.txt
    ```
 
-4. **PEP 668 (Ubuntu 24.04):** system pip is "externally managed". Use a venv
-   created with `--system-site-packages` (so ROS-Python sees the packages) or
-   install with `--break-system-packages`.
+   Note: `torch==2.10.0+cu128` supports up to sm_120; the GB10 is sm_121
+   (Blackwell). PyTorch falls back to PTX JIT for sm_121 kernels — adds a
+   one-time compile delay on first inference, subsequent runs are normal.
+   Upgrade to `torch==2.11.0+cu128` for native sm_121 codegen if needed.
+
+   Note: the `ctranslate2` aarch64 wheel from PyPI is CPU-only. `faster-whisper`
+   / ASR will auto-fall back to `device='cpu', compute_type='int8'` at runtime.
+
+4. **PEP 668 (Ubuntu 24.04):** system pip is "externally managed". Install with
+   `--break-system-packages` (chosen strategy for this machine).
 
 5. Verify CUDA before running the stack:
 
    ```bash
    python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   # Expected: True  NVIDIA GB10
+   ```
+
+6. Smoke-test all ML imports:
+
+   ```bash
+   python3 -c "
+   import torch; print('torch:', torch.__version__, 'CUDA:', torch.cuda.is_available())
+   import ultralytics; print('ultralytics:', ultralytics.__version__)
+   import faster_whisper; print('faster_whisper: ok')
+   import mediapipe; print('mediapipe:', mediapipe.__version__)
+   import pyrealsense2; print('pyrealsense2:', pyrealsense2.__version__)
+   import rclpy; print('rclpy: ok')
+   "
    ```
 
 ---

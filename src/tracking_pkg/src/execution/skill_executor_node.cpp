@@ -188,9 +188,9 @@ moveit_msgs::msg::RobotState makeStartStateFromPlanEnd(
     const moveit::planning_interface::MoveGroupInterface::Plan &plan) {
     moveit_msgs::msg::RobotState rs;
     rs.is_diff = false;
-    rs.joint_state.name = plan.trajectory_.joint_trajectory.joint_names;
-    if (!plan.trajectory_.joint_trajectory.points.empty()) {
-        rs.joint_state.position = plan.trajectory_.joint_trajectory.points.back().positions;
+    rs.joint_state.name = plan.trajectory.joint_trajectory.joint_names;
+    if (!plan.trajectory.joint_trajectory.points.empty()) {
+        rs.joint_state.position = plan.trajectory.joint_trajectory.points.back().positions;
     }
     return rs;
 }
@@ -529,7 +529,7 @@ private:
             return false;
         }
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        plan.trajectory_ = traj;
+        plan.trajectory = traj;
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             err = "cartesian path execution failed";
             return false;
@@ -568,7 +568,7 @@ private:
             err = "cartesian path only " + std::to_string(fraction * 100.0) + "%";
             return false;
         }
-        plan_out.trajectory_ = traj;
+        plan_out.trajectory = traj;
         return true;
     }
 

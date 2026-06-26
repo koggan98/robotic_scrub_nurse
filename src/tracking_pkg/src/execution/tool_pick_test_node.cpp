@@ -509,7 +509,7 @@ private:
         }
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        plan.trajectory_ = trajectory;
+        plan.trajectory = trajectory;
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(get_logger(), "Cartesian path execution failed.");
             return false;

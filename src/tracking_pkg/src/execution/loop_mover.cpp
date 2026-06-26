@@ -606,7 +606,7 @@ private:
         }
 
         moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
-        cartesian_plan.trajectory_ = trajectory;
+        cartesian_plan.trajectory = trajectory;
         if (move_group_->execute(cartesian_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
             return false;
@@ -1174,7 +1174,7 @@ private:
         if (fraction > 0.99) {
             RCLCPP_INFO(this->get_logger(), "Linear path to object (%.2f%% achieved), executing...", fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
-            cartesian_plan.trajectory_ = trajectory;
+            cartesian_plan.trajectory = trajectory;
             move_group_->execute(cartesian_plan);
         } else {
             RCLCPP_ERROR(this->get_logger(), "Failed to compute linear Cartesian path (only %.2f%% achieved)", fraction * 100.0);
@@ -1199,7 +1199,7 @@ private:
                 "Lifting hammer with Cartesian z and x offset (linear path %.2f%% achieved)...",
                 lift_fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
-            lift_plan.trajectory_ = lift_trajectory;
+            lift_plan.trajectory = lift_trajectory;
             move_group_->execute(lift_plan);
 
             waiting_for_hand_pose_ = true;
@@ -1332,7 +1332,7 @@ private:
         if (fraction > 0.99) {
             RCLCPP_INFO(this->get_logger(), "Linear path to object (%.2f%% achieved), executing...", fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
-            cartesian_plan.trajectory_ = trajectory;
+            cartesian_plan.trajectory = trajectory;
             move_group_->execute(cartesian_plan);
         } else {
             RCLCPP_ERROR(this->get_logger(), "Failed to compute linear Cartesian path (only %.2f%% achieved)", fraction * 100.0);
@@ -1354,7 +1354,7 @@ private:
         if (lift_fraction > 0.99) {
             RCLCPP_INFO(this->get_logger(), "Lifting object (linear path %.2f%% achieved)...", lift_fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
-            lift_plan.trajectory_ = lift_trajectory;
+            lift_plan.trajectory = lift_trajectory;
             move_group_->execute(lift_plan);
 
             waiting_for_hand_pose_ = true;

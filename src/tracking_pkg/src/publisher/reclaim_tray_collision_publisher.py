@@ -54,7 +54,7 @@ class ReclaimTrayCollisionPublisher(Node):
             self.declare_parameter("post40_size_m", POST40_SIZE).value)
         self.post40_length_m = float(
             self.declare_parameter("post40_length_m", POST40_LENGTH).value)
-        self.publish_hz = float(self.declare_parameter("publish_hz", 2.0).value)
+        self.publish_hz = float(self.declare_parameter("publish_hz", 0.5).value)
 
         qos = QoSProfile(
             depth=1,

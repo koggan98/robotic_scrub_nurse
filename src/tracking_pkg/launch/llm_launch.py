@@ -23,6 +23,7 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     SetEnvironmentVariable,
     TimerAction,
@@ -59,7 +60,7 @@ def generate_launch_description():
     ur_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare('ur_moveit_config'), 'launch', 'ur_moveit.launch.py']
+                [FindPackageShare('tracking_pkg'), 'launch', 'rsn_ur_moveit.launch.py']
             )
         ),
         launch_arguments={
@@ -76,11 +77,11 @@ def generate_launch_description():
             Command([
                 'xacro ',
                 PathJoinSubstitution(
-                    [FindPackageShare('ur_description'), 'urdf', 'ur.urdf.xacro']
+                    [FindPackageShare('tracking_pkg'), 'urdf', 'rsn_ur.urdf.xacro']
                 ),
                 ' ur_type:=', ur_type,
-                ' name:=ur',
-                ' prefix:=',
+                ' name:=', ur_type,
+                ' tf_prefix:=',
             ]),
             value_type=str,
         )
@@ -90,10 +91,10 @@ def generate_launch_description():
             Command([
                 'xacro ',
                 PathJoinSubstitution(
-                    [FindPackageShare('ur_moveit_config'), 'srdf', 'ur.srdf.xacro']
+                    [FindPackageShare('tracking_pkg'), 'srdf', 'ur.srdf.xacro']
                 ),
                 ' ur_type:=', ur_type,
-                ' name:=ur',
+                ' name:=', ur_type,
             ]),
             value_type=str,
         )
@@ -106,7 +107,7 @@ def generate_launch_description():
         package='rviz2',
         executable='rviz2',
         name='rviz2_llm',
-        output='log',
+        output='screen',
         condition=IfCondition(tracking_rviz),
         arguments=[
             '-d',
@@ -117,7 +118,6 @@ def generate_launch_description():
         parameters=[
             robot_description,
             robot_description_semantic,
-            robot_description_kinematics_path,
             {'use_sim_time': use_sim_time},
         ],
     )
@@ -187,10 +187,10 @@ def generate_launch_description():
                 'rgb_camera.color_profile': '640,480,30',
                 'depth_module.depth_profile': '640,480,30',
                 'align_depth.enable': 'true',
-                'spatial_filter.enable': 'true',
-                'temporal_filter.enable': 'true',
-                'hole_filling_filter.enable': 'true',
-                'decimation_filter.enable': 'true',
+                'spatial_filter.enable': 'false',
+                'temporal_filter.enable': 'false',
+                'hole_filling_filter.enable': 'false',
+                'decimation_filter.enable': 'false',
                 'enable_sync': 'true',
                 'publish_tf': 'false',
             }.items(),
@@ -202,24 +202,17 @@ def generate_launch_description():
         #           /tray_camera/color/camera_info.
         # Consumed by both tool_detection_node (continuous streaming) and
         # world_model_builder (camera_mode='streaming', on-demand).
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(rs_launch_file),
-            launch_arguments={
-                'camera_name': 'tray_camera',
-                'camera_namespace': '',
-                'serial_no': f"'{tray_cam_serial}'",
-                'enable_color': 'true',
-                'enable_depth': 'true',
-                'rgb_camera.color_profile': '1280,720,30',
-                'depth_module.depth_profile': '1280,720,30',
-                'align_depth.enable': 'true',
-                'spatial_filter.enable': 'true',
-                'temporal_filter.enable': 'true',
-                'hole_filling_filter.enable': 'true',
-                'decimation_filter.enable': 'false',
-                'enable_sync': 'true',
-                'publish_tf': 'false',
-            }.items(),
+        # Started via ExecuteProcess+sleep instead of TimerAction because
+        # TimerAction(IncludeLaunchDescription) does not reliably delay in
+        # ROS2 Jazzy. The shell sleep ensures the scene camera is fully
+        # streaming before the tray camera negotiates USB bandwidth.
+        ExecuteProcess(
+            cmd=[
+                'bash', '-c',
+                f'sleep 5 && exec env TRAY_CAM_SERIAL={tray_cam_serial} '
+                f'ros2 launch tracking_pkg tray_camera_launch.py',
+            ],
+            output='screen',
         ),
 
         # ── Layer 2: ArUco Marker Manager ─────────────────────────
@@ -275,7 +268,7 @@ def generate_launch_description():
                     parameters=[{
                         'model_path': os.environ.get(
                             'OBB_MODEL_PATH',
-                            '/home/mir/robotic_scrub_nurse_ws/ros_unrelated_scripts/first_obb_test.pt',
+                            os.path.join(os.path.expanduser('~'), 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts', 'first_obb_test.pt'),
                         ),
                         'tray_camera_namespace': '/tray_camera',
                         'tray_camera_frame': 'tray_camera_color_optical_frame',
@@ -363,7 +356,7 @@ def generate_launch_description():
                     parameters=[{
                         'model_path': os.environ.get(
                             'OBB_MODEL_PATH',
-                            '/home/mir/robotic_scrub_nurse_ws/ros_unrelated_scripts/first_obb_test.pt',
+                            os.path.join(os.path.expanduser('~'), 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts', 'first_obb_test.pt'),
                         ),
                         # Streaming mode: builder subscribes to /tray_camera/*
                         # alongside tool_detection_node. Shared realsense2_camera
@@ -398,7 +391,7 @@ def generate_launch_description():
             name='instrument_tray_collision_publisher',
             output='screen',
             parameters=[{
-                'publish_hz': 2.0,
+                'publish_hz': 0.5,
             }],
         ),
         Node(
@@ -407,7 +400,7 @@ def generate_launch_description():
             name='reclaim_tray_collision_publisher',
             output='screen',
             parameters=[{
-                'publish_hz': 2.0,
+                'publish_hz': 0.5,
             }],
         ),
 
@@ -456,9 +449,9 @@ def generate_launch_description():
                                         -1.5248240244, -1.2305892150, -4.8166621367],
                         # Presentation pose after a pick: turn the base to this
                         # angle, then reorient the tool via wrist_2/wrist_3 only.
-                        # 4.36332 rad = 250 deg. Tune the wrist values by jogging
+                        # 3.36332 rad = 193 deg. Tune the wrist values by jogging
                         # to the desired handover orientation.
-                        'present_shoulder_pan_rad': 4.36332313,
+                        'present_shoulder_pan_rad': 3.36332313,
                         'present_wrist1_rad': -1.5248240244,
                         'present_wrist2_rad': -1.2305892150,
                         'present_wrist3_rad': -1.507562509029,
@@ -549,5 +542,22 @@ def generate_launch_description():
         TimerAction(
             period=2.0,
             actions=[rviz_node],
+        ),
+
+        # Suppress move_group planning_scene_monitor INFO spam after it starts.
+        # "Published update collision object" fires on every collision update —
+        # harmless but noisy. Set to WARN so only real problems appear.
+        ExecuteProcess(
+            cmd=['bash', '-c',
+                 'sleep 12 && '
+                 'ros2 service call /move_group/set_logger_level '
+                 'rcl_interfaces/srv/SetLoggerLevel '
+                 '"{logger_name: \'moveit.ros.planning_scene_monitor\', level: {value: 30}}" '
+                 '> /dev/null 2>&1 ; '
+                 'ros2 service call /move_group/set_logger_level '
+                 'rcl_interfaces/srv/SetLoggerLevel '
+                 '"{logger_name: \'moveit.moveit.ros.planning_scene_monitor\', level: {value: 30}}" '
+                 '> /dev/null 2>&1 ; true'],
+            output='log',
         ),
     ])

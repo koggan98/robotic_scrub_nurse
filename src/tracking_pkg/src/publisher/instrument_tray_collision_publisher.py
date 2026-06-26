@@ -102,7 +102,7 @@ class InstrumentTrayCollisionPublisher(Node):
             .double_value
         )
         self.publish_hz = (
-            self.declare_parameter("publish_hz", 2.0)
+            self.declare_parameter("publish_hz", 0.5)
             .get_parameter_value()
             .double_value
         )

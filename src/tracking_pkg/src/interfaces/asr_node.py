@@ -163,12 +163,26 @@ class ASRNode(Node):
         chunk_duration = 0.1  # 100ms chunks
         chunk_samples = int(self.sample_rate * chunk_duration)
 
+        _no_mic_warned = False
         while self._running and rclpy.ok():
             try:
                 self._capture_and_transcribe(sd, chunk_samples, chunk_duration)
+                _no_mic_warned = False
             except sd.PortAudioError as e:
-                self.get_logger().error(f'Audio device error: {e}')
-                time.sleep(2.0)
+                err_str = str(e)
+                if 'Input/output error' in err_str or 'ALSA error -5' in err_str:
+                    if not _no_mic_warned:
+                        _no_mic_warned = True
+                        self.get_logger().warn(
+                            'No microphone available (ALSA I/O error). '
+                            'Inject speech via: ros2 topic pub --once /user_speech '
+                            'std_msgs/msg/String "{data: \'your command\'}". '
+                            'Retrying every 60 s.'
+                        )
+                    time.sleep(60.0)
+                else:
+                    self.get_logger().error(f'Audio device error: {e}')
+                    time.sleep(2.0)
             except Exception as e:
                 self.get_logger().error(f'Listen loop error: {e}')
                 time.sleep(1.0)

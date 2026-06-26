@@ -427,6 +427,39 @@ ros2 run tracking_pkg joint_state_jogger_node --ros-args \
 
 ---
 
+## Workspace UR3e MoveIt Description
+
+The active Jazzy runtime uses the robot description versioned in `tracking_pkg`
+instead of patched files under `/opt/ros/jazzy`. This keeps MoveIt, RViz, and
+the UR driver on the same model with `dummy_gripper_link` and
+`gripper_tip_link`.
+
+Start the UR driver through the workspace wrapper:
+
+```bash
+ros2 launch tracking_pkg rsn_ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.12.10 launch_rviz:=false
+```
+
+Start MoveIt through the workspace wrapper:
+
+```bash
+ros2 launch tracking_pkg rsn_ur_moveit.launch.py ur_type:=ur3e launch_rviz:=true
+```
+
+The full LLM stack still starts through:
+
+```bash
+ros2 launch tracking_pkg llm_launch.py
+```
+
+The canonical description files are:
+
+- `src/tracking_pkg/urdf/rsn_ur.urdf.xacro`
+- `src/tracking_pkg/srdf/ur.srdf.xacro`
+- `src/tracking_pkg/config/ur3e_joint_limits.yaml`
+
+---
+
 ## Combined MoveIt + Tracking Launch
 
 If you want Adam-style startup (MoveIt RViz + tracking topics in one command), use:
@@ -435,7 +468,7 @@ If you want Adam-style startup (MoveIt RViz + tracking topics in one command), u
 ros2 launch tracking_pkg loop_with_moveit_launch.py ur_type:=ur3e
 ```
 
-This launch starts `ur_moveit_config` without its default RViz and opens RViz with a preloaded config that already includes:
+This launch starts `rsn_ur_moveit.launch.py` without its default RViz and opens RViz with a preloaded config that already includes:
 - `/annotated_hand_image`
 - `/tool_detection/annotated_image`
 - `/gesture_pose_marker`

@@ -37,7 +37,10 @@ Mac Client --SSH--> Ubuntu Host (ROS 2 runtime) --> UR3e + Robotiq + RealSense
 
 ### Active Path (MoveIt-Centric)
 - Launch entry: `src/tracking_pkg/launch/loop_launch.py`.
-- Combined launch option: `src/tracking_pkg/launch/loop_with_moveit_launch.py` (includes `ur_moveit_config` RViz bringup + `loop_launch.py`).
+- UR/MoveIt description source of truth: `src/tracking_pkg/urdf/rsn_ur.urdf.xacro`, `src/tracking_pkg/srdf/ur.srdf.xacro`, and `src/tracking_pkg/config/ur3e_joint_limits.yaml`.
+- Driver wrapper: `src/tracking_pkg/launch/rsn_ur_control.launch.py` includes `ur_robot_driver` while forcing the workspace robot description.
+- MoveIt wrapper: `src/tracking_pkg/launch/rsn_ur_moveit.launch.py` uses the workspace URDF/SRDF with the upstream Jazzy `ur_moveit_config` planning configs.
+- Combined launch option: `src/tracking_pkg/launch/loop_with_moveit_launch.py` (includes `rsn_ur_moveit.launch.py` RViz bringup + `loop_launch.py`).
 - Motion/handover core: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`.
 - Tool command flow uses `/tool_selection` and MoveIt planning.
 - Instrument-camera/world-model pick-test path: `src/tracking_pkg/launch/llm_launch.py` starts a fixed `world -> tray_camera_color_optical_frame` TF and the on-demand `/build_world_model` service.
