@@ -1,14 +1,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
-#if __has_include(<moveit/version.hpp>)
-#  include <moveit/version.hpp>   // Jazzy+ (.h header removed)
-#else
-#  include <moveit/version.h>     // Humble
-#endif
 
-// Compat: MoveGroupInterface::Plan member was renamed trajectory_ -> trajectory
-// in MoveIt 2.8 (Iron). Lets this build on the NUC (Humble/2.5) and Spark (Jazzy).
-#if MOVEIT_VERSION >= MOVEIT_VERSION_CHECK(2, 8, 0)
+// MoveGroupInterface::Plan member is `trajectory_` on Humble but `trajectory` on
+// Jazzy (the same release that migrated MoveIt headers .h -> .hpp). Key off that
+// header migration so this builds on the NUC (Humble) and the Spark (Jazzy).
+#if __has_include(<moveit/version.hpp>)
 #  define RSN_PLAN_TRAJECTORY trajectory
 #else
 #  define RSN_PLAN_TRAJECTORY trajectory_
