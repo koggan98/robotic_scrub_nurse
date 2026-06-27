@@ -17,7 +17,16 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/version.h>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
+
+// Compat: MoveGroupInterface::Plan member was renamed trajectory_ -> trajectory
+// in MoveIt 2.8 (Iron). Lets this build on the NUC (Humble/2.5) and Spark (Jazzy).
+#if MOVEIT_VERSION >= MOVEIT_VERSION_CHECK(2, 8, 0)
+#  define RSN_PLAN_TRAJECTORY trajectory
+#else
+#  define RSN_PLAN_TRAJECTORY trajectory_
+#endif
 #include <moveit_msgs/msg/attached_collision_object.hpp>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
@@ -188,9 +197,9 @@ moveit_msgs::msg::RobotState makeStartStateFromPlanEnd(
     const moveit::planning_interface::MoveGroupInterface::Plan &plan) {
     moveit_msgs::msg::RobotState rs;
     rs.is_diff = false;
-    rs.joint_state.name = plan.trajectory.joint_trajectory.joint_names;
-    if (!plan.trajectory.joint_trajectory.points.empty()) {
-        rs.joint_state.position = plan.trajectory.joint_trajectory.points.back().positions;
+    rs.joint_state.name = plan.RSN_PLAN_TRAJECTORY.joint_trajectory.joint_names;
+    if (!plan.RSN_PLAN_TRAJECTORY.joint_trajectory.points.empty()) {
+        rs.joint_state.position = plan.RSN_PLAN_TRAJECTORY.joint_trajectory.points.back().positions;
     }
     return rs;
 }
@@ -529,7 +538,7 @@ private:
             return false;
         }
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        plan.trajectory = traj;
+        plan.RSN_PLAN_TRAJECTORY = traj;
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             err = "cartesian path execution failed";
             return false;
@@ -568,7 +577,7 @@ private:
             err = "cartesian path only " + std::to_string(fraction * 100.0) + "%";
             return false;
         }
-        plan_out.trajectory = traj;
+        plan_out.RSN_PLAN_TRAJECTORY = traj;
         return true;
     }
 

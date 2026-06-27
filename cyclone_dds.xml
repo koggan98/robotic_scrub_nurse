@@ -1,7 +1,12 @@
 <CycloneDDS>
   <Domain>
     <General>
-      <NetworkInterfaceAddress>AUTO</NetworkInterfaceAddress>
+      <!-- autodetermine = pick the active interface automatically (WiFi today).
+           For a dedicated wired NUC<->Spark link, replace with a fixed address,
+           e.g. <NetworkInterface address="192.168.50.1"/> on the NUC. -->
+      <Interfaces>
+        <NetworkInterface autodetermine="true"/>
+      </Interfaces>
     </General>
     <Discovery>
       <Peers>

@@ -24,9 +24,11 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -35,12 +37,66 @@ def generate_launch_description():
     scene_cam_serial = os.environ.get('SCENE_CAM_SERIAL', '239222300719')
     tray_cam_serial  = os.environ.get('TRAY_CAM_SERIAL',  '239222302690')
 
+    ur_type       = LaunchConfiguration('ur_type')
+    tracking_rviz = LaunchConfiguration('tracking_rviz')
+
     rs_launch_file = PathJoinSubstitution(
         [FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py']
     )
 
+    # ── RViz on the Spark ─────────────────────────────────────────
+    # The NUC runs headless; RViz lives here so the camera feeds (local on the
+    # Spark) and the planning scene (from the NUC's move_group over DDS) are all
+    # visible on one screen. robot_description / _semantic are generated locally
+    # via xacro so the MotionPlanning display has the robot model; joint_states,
+    # TF and /monitored_planning_scene arrive from the NUC over the network.
+    robot_description = {
+        'robot_description': ParameterValue(
+            Command([
+                'xacro ',
+                PathJoinSubstitution(
+                    [FindPackageShare('tracking_pkg'), 'urdf', 'rsn_ur.urdf.xacro']
+                ),
+                ' ur_type:=', ur_type,
+                ' name:=', ur_type,
+                ' tf_prefix:=',
+            ]),
+            value_type=str,
+        )
+    }
+    robot_description_semantic = {
+        'robot_description_semantic': ParameterValue(
+            Command([
+                'xacro ',
+                PathJoinSubstitution(
+                    [FindPackageShare('tracking_pkg'), 'srdf', 'ur.srdf.xacro']
+                ),
+                ' ur_type:=', ur_type,
+                ' name:=', ur_type,
+            ]),
+            value_type=str,
+        )
+    }
+
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2_spark',
+        output='screen',
+        condition=IfCondition(tracking_rviz),
+        arguments=[
+            '-d',
+            PathJoinSubstitution(
+                [FindPackageShare('tracking_pkg'), 'rviz', 'view_robot_tracking.rviz']
+            ),
+        ],
+        parameters=[robot_description, robot_description_semantic],
+    )
+
     return LaunchDescription([
 
+        DeclareLaunchArgument('ur_type',       default_value='ur3e'),
+        DeclareLaunchArgument('tracking_rviz', default_value='true'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
 
         # ── Static TFs (ArUco marker world-poses) ─────────────────
@@ -303,5 +359,11 @@ def generate_launch_description():
                     }],
                 ),
             ]
+        ),
+
+        # ── RViz (camera feeds + planning scene from NUC) ─────────
+        TimerAction(
+            period=2.0,
+            actions=[rviz_node],
         ),
     ])

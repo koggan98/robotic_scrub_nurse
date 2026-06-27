@@ -1,6 +1,15 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/version.h>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
+
+// Compat: MoveGroupInterface::Plan member was renamed trajectory_ -> trajectory
+// in MoveIt 2.8 (Iron). Lets this build on the NUC (Humble/2.5) and Spark (Jazzy).
+#if MOVEIT_VERSION >= MOVEIT_VERSION_CHECK(2, 8, 0)
+#  define RSN_PLAN_TRAJECTORY trajectory
+#else
+#  define RSN_PLAN_TRAJECTORY trajectory_
+#endif
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -509,7 +518,7 @@ private:
         }
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        plan.trajectory = trajectory;
+        plan.RSN_PLAN_TRAJECTORY = trajectory;
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(get_logger(), "Cartesian path execution failed.");
             return false;

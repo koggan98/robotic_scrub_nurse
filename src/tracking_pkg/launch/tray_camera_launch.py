@@ -21,10 +21,13 @@ def generate_launch_description():
                 'camera_namespace': '',
                 'serial_no': f"'{tray_cam_serial}'",
                 'enable_color': 'true',
-                'enable_depth': 'true',
+                # Depth disabled: tool_detection / world_model_builder project onto a
+                # fixed tool plane (fixed_tool_plane_z_m), so tray depth is unused. Turning
+                # it off roughly halves this camera's USB bandwidth and eases the RealSense
+                # port crashes on the Spark. Color resolution is unchanged (models trained on it).
+                'enable_depth': 'false',
                 'rgb_camera.color_profile': '1280,720,30',
-                'depth_module.depth_profile': '1280,720,30',
-                'align_depth.enable': 'true',
+                'align_depth.enable': 'false',
                 'spatial_filter.enable': 'false',
                 'temporal_filter.enable': 'false',
                 'hole_filling_filter.enable': 'false',

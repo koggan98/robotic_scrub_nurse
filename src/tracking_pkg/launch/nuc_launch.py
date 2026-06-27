@@ -104,7 +104,9 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument('ur_type',       default_value='ur3e'),
-        DeclareLaunchArgument('tracking_rviz', default_value='true'),
+        # NUC runs headless; RViz lives on the Spark (see spark_launch.py).
+        # Override with tracking_rviz:=true to bring RViz up on the NUC for debugging.
+        DeclareLaunchArgument('tracking_rviz', default_value='false'),
         DeclareLaunchArgument('launch_servo',  default_value='false'),
         DeclareLaunchArgument('use_sim_time',  default_value='false'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
