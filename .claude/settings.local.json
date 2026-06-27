@@ -6,7 +6,10 @@
       "Bash(cp publisher/gesture_pose_publisher.py interfaces/gesture_pose_publisher.py)",
       "Bash(cp publisher/annotated_image_viewer.py interfaces/annotated_image_viewer.py)",
       "Bash(cp publisher/scrub_nurse_logger.py interfaces/scrub_nurse_logger.py)",
-      "Bash(timeout 5 ros2 topic list)"
+      "Bash(timeout 5 ros2 topic list)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'Build C++ MoveIt execution nodes only on the NUC \\(Humble\\) *)",
+      "Bash(git push *)"
     ]
   }
 }
