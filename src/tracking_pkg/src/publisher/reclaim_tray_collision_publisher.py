@@ -25,6 +25,7 @@ POST_THICKNESS_X = 0.03        # X-thickness of the vertical drop
 # 40x40 vertical post rising +Z from the bottom of the drop, flush to outer (+X) face:
 POST40_SIZE = 0.04             # 40x40 profile cross-section (X & Y), in m
 POST40_LENGTH = 0.600           # 550 mm, vertical (+Z, up)
+POST40_TILT_DEG = 40.0         # tilt about local X; top leans toward -Y ("backward")
 # ===========================================================
 
 
@@ -54,6 +55,8 @@ class ReclaimTrayCollisionPublisher(Node):
             self.declare_parameter("post40_size_m", POST40_SIZE).value)
         self.post40_length_m = float(
             self.declare_parameter("post40_length_m", POST40_LENGTH).value)
+        self.post40_tilt_rad = math.radians(
+            float(self.declare_parameter("post40_tilt_deg", POST40_TILT_DEG).value))
         self.publish_hz = float(self.declare_parameter("publish_hz", 2.0).value)
 
         qos = QoSProfile(
@@ -80,7 +83,8 @@ class ReclaimTrayCollisionPublisher(Node):
             f"width_y {self.width_y_m:.3f}m, "
             f"bar_thickness_z {self.bar_thickness_m:.3f}m, "
             f"post40 {self.post40_size_m:.3f}x{self.post40_size_m:.3f}x"
-            f"{self.post40_length_m:.3f}m (+Z, flush +X/-Y)."
+            f"{self.post40_length_m:.3f}m (flush +X/-Y, tilt "
+            f"{math.degrees(self.post40_tilt_rad):.1f}deg about X ->-Y)."
         )
         self.publish_collision_object()
 
@@ -98,25 +102,44 @@ class ReclaimTrayCollisionPublisher(Node):
         msg.id = self.object_id
         msg.operation = CollisionObject.ADD
 
-        for dimensions, local_center in self._local_segments():
+        for dimensions, local_center, local_rpy in self._local_segments():
             msg.primitives.append(self._box(dimensions))
-            msg.primitive_poses.append(self._pose_from_local_center(local_center))
+            msg.primitive_poses.append(
+                self._pose_from_local_center(local_center, local_rpy))
 
         self.publisher.publish(msg)
 
     def _local_segments(self):
         # Inverted-Z in the X-Z plane, extruded by width_y along Y.
         # Local origin = start of the top bar; top-bar centerline at z=0.
+        # Each entry is (dimensions, center, rpy); only the post is rotated.
+        half_post = self.post40_length_m / 2.0
+        tilt = self.post40_tilt_rad
+        # Post foot stays planted; it pivots about its base around local X.
+        post_base_x = (
+            self.segment1_length_m
+            + (self.post_thickness_m / 2.0)
+            + (self.post40_size_m / 2.0)
+        )
+        post_base_y = -(self.width_y_m / 2.0) + (self.post40_size_m / 2.0)
+        post_base_z = -self.drop_length_m
+        post_center = [
+            post_base_x,
+            post_base_y - half_post * math.sin(tilt),
+            post_base_z + half_post * math.cos(tilt),
+        ]
         return [
             (
                 # top bar, runs +X
                 [self.segment1_length_m, self.width_y_m, self.bar_thickness_m],
                 [self.segment1_length_m / 2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
             ),
             (
                 # vertical drop, runs -Z, at the end of the top bar
                 [self.post_thickness_m, self.width_y_m, self.drop_length_m],
                 [self.segment1_length_m, 0.0, -self.drop_length_m / 2.0],
+                [0.0, 0.0, 0.0],
             ),
             (
                 # bottom bar, runs +X, at the bottom of the drop
@@ -126,18 +149,14 @@ class ReclaimTrayCollisionPublisher(Node):
                     0.0,
                     -self.drop_length_m,
                 ],
+                [0.0, 0.0, 0.0],
             ),
             (
-                # 40x40 vertical post, +Z (up) from the bottom of the drop,
-                # flush against the drop's outer (+X) face and the -Y edge.
+                # 40x40 post, flush against the drop's +X face and the -Y edge,
+                # tilted about local X so the top leans toward -Y (foot fixed).
                 [self.post40_size_m, self.post40_size_m, self.post40_length_m],
-                [
-                    self.segment1_length_m
-                    + (self.post_thickness_m / 2.0)
-                    + (self.post40_size_m / 2.0),
-                    -(self.width_y_m / 2.0) + (self.post40_size_m / 2.0),
-                    -self.drop_length_m + (self.post40_length_m / 2.0),
-                ],
+                post_center,
+                [tilt, 0.0, 0.0],
             ),
         ]
 
@@ -147,13 +166,13 @@ class ReclaimTrayCollisionPublisher(Node):
         primitive.dimensions = dimensions
         return primitive
 
-    def _pose_from_local_center(self, local_center):
+    def _pose_from_local_center(self, local_center, local_rpy=(0.0, 0.0, 0.0)):
         rotated = self._rotate_xyz(local_center)
         pose = Pose()
         pose.position.x = self.origin_xyz[0] + rotated[0]
         pose.position.y = self.origin_xyz[1] + rotated[1]
         pose.position.z = self.origin_xyz[2] + rotated[2]
-        pose.orientation = self._quaternion_from_rpy(self.origin_rpy)
+        pose.orientation = self._compose_quaternion(self.origin_rpy, local_rpy)
         return pose
 
     def _rotate_xyz(self, xyz):
@@ -185,6 +204,22 @@ class ReclaimTrayCollisionPublisher(Node):
             y=cr * sp * cy + sr * cp * sy,
             z=cr * cp * sy - sr * sp * cy,
             w=cr * cp * cy + sr * sp * sy,
+        )
+
+    def _compose_quaternion(self, rpy_outer, rpy_inner):
+        # Resulting rotation = R(rpy_outer) * R(rpy_inner): apply the inner
+        # (per-primitive) rotation first, then the shared origin rotation.
+        return self._quaternion_multiply(
+            self._quaternion_from_rpy(rpy_outer),
+            self._quaternion_from_rpy(rpy_inner),
+        )
+
+    def _quaternion_multiply(self, q1, q2):
+        return Quaternion(
+            x=q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+            y=q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+            z=q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
+            w=q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
         )
 
 
