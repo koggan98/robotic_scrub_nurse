@@ -14,8 +14,8 @@ find_package(action_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(moveit_msgs REQUIRED)
-find_package(moveit_ros_planning_interface REQUIRED)
+# moveit_msgs / moveit_ros_planning_interface are only needed by the C++ execution
+# nodes (NUC) — found inside the BUILD_EXECUTION_NODES guard further down.
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -85,33 +85,52 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-# C++ executable: legacy MoveIt-based executor (still referenced by llm_launch.py
-# until the new Python execution layer replaces it).
-add_executable(loop_mover src/execution/loop_mover.cpp)
-ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
-target_link_libraries(loop_mover tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
+# ── C++ MoveIt execution nodes (NUC / robot control only) ──
+# These are the only MoveIt-dependent targets and run exclusively on the NUC
+# (launched by nuc_launch.py). The Spark runs perception + RViz and never executes
+# them, so skip them on non-Humble distros: that keeps MoveIt out of the Spark/Jazzy
+# build and avoids cross-distro C++ header issues. Override with -DBUILD_EXECUTION_NODES=ON/OFF.
+if(NOT DEFINED BUILD_EXECUTION_NODES)
+  if("$ENV{ROS_DISTRO}" STREQUAL "humble")
+    set(BUILD_EXECUTION_NODES ON)
+  else()
+    set(BUILD_EXECUTION_NODES OFF)
+  endif()
+endif()
+message(STATUS "tracking_pkg: BUILD_EXECUTION_NODES=${BUILD_EXECUTION_NODES} (ROS_DISTRO=$ENV{ROS_DISTRO})")
 
-add_executable(tool_pick_test_node src/execution/tool_pick_test_node.cpp)
-ament_target_dependencies(tool_pick_test_node rclcpp geometry_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
-target_link_libraries(tool_pick_test_node tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
+if(BUILD_EXECUTION_NODES)
+  find_package(moveit_msgs REQUIRED)
+  find_package(moveit_ros_planning_interface REQUIRED)
 
-add_executable(joint_state_jogger_node src/execution/joint_state_jogger_node.cpp)
-ament_target_dependencies(joint_state_jogger_node rclcpp moveit_ros_planning_interface)
+  # Legacy MoveIt-based executor (still referenced by llm_launch.py until the new
+  # Python execution layer replaces it).
+  add_executable(loop_mover src/execution/loop_mover.cpp)
+  ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
+  target_link_libraries(loop_mover tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
 
-# Skill executor: ROS Action wrapper around MoveIt pick / handover / release / return_home
-add_executable(skill_executor_node src/execution/skill_executor_node.cpp)
-ament_target_dependencies(skill_executor_node
-  rclcpp rclcpp_action action_msgs geometry_msgs sensor_msgs std_msgs
-  moveit_msgs moveit_ros_planning_interface tracking_msgs)
-target_link_libraries(skill_executor_node tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
+  add_executable(tool_pick_test_node src/execution/tool_pick_test_node.cpp)
+  ament_target_dependencies(tool_pick_test_node rclcpp geometry_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
+  target_link_libraries(tool_pick_test_node tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
 
-install(TARGETS
-  loop_mover
-  tool_pick_test_node
-  joint_state_jogger_node
-  skill_executor_node
-  DESTINATION lib/${PROJECT_NAME}
-)
+  add_executable(joint_state_jogger_node src/execution/joint_state_jogger_node.cpp)
+  ament_target_dependencies(joint_state_jogger_node rclcpp moveit_ros_planning_interface)
+
+  # Skill executor: ROS Action wrapper around MoveIt pick / handover / release / return_home
+  add_executable(skill_executor_node src/execution/skill_executor_node.cpp)
+  ament_target_dependencies(skill_executor_node
+    rclcpp rclcpp_action action_msgs geometry_msgs sensor_msgs std_msgs
+    moveit_msgs moveit_ros_planning_interface tracking_msgs)
+  target_link_libraries(skill_executor_node tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
+
+  install(TARGETS
+    loop_mover
+    tool_pick_test_node
+    joint_state_jogger_node
+    skill_executor_node
+    DESTINATION lib/${PROJECT_NAME}
+  )
+endif()
 
 install(
   DIRECTORY src/publisher/collisionObjects
