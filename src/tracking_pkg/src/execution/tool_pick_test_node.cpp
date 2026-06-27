@@ -1,6 +1,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
-#include <moveit/version.h>
+#if __has_include(<moveit/version.hpp>)
+#  include <moveit/version.hpp>   // Jazzy+ (.h header removed)
+#else
+#  include <moveit/version.h>     // Humble
+#endif
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
 // Compat: MoveGroupInterface::Plan member was renamed trajectory_ -> trajectory
