@@ -5,10 +5,10 @@
 // /system_state_update so world_model_node can surface the current state.
 //
 // Actions:
-//   /pick_tool       (tracking_pkg/action/PickTool)
-//   /handover_tool   (tracking_pkg/action/HandoverTool)
-//   /release_tool    (tracking_pkg/action/ReleaseTool)
-//   /return_home     (tracking_pkg/action/ReturnHome)
+//   /pick_tool       (tracking_msgs/action/PickTool)
+//   /handover_tool   (tracking_msgs/action/HandoverTool)
+//   /release_tool    (tracking_msgs/action/ReleaseTool)
+//   /return_home     (tracking_msgs/action/ReturnHome)
 //
 // State updates on /system_state_update use the convention
 //   "STATE:tool_id:tool_class" parsed by world_model_node._state_cb.
@@ -28,14 +28,14 @@
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/string.hpp>
 
-#include <tracking_pkg/msg/grasp_candidate.hpp>
-#include <tracking_pkg/msg/hand_state.hpp>
-#include <tracking_pkg/srv/get_world_state.hpp>
-#include <tracking_pkg/action/pick_tool.hpp>
-#include <tracking_pkg/action/handover_tool.hpp>
-#include <tracking_pkg/action/release_tool.hpp>
-#include <tracking_pkg/action/return_home.hpp>
-#include <tracking_pkg/action/return_tool.hpp>
+#include <tracking_msgs/msg/grasp_candidate.hpp>
+#include <tracking_msgs/msg/hand_state.hpp>
+#include <tracking_msgs/srv/get_world_state.hpp>
+#include <tracking_msgs/action/pick_tool.hpp>
+#include <tracking_msgs/action/handover_tool.hpp>
+#include <tracking_msgs/action/release_tool.hpp>
+#include <tracking_msgs/action/return_home.hpp>
+#include <tracking_msgs/action/return_tool.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -52,11 +52,11 @@
 
 namespace {
 
-using PickTool = tracking_pkg::action::PickTool;
-using HandoverTool = tracking_pkg::action::HandoverTool;
-using ReleaseTool = tracking_pkg::action::ReleaseTool;
-using ReturnHome = tracking_pkg::action::ReturnHome;
-using ReturnTool = tracking_pkg::action::ReturnTool;
+using PickTool = tracking_msgs::action::PickTool;
+using HandoverTool = tracking_msgs::action::HandoverTool;
+using ReleaseTool = tracking_msgs::action::ReleaseTool;
+using ReturnHome = tracking_msgs::action::ReturnHome;
+using ReturnTool = tracking_msgs::action::ReturnTool;
 
 using GoalHandlePick = rclcpp_action::ServerGoalHandle<PickTool>;
 using GoalHandleHandover = rclcpp_action::ServerGoalHandle<HandoverTool>;
@@ -178,7 +178,7 @@ bool isFinitePoint(const geometry_msgs::msg::Point &p) {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 
-bool hasUsableWorldXy(const tracking_pkg::msg::GraspCandidate &c) {
+bool hasUsableWorldXy(const tracking_msgs::msg::GraspCandidate &c) {
     if (!isFinitePoint(c.grasp_pose.pose.position)) return false;
     if (c.grasp_pose.header.frame_id != "world") return false;
     return std::hypot(c.grasp_pose.pose.position.x, c.grasp_pose.pose.position.y) > 1e-4;
@@ -297,7 +297,7 @@ public:
         publishHandoverWaiting(false);
 
         // ── Subscribers ──────────────────────────────────────────────
-        hand_state_sub_ = create_subscription<tracking_pkg::msg::HandState>(
+        hand_state_sub_ = create_subscription<tracking_msgs::msg::HandState>(
             "/hand_state", 10,
             std::bind(&SkillExecutor::handStateCb, this, std::placeholders::_1));
         gesture_sub_ = create_subscription<std_msgs::msg::String>(
@@ -312,7 +312,7 @@ public:
 
         // ── Service client ───────────────────────────────────────────
         world_state_client_ =
-            create_client<tracking_pkg::srv::GetWorldState>("/get_world_state");
+            create_client<tracking_msgs::srv::GetWorldState>("/get_world_state");
 
         RCLCPP_INFO(get_logger(),
             "SkillExecutor constructed (move_group=%s, ee=%s, frame=%s).",
@@ -384,7 +384,7 @@ public:
 private:
     // ── Callbacks ────────────────────────────────────────────────────
 
-    void handStateCb(const tracking_pkg::msg::HandState::SharedPtr msg) {
+    void handStateCb(const tracking_msgs::msg::HandState::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_hand_state_ = *msg;
         have_hand_state_ = true;
@@ -451,13 +451,13 @@ private:
 
     // ── World-state lookup ───────────────────────────────────────────
 
-    bool fetchCandidates(std::vector<tracking_pkg::msg::GraspCandidate> &out,
+    bool fetchCandidates(std::vector<tracking_msgs::msg::GraspCandidate> &out,
                          std::string &err) {
         if (!world_state_client_->wait_for_service(std::chrono::seconds(2))) {
             err = "/get_world_state service not available";
             return false;
         }
-        auto req = std::make_shared<tracking_pkg::srv::GetWorldState::Request>();
+        auto req = std::make_shared<tracking_msgs::srv::GetWorldState::Request>();
         auto future = world_state_client_->async_send_request(req);
         // We're running in a separate thread (action execute); spinning the
         // node ourselves would deadlock with the main executor. Instead wait
@@ -476,9 +476,9 @@ private:
         return true;
     }
 
-    bool collectCandidates(std::vector<tracking_pkg::msg::GraspCandidate> &out_sorted,
+    bool collectCandidates(std::vector<tracking_msgs::msg::GraspCandidate> &out_sorted,
                            std::string &err) {
-        std::vector<tracking_pkg::msg::GraspCandidate> all;
+        std::vector<tracking_msgs::msg::GraspCandidate> all;
         if (!fetchCandidates(all, err)) return false;
         for (const auto &c : all) {
             if (hasUsableWorldXy(c)) out_sorted.push_back(c);
@@ -882,7 +882,7 @@ private:
     // ── Skill: PickTool ──────────────────────────────────────────────
 
     bool tryPlanPickSequence(
-        const tracking_pkg::msg::GraspCandidate &cand,
+        const tracking_msgs::msg::GraspCandidate &cand,
         moveit::planning_interface::MoveGroupInterface::Plan &approach_plan,
         moveit::planning_interface::MoveGroupInterface::Plan &descend_plan,
         moveit::planning_interface::MoveGroupInterface::Plan &lift_plan,
@@ -943,7 +943,7 @@ private:
             return false;
         }
 
-        std::vector<tracking_pkg::msg::GraspCandidate> candidates;
+        std::vector<tracking_msgs::msg::GraspCandidate> candidates;
         if (!collectCandidates(candidates, err)) return false;
 
         // Restrict to a specific tool_id when explicitly requested.
@@ -963,7 +963,7 @@ private:
         // a pick. No motion happens before this loop succeeds.
         moveit::planning_interface::MoveGroupInterface::Plan approach_plan, descend_plan, lift_plan;
         geometry_msgs::msg::Pose approach_pose, grasp_pose;
-        tracking_pkg::msg::GraspCandidate chosen;
+        tracking_msgs::msg::GraspCandidate chosen;
         std::vector<std::string> rejection_log;
         bool found = false;
         for (const auto &cand : candidates) {
@@ -1660,11 +1660,11 @@ private:
     rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr verify_grasp_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr handover_waiting_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
-    rclcpp::Subscription<tracking_pkg::msg::HandState>::SharedPtr hand_state_sub_;
+    rclcpp::Subscription<tracking_msgs::msg::HandState>::SharedPtr hand_state_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_done_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr tool_grasped_sub_;
-    rclcpp::Client<tracking_pkg::srv::GetWorldState>::SharedPtr world_state_client_;
+    rclcpp::Client<tracking_msgs::srv::GetWorldState>::SharedPtr world_state_client_;
 
     // Action servers
     rclcpp_action::Server<PickTool>::SharedPtr pick_srv_;
@@ -1695,7 +1695,7 @@ private:
     std::condition_variable gesture_cv_;
     bool gesture_received_ = false;
     bool abort_handover_ = false;
-    tracking_pkg::msg::HandState last_hand_state_;
+    tracking_msgs::msg::HandState last_hand_state_;
     bool have_hand_state_ = false;
     std::string current_state_ = "IDLE";
     std::string active_tool_id_;

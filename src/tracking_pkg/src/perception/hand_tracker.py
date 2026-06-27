@@ -46,7 +46,7 @@ from cv_bridge import CvBridge
 import tf2_ros
 import mediapipe as mp
 
-from tracking_pkg.msg import HandState
+from tracking_msgs.msg import HandState
 
 
 def _angle_at(p_a, p_b, p_c):

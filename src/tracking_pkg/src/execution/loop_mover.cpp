@@ -9,7 +9,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <tracking_pkg/srv/get_grasp_approach_pose.hpp>
+#include <tracking_msgs/srv/get_grasp_approach_pose.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -124,7 +124,7 @@ public:
         gripper_position_command_publisher_ = this->create_publisher<std_msgs::msg::Int32>("/gripper_position_command", 10);
         request_joint_state_ = this->create_publisher<std_msgs::msg::Bool>("/request_joint_state", 10);
         handover_event_publisher_ = this->create_publisher<std_msgs::msg::String>("/handover_event", 10);
-        grasp_approach_pose_client_ = this->create_client<tracking_pkg::srv::GetGraspApproachPose>("/get_grasp_approach_pose");
+        grasp_approach_pose_client_ = this->create_client<tracking_msgs::srv::GetGraspApproachPose>("/get_grasp_approach_pose");
 
         RCLCPP_INFO(this->get_logger(), "Moveit Mover Node initialized.");
     }
@@ -555,7 +555,7 @@ private:
             return false;
         }
 
-        auto request = std::make_shared<tracking_pkg::srv::GetGraspApproachPose::Request>();
+        auto request = std::make_shared<tracking_msgs::srv::GetGraspApproachPose::Request>();
         request->target_frame = target_frame;
 
         auto future = grasp_approach_pose_client_->async_send_request(request);
@@ -1464,7 +1464,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_event_publisher_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_reclaim_done_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_position_done_sub_;
-    rclcpp::Client<tracking_pkg::srv::GetGraspApproachPose>::SharedPtr grasp_approach_pose_client_;
+    rclcpp::Client<tracking_msgs::srv::GetGraspApproachPose>::SharedPtr grasp_approach_pose_client_;
 };
 
 int main(int argc, char **argv) {

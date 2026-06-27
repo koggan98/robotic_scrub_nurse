@@ -82,6 +82,15 @@ def generate_launch_description():
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
+        arguments=[
+            "--ros-args",
+            "--log-level",
+            "move_group.moveit.moveit.ros.planning_scene_monitor:=warn",
+            "--log-level",
+            "moveit.moveit.ros.planning_scene_monitor:=warn",
+            "--log-level",
+            "moveit.ros.planning_scene_monitor:=warn",
+        ],
         parameters=[
             moveit_config.to_dict(),
             warehouse_ros_config,

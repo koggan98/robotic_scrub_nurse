@@ -7,7 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
+find_package(tracking_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(action_msgs REQUIRED)
@@ -85,40 +85,15 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/OrientedBoundingBox2D.msg"
-  "msg/ToolDetection.msg"
-  "msg/ToolDetectionArray.msg"
-  "msg/GraspCandidate.msg"
-  "msg/GraspCandidateArray.msg"
-  "msg/HandState.msg"
-  "msg/SystemState.msg"
-  "msg/ExecutionPlan.msg"
-  "srv/GetGraspApproachPose.srv"
-  "srv/GetWorldState.srv"
-  "srv/GetToolCandidates.srv"
-  "srv/BuildWorldModel.srv"
-  "srv/GetWorldModel.srv"
-  "action/PickTool.action"
-  "action/HandoverTool.action"
-  "action/ReleaseTool.action"
-  "action/ReturnHome.action"
-  "action/ReturnTool.action"
-  DEPENDENCIES geometry_msgs std_msgs action_msgs
-)
-
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
-
 # C++ executable: legacy MoveIt-based executor (still referenced by llm_launch.py
 # until the new Python execution layer replaces it).
 add_executable(loop_mover src/execution/loop_mover.cpp)
-ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_msgs moveit_ros_planning_interface)
-target_link_libraries(loop_mover "${cpp_typesupport_target}")
+ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
+target_link_libraries(loop_mover tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
 
 add_executable(tool_pick_test_node src/execution/tool_pick_test_node.cpp)
-ament_target_dependencies(tool_pick_test_node rclcpp geometry_msgs std_msgs moveit_msgs moveit_ros_planning_interface)
-target_link_libraries(tool_pick_test_node "${cpp_typesupport_target}")
+ament_target_dependencies(tool_pick_test_node rclcpp geometry_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
+target_link_libraries(tool_pick_test_node tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
 
 add_executable(joint_state_jogger_node src/execution/joint_state_jogger_node.cpp)
 ament_target_dependencies(joint_state_jogger_node rclcpp moveit_ros_planning_interface)
@@ -127,8 +102,8 @@ ament_target_dependencies(joint_state_jogger_node rclcpp moveit_ros_planning_int
 add_executable(skill_executor_node src/execution/skill_executor_node.cpp)
 ament_target_dependencies(skill_executor_node
   rclcpp rclcpp_action action_msgs geometry_msgs sensor_msgs std_msgs
-  moveit_msgs moveit_ros_planning_interface)
-target_link_libraries(skill_executor_node "${cpp_typesupport_target}")
+  moveit_msgs moveit_ros_planning_interface tracking_msgs)
+target_link_libraries(skill_executor_node tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)
 
 install(TARGETS
   loop_mover

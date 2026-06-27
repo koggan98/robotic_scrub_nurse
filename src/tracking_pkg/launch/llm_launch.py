@@ -552,11 +552,11 @@ def generate_launch_description():
                  'sleep 12 && '
                  'ros2 service call /move_group/set_logger_level '
                  'rcl_interfaces/srv/SetLoggerLevel '
-                 '"{logger_name: \'moveit.ros.planning_scene_monitor\', level: {value: 30}}" '
+                 '"{logger_name: \'moveit.ros.planning_scene_monitor\', level: 30}" '
                  '> /dev/null 2>&1 ; '
                  'ros2 service call /move_group/set_logger_level '
                  'rcl_interfaces/srv/SetLoggerLevel '
-                 '"{logger_name: \'moveit.moveit.ros.planning_scene_monitor\', level: {value: 30}}" '
+                 '"{logger_name: \'moveit.moveit.ros.planning_scene_monitor\', level: 30}" '
                  '> /dev/null 2>&1 ; true'],
             output='log',
         ),

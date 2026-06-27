@@ -39,9 +39,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from tracking_pkg.action import (
+from tracking_msgs.action import (
     HandoverTool, PickTool, ReleaseTool, ReturnHome, ReturnTool)
-from tracking_pkg.srv import GetWorldModel
+from tracking_msgs.srv import GetWorldModel
 
 
 # ── Pydantic tool-argument models ──────────────────────────────────

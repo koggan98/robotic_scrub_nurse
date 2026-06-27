@@ -4,9 +4,9 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <tracking_pkg/msg/grasp_candidate.hpp>
-#include <tracking_pkg/msg/tool_detection_array.hpp>
-#include <tracking_pkg/srv/build_world_model.hpp>
+#include <tracking_msgs/msg/grasp_candidate.hpp>
+#include <tracking_msgs/msg/tool_detection_array.hpp>
+#include <tracking_msgs/srv/build_world_model.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -119,7 +119,7 @@ bool isFinitePoint(const geometry_msgs::msg::Point &point) {
     return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
 }
 
-bool hasUsableWorldXy(const tracking_pkg::msg::GraspCandidate &candidate) {
+bool hasUsableWorldXy(const tracking_msgs::msg::GraspCandidate &candidate) {
     const auto &point = candidate.grasp_pose.pose.position;
     if (!isFinitePoint(point)) {
         return false;
@@ -238,7 +238,7 @@ public:
             {-1.3372991721, -1.6360527478, 2.1957047621, -2.1333886586, -1.5137208144, -6.0057201723},
             6);
         build_world_model_client_ =
-            create_client<tracking_pkg::srv::BuildWorldModel>("/build_world_model");
+            create_client<tracking_msgs::srv::BuildWorldModel>("/build_world_model");
         gripper_mover_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
         gripper_zeroer_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
         hand_pose_sub_ = create_subscription<geometry_msgs::msg::Pose>(
@@ -277,7 +277,7 @@ public:
             return false;
         }
 
-        std::vector<tracking_pkg::msg::GraspCandidate> candidates;
+        std::vector<tracking_msgs::msg::GraspCandidate> candidates;
         for (const auto &candidate : response->grasp_candidates.candidates) {
             if (hasUsableWorldXy(candidate)) {
                 candidates.push_back(candidate);
@@ -346,7 +346,7 @@ public:
     }
 
 private:
-    using BuildWorldModel = tracking_pkg::srv::BuildWorldModel;
+    using BuildWorldModel = tracking_msgs::srv::BuildWorldModel;
 
     BuildWorldModel::Response::SharedPtr requestWorldModel() {
         RCLCPP_INFO(get_logger(), "Waiting for /build_world_model service...");
@@ -370,7 +370,7 @@ private:
         return future.get();
     }
 
-    void printCandidates(const std::vector<tracking_pkg::msg::GraspCandidate> &candidates) {
+    void printCandidates(const std::vector<tracking_msgs::msg::GraspCandidate> &candidates) {
         std::cout << "\nDetected grasp candidates:\n";
         for (size_t i = 0; i < candidates.size(); ++i) {
             const auto &candidate = candidates[i];
@@ -410,7 +410,7 @@ private:
         }
     }
 
-    bool executePick(const tracking_pkg::msg::GraspCandidate &candidate) {
+    bool executePick(const tracking_msgs::msg::GraspCandidate &candidate) {
         geometry_msgs::msg::Pose grasp_pose;
         grasp_pose.position.x = candidate.grasp_pose.pose.position.x;
         grasp_pose.position.y = candidate.grasp_pose.pose.position.y;
@@ -520,8 +520,8 @@ private:
     }
 
     std::string determineTrayRegion(
-        const tracking_pkg::msg::GraspCandidate &candidate,
-        const tracking_pkg::msg::ToolDetectionArray &tools_detected) {
+        const tracking_msgs::msg::GraspCandidate &candidate,
+        const tracking_msgs::msg::ToolDetectionArray &tools_detected) {
         double center_x = std::numeric_limits<double>::quiet_NaN();
         bool found_detection = false;
         for (const auto &detection : tools_detected.detections) {

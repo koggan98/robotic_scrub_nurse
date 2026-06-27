@@ -440,6 +440,10 @@ Start the UR driver through the workspace wrapper:
 ros2 launch tracking_pkg rsn_ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.12.10 launch_rviz:=false
 ```
 
+This wrapper passes `src/tracking_pkg/config/ur3e_update_rate.yaml` to the
+upstream UR driver, lowering the controller-manager loop from the upstream
+500 Hz default to 250 Hz to reduce timing overruns on the runtime host.
+
 Start MoveIt through the workspace wrapper:
 
 ```bash
@@ -457,6 +461,21 @@ The canonical description files are:
 - `src/tracking_pkg/urdf/rsn_ur.urdf.xacro`
 - `src/tracking_pkg/srdf/ur.srdf.xacro`
 - `src/tracking_pkg/config/ur3e_joint_limits.yaml`
+- `src/tracking_pkg/config/ur3e_update_rate.yaml`
+
+If execution looks planned in RViz but the robot does not move, first stop old
+launch terminals so duplicate execution nodes are not running, then restart the
+driver and check:
+
+```bash
+ros2 topic hz /joint_states
+ros2 action info /scaled_joint_trajectory_controller/follow_joint_trajectory
+ros2 topic list -t
+```
+
+Also verify the UR teach pendant is running External Control, the robot is in
+remote mode, the speed slider is above 0%, and no safety/protective stop is
+active.
 
 ---
 

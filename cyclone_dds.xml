@@ -1,0 +1,13 @@
+<CycloneDDS>
+  <Domain>
+    <General>
+      <NetworkInterfaceAddress>AUTO</NetworkInterfaceAddress>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer Address="mirnuc.local"/>
+        <Peer Address="spark-5fa5.local"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

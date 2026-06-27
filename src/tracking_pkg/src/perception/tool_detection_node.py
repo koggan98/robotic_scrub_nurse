@@ -34,7 +34,7 @@ from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import CameraInfo, Image
 import tf2_ros
 
-from tracking_pkg.msg import (
+from tracking_msgs.msg import (
     OrientedBoundingBox2D,
     ToolDetection,
     ToolDetectionArray,

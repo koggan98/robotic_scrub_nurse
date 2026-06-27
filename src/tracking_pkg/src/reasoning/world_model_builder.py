@@ -74,14 +74,14 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 import tf2_ros
 
-from tracking_pkg.msg import (
+from tracking_msgs.msg import (
     GraspCandidate,
     GraspCandidateArray,
     OrientedBoundingBox2D,
     ToolDetection,
     ToolDetectionArray,
 )
-from tracking_pkg.srv import BuildWorldModel
+from tracking_msgs.srv import BuildWorldModel
 from grasp_point_utils import (
     CLASS_OFFSET_M,
     HAMMER_CENTER_OFFSET_M,

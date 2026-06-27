@@ -1,0 +1,5 @@
+controller_manager:
+  ros__parameters:
+    # 250 Hz gives the NUC/Spark more timing headroom than the upstream 500 Hz
+    # default while remaining responsive for MoveIt trajectory execution.
+    update_rate: 250  # Hz

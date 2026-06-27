@@ -1,0 +1,173 @@
+# Plan: Verteilte Architektur — NUC (Robotersteuerung) + Spark (Wahrnehmung/KI)
+
+## Kurze Antwort
+
+| Frage | Antwort |
+|---|---|
+| Möglich? | **Ja** — ROS2 ist genau dafür ausgelegt |
+| Viel Aufwand? | **Moderat — ca. 2–3 Tage** |
+| Sinnvoll? | **Ja, sehr** — Controller-Overruns auf ARM64 lösen sich von selbst; NUC hat UR-Steuerung schon stabil |
+| Lightweight für beide? | **Ja** — NUC braucht nur Messages + C++ Nodes; Spark verliert UR/MoveIt komplett |
+
+---
+
+## Kontext
+
+Der Spark (ARM64, Ubuntu 24.04, Jazzy) erzeugt 500-Hz-Overruns im UR-Treiber (bis 5 ms statt < 2 ms), weil ARM64 ohne RT-Kernel schlechte Scheduling-Latenz hat. Der NUC (x86, Ubuntu 22.04, Humble) hat denselben UR-Treiber bereits stabil laufen.
+
+**NUC** übernimmt alles was direkt den Roboter steuert. **Spark** übernimmt alles GPU-intensive.
+
+---
+
+## Hauptrisiko: Humble ↔ Jazzy DDS-Kompatibilität
+
+Humble und Jazzy verwenden unterschiedliche Type-Hash-Algorithmen (MD5 vs. RIHS01). Das kann bei benutzerdefinierten Nachrichten zu Verbindungsabbrüchen führen.
+
+**Mitigation:** CycloneDDS auf beiden Maschinen (Standard in Jazzy; auf Humble nachrüsten). Benutzerdefinierte Messages aus exakt denselben `.msg`-Quellen auf beiden Maschinen kompilieren. Standard-Nachrichten (std_msgs, geometry_msgs, tf2_msgs) sind kompatibel.
+
+---
+
+## Architektur nach dem Split
+
+```
+SPARK (Jazzy)                                   NUC (Humble)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+scene_camera / tray_camera                      ur_robot_driver
+aruco_marker_manager  ──/tf_static─────────────► robot_state_publisher
+hand_tracker          ──/hand_state────────────► move_group (MoveIt)
+                      ──/hand_gesture ──────────► skill_executor_node
+                      ──/hand_pose ─────────────► loop_mover
+tool_detection_node                             grasp_approach_pose_service
+grasp_geometry_node                             gripper_opener_with_zeroer
+tool_semantics_node                             reclaim_controller
+world_model_node  ◄───/system_state_update ─────  collision publishers
+  (get_world_state svc) ◄──────────────────────── skill_executor_node
+world_model_builder                             static_tf (world→base)
+asr_node
+llm_orchestrator ──/pick_tool action ──────────► skill_executor_node
+                 ──/handover_tool ─────────────►
+                 ──/return_home ───────────────►
+collision_publishers ──/collision_object ───────► move_group
+```
+
+### Cross-Machine Interface (vollständig)
+
+| Topic / Service / Action | Spark → NUC oder NUC → Spark | Nachrichtentyp |
+|---|---|---|
+| `/hand_state` | Spark → NUC | HandState (custom) |
+| `/hand_pose` | Spark → NUC | geometry_msgs/Pose |
+| `/hand_gesture` | Spark → NUC | std_msgs/String |
+| `/tf`, `/tf_static` | Spark ↔ NUC | tf2_msgs |
+| `/system_state_update` | NUC → Spark | std_msgs/String |
+| `/collision_object` | Spark → NUC | moveit_msgs/CollisionObject |
+| `/pick_tool`, `/handover_tool`, `/release_tool`, `/return_home`, `/return_tool` | Spark → NUC | PickTool/… Action |
+| `/get_world_state` service | NUC → Spark | GetWorldState |
+
+Netzwerk-Bandbreite: < 10 kbps total (kein Kamerabild über das Netz).
+
+---
+
+## Implementierungsschritte
+
+### 1 — `tracking_msgs` Paket abtrennen
+Neues Paket `src/tracking_msgs/` mit nur den Message/Service/Action-Definitionen:
+- `msg/` ← alle `.msg` Dateien aus `tracking_pkg/msg/`
+- `srv/` ← alle `.srv` Dateien
+- `action/` ← alle `.action` Dateien
+- minimales `CMakeLists.txt` + `package.xml`
+
+Dieses Paket wird auf **beiden Maschinen** gebaut. `tracking_pkg` wird darauf umgestellt.
+
+### 2 — DDS konfigurieren (beide Maschinen)
+
+CycloneDDS auf NUC installieren:
+```bash
+sudo apt install ros-humble-rmw-cyclonedds-cpp
+```
+
+`cyclone_dds.xml` im Workspace-Root (für beide Maschinen identisch bis auf IP):
+```xml
+<CycloneDDS><Domain><General>
+  <NetworkInterfaceAddress>AUTO</NetworkInterfaceAddress>
+</General><Discovery><Peers>
+  <Peer Address="<NUC_IP>"/>
+  <Peer Address="<SPARK_IP>"/>
+</Peers></Discovery></Domain></CycloneDDS>
+```
+
+`~/.bashrc` auf beiden:
+```bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/daniel/robotic_scrub_nurse_ws/cyclone_dds.xml
+export ROS_DOMAIN_ID=42
+```
+
+### 3 — Launch-Dateien aufteilen
+
+**`spark_launch.py`** (neu) — läuft auf Spark:
+- Beide Kameras + aruco_marker_manager
+- hand_tracker, tool_detection_node
+- grasp_geometry_node, tool_semantics_node
+- world_model_node, world_model_builder
+- Collision publishers (mir, instrument_tray, reclaim_tray)
+- asr_node, llm_orchestrator_node
+- Static TFs für world→aruco-Frames
+
+**`nuc_launch.py`** (neu) — läuft auf NUC:
+- ur_moveit_launch
+- static_tf (world→base)
+- skill_executor_node
+- loop_mover
+- grasp_approach_pose_service
+- gripper_opener_with_zeroer, reclaim_controller
+
+`llm_launch.py` bleibt als Convenience-Wrapper (nur Spark), wird aber deprecated.
+
+### 4 — NUC Build aufsetzen
+
+Auf dem NUC (Humble):
+```bash
+# Deps
+sudo apt install ros-humble-moveit ros-humble-ur
+# Nur tracking_msgs + C++ Execution Nodes bauen
+colcon build --symlink-install --packages-select tracking_msgs tracking_pkg
+```
+
+tracking_pkg auf Humble braucht nur: `rclcpp`, `moveit_ros_planning_interface`, `tracking_msgs` — **keine** GPU/Python-KI-Deps.
+
+### 5 — Netzwerk-Test (Reihenfolge)
+
+1. `ros2 topic echo /hand_state` auf NUC, hand_tracker auf Spark → muss Daten sehen
+2. `ros2 action send_goal /return_home tracking_pkg/action/ReturnHome {}` von Spark → Roboter bewegt sich
+3. `ros2 service call /get_world_state` von NUC → world_model_node auf Spark antwortet
+
+---
+
+## Dateien die geändert werden
+
+| Datei | Aktion |
+|---|---|
+| `src/tracking_msgs/` | **Neu erstellen** |
+| `src/tracking_pkg/package.xml` | `tracking_msgs` als Dep eintragen |
+| `src/tracking_pkg/CMakeLists.txt` | `tracking_msgs` referenzieren |
+| Alle Python-Nodes mit `from tracking_pkg.msg import …` | → `from tracking_msgs.msg import …` |
+| Alle C++ Nodes mit `#include "tracking_pkg/msg/…"` | → `#include "tracking_msgs/msg/…"` |
+| `src/tracking_pkg/launch/spark_launch.py` | **Neu** |
+| `src/tracking_pkg/launch/nuc_launch.py` | **Neu** |
+| `cyclone_dds.xml` | **Neu** im Workspace-Root |
+
+---
+
+## Verification
+
+1. Kein Controller-Overrun auf NUC (x86, kein ARM-Problem)
+2. `ros2 topic list` auf NUC zeigt Topics von Spark (hand_state, tf, etc.)
+3. Spracheingabe auf Spark → LLM → pick_tool Action auf NUC → Roboter greift
+4. Kamera-Freeze-Problem weg (Kameras und UR auf getrennten Maschinen)
+5. Spark kann jederzeit neugestartet werden ohne UR-Treiber zu unterbrechen
+
+---
+
+---
+
+# Plan: GPU für ASR aktivieren + Kamera-Freeze ohne Auflösungsreduktion beheben

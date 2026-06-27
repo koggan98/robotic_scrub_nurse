@@ -28,12 +28,12 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 
-from tracking_pkg.msg import (
+from tracking_msgs.msg import (
     GraspCandidateArray,
     HandState,
     SystemState,
 )
-from tracking_pkg.srv import (
+from tracking_msgs.srv import (
     GetToolCandidates,
     GetWorldModel,
     GetWorldState,

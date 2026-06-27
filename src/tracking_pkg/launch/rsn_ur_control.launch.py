@@ -14,6 +14,7 @@ def generate_launch_description():
     launch_dashboard_client = LaunchConfiguration("launch_dashboard_client")
     initial_joint_controller = LaunchConfiguration("initial_joint_controller")
     activate_joint_controller = LaunchConfiguration("activate_joint_controller")
+    update_rate_config_file = LaunchConfiguration("update_rate_config_file")
 
     description_launchfile = PathJoinSubstitution(
         [FindPackageShare("tracking_pkg"), "launch", "rsn_ur_rsp.launch.py"]
@@ -35,6 +36,7 @@ def generate_launch_description():
             "launch_dashboard_client": launch_dashboard_client,
             "initial_joint_controller": initial_joint_controller,
             "activate_joint_controller": activate_joint_controller,
+            "update_rate_config_file": update_rate_config_file,
         }.items(),
     )
 
@@ -51,6 +53,12 @@ def generate_launch_description():
                 default_value="scaled_joint_trajectory_controller",
             ),
             DeclareLaunchArgument("activate_joint_controller", default_value="true"),
+            DeclareLaunchArgument(
+                "update_rate_config_file",
+                default_value=PathJoinSubstitution(
+                    [FindPackageShare("tracking_pkg"), "config", "ur3e_update_rate.yaml"]
+                ),
+            ),
             ur_control_launch,
         ]
     )
