@@ -20,6 +20,10 @@ def generate_launch_description():
                 'camera_name': 'tray_camera',
                 'camera_namespace': '',
                 'serial_no': f"'{tray_cam_serial}'",
+                # Hardware-reset the device on start. The tray cam is the 2nd D455 on the
+                # shared USB bus and intermittently hits "failed to set power state" (comes
+                # up but streams 0 frames); an initial reset clears that stuck state.
+                'initial_reset': 'true',
                 'enable_color': 'true',
                 # Depth disabled: tool_detection / world_model_builder project onto a
                 # fixed tool plane (fixed_tool_plane_z_m), so tray depth is unused. Turning
