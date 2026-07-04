@@ -1,0 +1,21 @@
+<CycloneDDS>
+  <Domain>
+    <!-- NUC side of the wired NUC<->Jetson link over the switch (192.168.12.0/24).
+         The Jetson uses cyclone_dds_jetson.xml (interface 192.168.12.6).
+         Unicast-only (no multicast) keeps the UR robot net quiet. -->
+    <General>
+      <Interfaces>
+        <NetworkInterface address="192.168.12.5"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer Address="192.168.12.5"/>
+        <Peer Address="192.168.12.6"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
