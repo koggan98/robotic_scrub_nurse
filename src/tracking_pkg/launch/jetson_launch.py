@@ -38,65 +38,19 @@ def generate_launch_description():
     tray_cam_serial  = os.environ.get('TRAY_CAM_SERIAL',  '239222302690')
 
     ur_type       = LaunchConfiguration('ur_type')
-    tracking_rviz = LaunchConfiguration('tracking_rviz')
 
     rs_launch_file = PathJoinSubstitution(
         [FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py']
     )
 
-    # ── RViz on the Jetson ────────────────────────────────────────
-    # The NUC runs headless; RViz lives here so the camera feeds (local on the
-    # Jetson) and the planning scene (from the NUC's move_group over DDS) are all
-    # visible on one screen. robot_description / _semantic are generated locally
-    # via xacro so the MotionPlanning display has the robot model; joint_states,
-    # TF and /monitored_planning_scene arrive from the NUC over the network.
-    robot_description = {
-        'robot_description': ParameterValue(
-            Command([
-                'xacro ',
-                PathJoinSubstitution(
-                    [FindPackageShare('tracking_pkg'), 'urdf', 'rsn_ur.urdf.xacro']
-                ),
-                ' ur_type:=', ur_type,
-                ' name:=', ur_type,
-                ' tf_prefix:=',
-            ]),
-            value_type=str,
-        )
-    }
-    robot_description_semantic = {
-        'robot_description_semantic': ParameterValue(
-            Command([
-                'xacro ',
-                PathJoinSubstitution(
-                    [FindPackageShare('tracking_pkg'), 'srdf', 'ur.srdf.xacro']
-                ),
-                ' ur_type:=', ur_type,
-                ' name:=', ur_type,
-            ]),
-            value_type=str,
-        )
-    }
-
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2_jetson',
-        output='screen',
-        condition=IfCondition(tracking_rviz),
-        arguments=[
-            '-d',
-            PathJoinSubstitution(
-                [FindPackageShare('tracking_pkg'), 'rviz', 'view_robot_tracking.rviz']
-            ),
-        ],
-        parameters=[robot_description, robot_description_semantic],
-    )
+    # RViz runs on the NUC (which has the robot model + planning scene natively).
+    # The Jetson is headless — it must NOT generate a robot_description here: that
+    # would pull rsn_ur.urdf.xacro / the UR ros2_control xacro (not needed for
+    # perception, and version-fragile), and any failure aborts the whole launch.
 
     return LaunchDescription([
 
         DeclareLaunchArgument('ur_type',       default_value='ur3e'),
-        DeclareLaunchArgument('tracking_rviz', default_value='true'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
 
         # ── Static TFs (ArUco marker world-poses) ─────────────────
@@ -364,11 +318,5 @@ def generate_launch_description():
                     }],
                 ),
             ]
-        ),
-
-        # ── RViz (camera feeds + planning scene from NUC) ─────────
-        TimerAction(
-            period=2.0,
-            actions=[rviz_node],
         ),
     ])
