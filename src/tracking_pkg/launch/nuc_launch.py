@@ -114,9 +114,9 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument('ur_type',       default_value='ur3e'),
-        # NUC runs headless; RViz lives on the Jetson (see jetson_launch.py).
-        # Override with tracking_rviz:=true to bring RViz up on the NUC for debugging.
-        DeclareLaunchArgument('tracking_rviz', default_value='false'),
+        # RViz lives on the NUC (the Jetson is headless). Default on, like post_sfits;
+        # pass tracking_rviz:=false for a headless NUC (e.g. over SSH without a display).
+        DeclareLaunchArgument('tracking_rviz', default_value='true'),
         DeclareLaunchArgument('launch_servo',  default_value='false'),
         DeclareLaunchArgument('use_sim_time',  default_value='false'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
