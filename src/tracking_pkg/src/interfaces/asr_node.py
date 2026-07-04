@@ -55,6 +55,9 @@ class ASRNode(Node):
         self.declare_parameter('device', 'cuda')
         # CTranslate2 compute type; empty -> auto (float16 on GPU, int8 on CPU).
         self.declare_parameter('compute_type', '')
+        # >0 caps CTranslate2's CPU thread count. On the Jetson Whisper runs on CPU
+        # (no CUDA ctranslate2 build), so leave cores free for sshd/other nodes.
+        self.declare_parameter('cpu_threads', 0)
 
         self.whisper_model_size = self.get_parameter('whisper_model').value
         self.language = self.get_parameter('language').value or None
@@ -66,6 +69,7 @@ class ASRNode(Node):
         self.device_index = None if device_idx < 0 else device_idx
         self.asr_device = self.get_parameter('device').value or 'cuda'
         compute_type = self.get_parameter('compute_type').value
+        self.cpu_threads = int(self.get_parameter('cpu_threads').value)
         self.compute_type = compute_type or (
             'float16' if str(self.asr_device).startswith('cuda') else 'int8')
 
@@ -110,6 +114,7 @@ class ASRNode(Node):
                 self.whisper_model_size,
                 device=self.asr_device,
                 compute_type=self.compute_type,
+                cpu_threads=self.cpu_threads,
             )
             self.get_logger().info('Whisper model loaded successfully')
             return True
@@ -125,6 +130,7 @@ class ASRNode(Node):
                         self.whisper_model_size,
                         device=self.asr_device,
                         compute_type=self.compute_type,
+                        cpu_threads=self.cpu_threads,
                     )
                     self.get_logger().info('Whisper model loaded successfully (CPU)')
                     return True

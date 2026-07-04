@@ -191,8 +191,10 @@ def generate_launch_description():
         ),
 
         # ── Tool Detection (YOLO OBB, GPU) ────────────────────────
+        # Startup is staggered (5/9/13 s) so the heavy model loads (2x YOLO, Whisper,
+        # MediaPipe) don't all hit the Orin's CPU/GPU at once — avoids the boot spike.
         TimerAction(
-            period=3.0,
+            period=5.0,
             actions=[
                 Node(
                     package='tracking_pkg',
@@ -265,7 +267,7 @@ def generate_launch_description():
 
         # ── World Model Builder (on-demand YOLO, GPU) ─────────────
         TimerAction(
-            period=3.0,
+            period=9.0,
             actions=[
                 Node(
                     package='tracking_pkg',
@@ -325,9 +327,11 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # ── ASR (Whisper, GPU) ────────────────────────────────────
+        # ── ASR (Whisper — CPU on the Jetson, ctranslate2 has no CUDA build) ──
+        # Loaded last (13 s) and thread-capped so it doesn't peg all 6 cores /
+        # starve sshd during startup.
         TimerAction(
-            period=2.0,
+            period=13.0,
             actions=[
                 Node(
                     package='tracking_pkg',
@@ -338,6 +342,7 @@ def generate_launch_description():
                         'whisper_model':               'base.en',
                         'language':                    'en',
                         'silence_threshold_seconds':   0.5,
+                        'cpu_threads':                 3,
                     }],
                 ),
             ]
@@ -345,7 +350,7 @@ def generate_launch_description():
 
         # ── LLM Orchestrator ──────────────────────────────────────
         TimerAction(
-            period=4.0,
+            period=6.0,
             actions=[
                 Node(
                     package='tracking_pkg',
