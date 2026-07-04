@@ -22,7 +22,7 @@ from geometry_msgs.msg import Vector3
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 
-from tracking_pkg.msg import (
+from tracking_msgs.msg import (
     GraspCandidate,
     GraspCandidateArray,
     ToolDetectionArray,

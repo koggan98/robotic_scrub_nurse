@@ -1,0 +1,13 @@
+# Goal: pick the named tool by persistent id (from world_model_node).
+# If tool_id is empty, picks the highest-confidence available tool.
+string tool_id
+---
+# Result
+bool success
+string message
+string picked_tool_id
+string picked_tool_class
+---
+# Feedback
+string phase         # APPROACH | DESCEND | GRASP | LIFT
+float32 progress     # 0.0 .. 1.0

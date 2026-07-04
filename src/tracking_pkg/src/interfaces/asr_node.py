@@ -51,6 +51,10 @@ class ASRNode(Node):
         self.declare_parameter('energy_threshold', 0.015)
         self.declare_parameter('min_speech_seconds', 0.5)
         self.declare_parameter('device_index', -1)
+        # Compute device for faster-whisper: 'cuda' (Spark default) or 'cpu'.
+        self.declare_parameter('device', 'cuda')
+        # CTranslate2 compute type; empty -> auto (float16 on GPU, int8 on CPU).
+        self.declare_parameter('compute_type', '')
 
         self.whisper_model_size = self.get_parameter('whisper_model').value
         self.language = self.get_parameter('language').value or None
@@ -60,6 +64,10 @@ class ASRNode(Node):
         self.min_speech_seconds = float(self.get_parameter('min_speech_seconds').value)
         device_idx = int(self.get_parameter('device_index').value)
         self.device_index = None if device_idx < 0 else device_idx
+        self.asr_device = self.get_parameter('device').value or 'cuda'
+        compute_type = self.get_parameter('compute_type').value
+        self.compute_type = compute_type or (
+            'float16' if str(self.asr_device).startswith('cuda') else 'int8')
 
         # Publisher
         self.publisher = self.create_publisher(String, 'user_speech', 10)
@@ -71,6 +79,7 @@ class ASRNode(Node):
 
         self.get_logger().info(
             f'ASRNode starting (model={self.whisper_model_size}, '
+            f'device={self.asr_device}/{self.compute_type}, '
             f'lang={self.language or "auto"}, rate={self.sample_rate}Hz, '
             f'silence={self.silence_threshold}s, energy={self.energy_threshold})'
         )
@@ -80,25 +89,48 @@ class ASRNode(Node):
         self._listen_thread.start()
 
     def _load_model(self):
-        """Load faster-whisper model (runs on first audio segment)."""
+        """Load faster-whisper model (runs on first audio segment).
+
+        Defaults to CUDA on the Spark; degrades to CPU/int8 if the GPU build of
+        CTranslate2 is unavailable so ASR still works without a usable GPU.
+        """
         try:
             from faster_whisper import WhisperModel
-            self.get_logger().info(
-                f'Loading faster-whisper model "{self.whisper_model_size}" on CPU...'
-            )
-            self._model = WhisperModel(
-                self.whisper_model_size,
-                device='cpu',
-                compute_type='int8',
-            )
-            self.get_logger().info('Whisper model loaded successfully')
-            return True
         except ImportError:
             self.get_logger().error(
                 'faster-whisper not installed. Run: pip install faster-whisper'
             )
             return False
+        try:
+            self.get_logger().info(
+                f'Loading faster-whisper model "{self.whisper_model_size}" '
+                f'on {self.asr_device} ({self.compute_type})...'
+            )
+            self._model = WhisperModel(
+                self.whisper_model_size,
+                device=self.asr_device,
+                compute_type=self.compute_type,
+            )
+            self.get_logger().info('Whisper model loaded successfully')
+            return True
         except Exception as e:
+            if str(self.asr_device).startswith('cuda'):
+                self.get_logger().warn(
+                    f'CUDA whisper load failed ({e}); falling back to CPU/int8'
+                )
+                self.asr_device = 'cpu'
+                self.compute_type = 'int8'
+                try:
+                    self._model = WhisperModel(
+                        self.whisper_model_size,
+                        device=self.asr_device,
+                        compute_type=self.compute_type,
+                    )
+                    self.get_logger().info('Whisper model loaded successfully (CPU)')
+                    return True
+                except Exception as e2:
+                    self.get_logger().error(f'Failed to load whisper model: {e2}')
+                    return False
             self.get_logger().error(f'Failed to load whisper model: {e}')
             return False
 
@@ -131,12 +163,26 @@ class ASRNode(Node):
         chunk_duration = 0.1  # 100ms chunks
         chunk_samples = int(self.sample_rate * chunk_duration)
 
+        _no_mic_warned = False
         while self._running and rclpy.ok():
             try:
                 self._capture_and_transcribe(sd, chunk_samples, chunk_duration)
+                _no_mic_warned = False
             except sd.PortAudioError as e:
-                self.get_logger().error(f'Audio device error: {e}')
-                time.sleep(2.0)
+                err_str = str(e)
+                if 'Input/output error' in err_str or 'ALSA error -5' in err_str:
+                    if not _no_mic_warned:
+                        _no_mic_warned = True
+                        self.get_logger().warn(
+                            'No microphone available (ALSA I/O error). '
+                            'Inject speech via: ros2 topic pub --once /user_speech '
+                            'std_msgs/msg/String "{data: \'your command\'}". '
+                            'Retrying every 60 s.'
+                        )
+                    time.sleep(60.0)
+                else:
+                    self.get_logger().error(f'Audio device error: {e}')
+                    time.sleep(2.0)
             except Exception as e:
                 self.get_logger().error(f'Listen loop error: {e}')
                 time.sleep(1.0)

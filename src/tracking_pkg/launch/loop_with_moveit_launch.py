@@ -17,7 +17,7 @@ def generate_launch_description():
     ur_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("ur_moveit_config"), "launch", "ur_moveit.launch.py"]
+                [FindPackageShare("tracking_pkg"), "launch", "rsn_ur_moveit.launch.py"]
             )
         ),
         launch_arguments={
@@ -34,12 +34,12 @@ def generate_launch_description():
                 [
                     "xacro ",
                     PathJoinSubstitution(
-                        [FindPackageShare("ur_description"), "urdf", "ur.urdf.xacro"]
+                        [FindPackageShare("tracking_pkg"), "urdf", "rsn_ur.urdf.xacro"]
                     ),
                     " ur_type:=",
                     ur_type,
                     " name:=ur",
-                    " prefix:=",
+                    " tf_prefix:=",
                 ]
             ),
             value_type=str,
@@ -52,7 +52,7 @@ def generate_launch_description():
                 [
                     "xacro ",
                     PathJoinSubstitution(
-                        [FindPackageShare("ur_moveit_config"), "srdf", "ur.srdf.xacro"]
+                        [FindPackageShare("tracking_pkg"), "srdf", "ur.srdf.xacro"]
                     ),
                     " ur_type:=",
                     ur_type,

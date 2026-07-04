@@ -9,7 +9,7 @@ returns the result as both a structured JSON string (for the LLM) and ROS
 messages (for downstream ROS subscribers).
 
 Service:
-  /build_world_model (tracking_pkg/srv/BuildWorldModel)
+  /build_world_model (tracking_msgs/srv/BuildWorldModel)
 
 Continuous publishers (updated only on service call, not streamed):
   /world_model/json (std_msgs/String)            - JSON snapshot
@@ -74,14 +74,14 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 import tf2_ros
 
-from tracking_pkg.msg import (
+from tracking_msgs.msg import (
     GraspCandidate,
     GraspCandidateArray,
     OrientedBoundingBox2D,
     ToolDetection,
     ToolDetectionArray,
 )
-from tracking_pkg.srv import BuildWorldModel
+from tracking_msgs.srv import BuildWorldModel
 from grasp_point_utils import (
     CLASS_OFFSET_M,
     HAMMER_CENTER_OFFSET_M,
@@ -429,6 +429,28 @@ class WorldModelBuilder(Node):
             self.get_logger().error(f'Failed to load model: {e}')
             return False
 
+    def _predict(self, color):
+        """Run YOLO-OBB inference, falling back to CPU if a CUDA call fails.
+
+        On the Spark the default device is cuda:0; if CUDA is unavailable or
+        misconfigured we degrade to CPU (once) instead of failing the build.
+        """
+        try:
+            return self._model.predict(
+                source=color, task='obb', imgsz=self.imgsz,
+                conf=self.conf_threshold, device=self.device, verbose=False,
+            )
+        except Exception as e:
+            if not str(self.device).startswith('cuda'):
+                raise
+            self.get_logger().warn(
+                f'CUDA inference failed ({e}); falling back to device=cpu')
+            self.device = 'cpu'
+            return self._model.predict(
+                source=color, task='obb', imgsz=self.imgsz,
+                conf=self.conf_threshold, device=self.device, verbose=False,
+            )
+
     # ── Subscriber callbacks ───────────────────────────────────────
 
     def _on_color(self, msg):
@@ -523,14 +545,7 @@ class WorldModelBuilder(Node):
 
         # Run inference
         try:
-            results = self._model.predict(
-                source=color,
-                task='obb',
-                imgsz=self.imgsz,
-                conf=self.conf_threshold,
-                device=self.device,
-                verbose=False,
-            )
+            results = self._predict(color)
         except Exception as e:
             return False, f'Inference failed: {e}', '', None, None, None
 

@@ -1,5 +1,15 @@
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
+
+// MoveGroupInterface::Plan member is `trajectory_` on Humble but `trajectory` on
+// Jazzy (the same release that migrated MoveIt headers .h -> .hpp). Key off that
+// header migration so this builds on the NUC (Humble) and the Spark (Jazzy).
+#if __has_include(<moveit/version.hpp>)
+#  define RSN_PLAN_TRAJECTORY trajectory
+#else
+#  define RSN_PLAN_TRAJECTORY trajectory_
+#endif
+
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/point.hpp>
@@ -9,7 +19,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <tracking_pkg/srv/get_grasp_approach_pose.hpp>
+#include <tracking_msgs/srv/get_grasp_approach_pose.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -124,7 +134,7 @@ public:
         gripper_position_command_publisher_ = this->create_publisher<std_msgs::msg::Int32>("/gripper_position_command", 10);
         request_joint_state_ = this->create_publisher<std_msgs::msg::Bool>("/request_joint_state", 10);
         handover_event_publisher_ = this->create_publisher<std_msgs::msg::String>("/handover_event", 10);
-        grasp_approach_pose_client_ = this->create_client<tracking_pkg::srv::GetGraspApproachPose>("/get_grasp_approach_pose");
+        grasp_approach_pose_client_ = this->create_client<tracking_msgs::srv::GetGraspApproachPose>("/get_grasp_approach_pose");
 
         RCLCPP_INFO(this->get_logger(), "Moveit Mover Node initialized.");
     }
@@ -555,7 +565,7 @@ private:
             return false;
         }
 
-        auto request = std::make_shared<tracking_pkg::srv::GetGraspApproachPose::Request>();
+        auto request = std::make_shared<tracking_msgs::srv::GetGraspApproachPose::Request>();
         request->target_frame = target_frame;
 
         auto future = grasp_approach_pose_client_->async_send_request(request);
@@ -606,7 +616,7 @@ private:
         }
 
         moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
-        cartesian_plan.trajectory_ = trajectory;
+        cartesian_plan.RSN_PLAN_TRAJECTORY = trajectory;
         if (move_group_->execute(cartesian_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(this->get_logger(), "%s", failure_log);
             return false;
@@ -1174,7 +1184,7 @@ private:
         if (fraction > 0.99) {
             RCLCPP_INFO(this->get_logger(), "Linear path to object (%.2f%% achieved), executing...", fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
-            cartesian_plan.trajectory_ = trajectory;
+            cartesian_plan.RSN_PLAN_TRAJECTORY = trajectory;
             move_group_->execute(cartesian_plan);
         } else {
             RCLCPP_ERROR(this->get_logger(), "Failed to compute linear Cartesian path (only %.2f%% achieved)", fraction * 100.0);
@@ -1199,7 +1209,7 @@ private:
                 "Lifting hammer with Cartesian z and x offset (linear path %.2f%% achieved)...",
                 lift_fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
-            lift_plan.trajectory_ = lift_trajectory;
+            lift_plan.RSN_PLAN_TRAJECTORY = lift_trajectory;
             move_group_->execute(lift_plan);
 
             waiting_for_hand_pose_ = true;
@@ -1332,7 +1342,7 @@ private:
         if (fraction > 0.99) {
             RCLCPP_INFO(this->get_logger(), "Linear path to object (%.2f%% achieved), executing...", fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan cartesian_plan;
-            cartesian_plan.trajectory_ = trajectory;
+            cartesian_plan.RSN_PLAN_TRAJECTORY = trajectory;
             move_group_->execute(cartesian_plan);
         } else {
             RCLCPP_ERROR(this->get_logger(), "Failed to compute linear Cartesian path (only %.2f%% achieved)", fraction * 100.0);
@@ -1354,7 +1364,7 @@ private:
         if (lift_fraction > 0.99) {
             RCLCPP_INFO(this->get_logger(), "Lifting object (linear path %.2f%% achieved)...", lift_fraction * 100.0);
             moveit::planning_interface::MoveGroupInterface::Plan lift_plan;
-            lift_plan.trajectory_ = lift_trajectory;
+            lift_plan.RSN_PLAN_TRAJECTORY = lift_trajectory;
             move_group_->execute(lift_plan);
 
             waiting_for_hand_pose_ = true;
@@ -1464,7 +1474,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_event_publisher_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_reclaim_done_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_position_done_sub_;
-    rclcpp::Client<tracking_pkg::srv::GetGraspApproachPose>::SharedPtr grasp_approach_pose_client_;
+    rclcpp::Client<tracking_msgs::srv::GetGraspApproachPose>::SharedPtr grasp_approach_pose_client_;
 };
 
 int main(int argc, char **argv) {

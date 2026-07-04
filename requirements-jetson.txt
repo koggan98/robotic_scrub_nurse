@@ -1,0 +1,35 @@
+# Python dependencies for the Robotic Scrub Nurse on the NVIDIA Jetson Orin Nano
+# (JetPack 6 / Ubuntu 22.04 / ROS 2 Humble / aarch64 / CUDA).
+#
+# Install into an environment ROS-Python (3.10) can import from. Simplest is the
+# system interpreter that ROS Humble uses:
+#   pip install -r requirements-jetson.txt
+# (Add --break-system-packages only if pip refuses; JetPack 6 pip is usually fine.)
+#
+# NOT listed here on purpose (must be installed manually FIRST, see
+# deployment_guide.md "Jetson / Humble Setup"):
+#   torch         -> NVIDIA Jetson CUDA wheel (JetPack build), NOT the plain PyPI
+#                    wheel (that is CPU-only / wrong CUDA on aarch64). Get it from the
+#                    Jetson AI Lab pip index or NVIDIA's Jetson PyTorch wheels, and
+#                    install it BEFORE ultralytics so ultralytics does not pull a bad torch.
+#   pyrealsense2  -> comes with the RealSense install on the Jetson (librealsense +
+#                    pyrealsense2 built for aarch64). The cameras are already detected,
+#                    so this should already be importable; verify before building.
+
+# --- Perception / ML (GPU-accelerated via the torch installed above) ---
+ultralytics          # YOLOv8-OBB tool detection (tool_detection_node, world_model_builder)
+faster-whisper       # local speech-to-text (asr_node); CUDA via CTranslate2
+mediapipe            # hand tracking (hand_tracker); aarch64 wheel required
+sounddevice          # microphone capture for asr_node
+
+# --- LLM orchestration ---
+openai               # OpenAI tool-calling loop (llm_orchestrator_node)
+pydantic             # tool-argument schemas (also available via rosdep python3-pydantic)
+
+# --- Math / geometry / IO used across nodes ---
+numpy
+scipy                # scipy.spatial.transform.Rotation
+transforms3d         # quaternion/TF helpers
+trimesh              # mesh handling for collision objects
+tabulate             # CLI tables
+PyYAML               # config loading

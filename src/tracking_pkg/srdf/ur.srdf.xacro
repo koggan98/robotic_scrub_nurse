@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
+  <xacro:arg name="name" default="ur"/>
+
+  <xacro:include filename="$(find tracking_pkg)/srdf/ur_macro.srdf.xacro"/>
+
+  <xacro:ur_srdf/>
+</robot>

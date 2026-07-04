@@ -43,7 +43,7 @@ def generate_launch_description():
     ur_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("ur_moveit_config"), "launch", "ur_moveit.launch.py"]
+                [FindPackageShare("tracking_pkg"), "launch", "rsn_ur_moveit.launch.py"]
             )
         ),
         launch_arguments={
@@ -60,12 +60,12 @@ def generate_launch_description():
                 [
                     "xacro ",
                     PathJoinSubstitution(
-                        [FindPackageShare("ur_description"), "urdf", "ur.urdf.xacro"]
+                        [FindPackageShare("tracking_pkg"), "urdf", "rsn_ur.urdf.xacro"]
                     ),
                     " ur_type:=",
                     ur_type,
                     " name:=ur",
-                    " prefix:=",
+                    " tf_prefix:=",
                 ]
             ),
             value_type=str,
@@ -77,7 +77,7 @@ def generate_launch_description():
                 [
                     "xacro ",
                     PathJoinSubstitution(
-                        [FindPackageShare("ur_moveit_config"), "srdf", "ur.srdf.xacro"]
+                        [FindPackageShare("tracking_pkg"), "srdf", "ur.srdf.xacro"]
                     ),
                     " ur_type:=",
                     ur_type,
@@ -211,7 +211,8 @@ def generate_launch_description():
                         "world_frame": "world",
                         "conf_threshold": 0.35,
                         "imgsz": 1024,
-                        "device": "cpu",
+                        # GPU by default on the Jetson; override with OBB_DEVICE=cpu
+                        "device": os.environ.get("OBB_DEVICE", "cuda:0"),
                         "handle_class_name": "handle",
                         "grasp_offset_fraction": 1.0 / 10.0,
                         "fixed_tool_plane_z_m": 0.04,

@@ -14,7 +14,7 @@ Subscriptions:
   /camera_info (sensor_msgs/CameraInfo) - Camera intrinsics
 
 Publishers:
-  /hand_state (tracking_pkg/msg/HandState) - continuous hand pose + keypoints
+  /hand_state (tracking_msgs/msg/HandState) - continuous hand pose + keypoints
   /hand_pose (geometry_msgs/Pose) - legacy compat, continuous publish
   /hand_pose_marker (visualization_msgs/Marker) - RViz visualization
   /annotated_hand_image (sensor_msgs/Image) - debug visualization
@@ -46,7 +46,7 @@ from cv_bridge import CvBridge
 import tf2_ros
 import mediapipe as mp
 
-from tracking_pkg.msg import HandState
+from tracking_msgs.msg import HandState
 
 
 def _angle_at(p_a, p_b, p_c):

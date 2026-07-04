@@ -18,7 +18,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 
-from tracking_pkg.msg import GraspCandidate, GraspCandidateArray
+from tracking_msgs.msg import GraspCandidate, GraspCandidateArray
 
 
 class ToolSemanticsNode(Node):

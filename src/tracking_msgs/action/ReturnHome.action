@@ -1,0 +1,8 @@
+# Goal: move the arm to the home joint configuration.
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string phase         # PLANNING | EXECUTING | DONE

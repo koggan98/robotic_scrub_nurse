@@ -8,7 +8,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from tracking_pkg.srv import GetGraspApproachPose
+from tracking_msgs.srv import GetGraspApproachPose
 
 from grasp_orientation_utils import (
     compute_gripper_quaternion_from_rotation_matrix,
