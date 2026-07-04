@@ -38,11 +38,17 @@ def generate_launch_description():
         [FindPackageShare('tracking_pkg'), 'config', 'loop_mover_profiles.yaml']
     )
 
-    # ── UR MoveIt include ─────────────────────────────────────────
+    # ── MoveIt (move_group) — standard ur_moveit_config ───────────
+    # Starts ONLY move_group (correct robot_description for the installed UR
+    # packages). The UR driver (ur_control.launch.py, robot_ip:=…) is started
+    # separately by the operator. NOTE: the vendored rsn_ur_moveit.launch.py +
+    # rsn_ur.urdf.xacro (from jazzy-spark) reference an old UR layout
+    # ($(find ur_robot_driver)/urdf/ur.ros2_control.xacro, moved to ur_description
+    # + changed macro signature) and are broken against UR 2.5/2.7 — do not use.
     ur_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare('tracking_pkg'), 'launch', 'rsn_ur_moveit.launch.py']
+                [FindPackageShare('ur_moveit_config'), 'launch', 'ur_moveit.launch.py']
             )
         ),
         launch_arguments={
@@ -53,17 +59,17 @@ def generate_launch_description():
         }.items(),
     )
 
-    # ── Robot description (for RViz on NUC) ──────────────────────
+    # ── Robot description (for RViz on NUC) — standard UR sources ─
     robot_description = {
         'robot_description': ParameterValue(
             Command([
                 'xacro ',
                 PathJoinSubstitution(
-                    [FindPackageShare('tracking_pkg'), 'urdf', 'rsn_ur.urdf.xacro']
+                    [FindPackageShare('ur_description'), 'urdf', 'ur.urdf.xacro']
                 ),
                 ' ur_type:=', ur_type,
-                ' name:=', ur_type,
-                ' tf_prefix:=',
+                ' name:=ur',
+                ' prefix:=',
             ]),
             value_type=str,
         )
@@ -73,14 +79,17 @@ def generate_launch_description():
             Command([
                 'xacro ',
                 PathJoinSubstitution(
-                    [FindPackageShare('tracking_pkg'), 'srdf', 'ur.srdf.xacro']
+                    [FindPackageShare('ur_moveit_config'), 'srdf', 'ur.srdf.xacro']
                 ),
                 ' ur_type:=', ur_type,
-                ' name:=', ur_type,
+                ' name:=ur',
             ]),
             value_type=str,
         )
     }
+    robot_description_kinematics_path = PathJoinSubstitution(
+        [FindPackageShare('ur_moveit_config'), 'config', 'kinematics.yaml']
+    )
 
     rviz_node = Node(
         package='rviz2',
@@ -97,6 +106,7 @@ def generate_launch_description():
         parameters=[
             robot_description,
             robot_description_semantic,
+            robot_description_kinematics_path,
             {'use_sim_time': use_sim_time},
         ],
     )
