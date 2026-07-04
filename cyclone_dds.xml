@@ -1,17 +1,25 @@
 <CycloneDDS>
   <Domain>
     <General>
-      <!-- autodetermine = pick the active interface automatically (WiFi today).
-           For a dedicated wired NUC<->Jetson link, replace with a fixed address,
-           e.g. <NetworkInterface address="192.168.50.1"/> on the NUC. -->
+      <!-- Dedicated wired NUC<->Jetson link over the switch (192.168.12.0/24).
+           Each machine binds whichever of these addresses it actually has:
+             NUC  enp86s0  = 192.168.12.5
+             Jetson enP8p1s0 = 192.168.12.6
+           required="false" => the address that is NOT local is silently skipped,
+           so this one file works unchanged on both machines. -->
       <Interfaces>
-        <NetworkInterface autodetermine="true"/>
+        <NetworkInterface address="192.168.12.5" required="false"/>
+        <NetworkInterface address="192.168.12.6" required="false"/>
       </Interfaces>
+      <!-- Unicast-only: no DDS multicast on the wire, keeps the UR robot net quiet. -->
+      <AllowMulticast>false</AllowMulticast>
     </General>
     <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
       <Peers>
-        <Peer Address="mirnuc.local"/>
-        <Peer Address="orin.local"/>
+        <Peer Address="192.168.12.5"/>
+        <Peer Address="192.168.12.6"/>
       </Peers>
     </Discovery>
   </Domain>
