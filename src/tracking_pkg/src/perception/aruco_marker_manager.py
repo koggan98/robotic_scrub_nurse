@@ -262,7 +262,12 @@ class ArucoMarkerManager(Node):
             dict_name = 'original'
         self.aruco_dictionary = aruco.getPredefinedDictionary(ARUCO_DICT_MAP[dict_name])
 
-        self.detector_parameters = aruco.DetectorParameters()
+        # OpenCV >= 4.7 renamed the factory to DetectorParameters(); older builds
+        # (e.g. OpenCV 4.5.x on JetPack) only expose DetectorParameters_create().
+        if hasattr(aruco, 'DetectorParameters'):
+            self.detector_parameters = aruco.DetectorParameters()
+        else:
+            self.detector_parameters = aruco.DetectorParameters_create()
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
 
         self._publish_static_tfs()
