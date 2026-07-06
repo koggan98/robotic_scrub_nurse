@@ -140,12 +140,16 @@ class _MarkerTracker:
         color_topic = f"{self.camera_ns}/color/image_raw"
         info_topic = f"{self.camera_ns}/color/camera_info"
 
-        node.create_subscription(
+        self._info_sub = node.create_subscription(
             CameraInfo, info_topic, self._on_camera_info, 10
         )
-        node.create_subscription(
+        self._image_sub = node.create_subscription(
             Image, color_topic, self._on_image, 10
         )
+        # One-shot timer that drops the camera subscriptions after lock. Created
+        # in _publish_camera_pose so the teardown runs outside the image callback
+        # (destroying a subscription from within its own callback is unsafe).
+        self._teardown_timer = None
 
         node.get_logger().info(
             f"[{marker_cfg['name']}] Watching marker id={self.marker_id} "
@@ -283,10 +287,34 @@ class _MarkerTracker:
             self.rebroadcast_timer = self.node.create_timer(
                 1.0, self._rebroadcast_locked_tf
             )
+        # Stop receiving images entirely. Even with the early-return in _on_image,
+        # staying subscribed makes rclpy deliver + deserialize every camera frame
+        # (~25 Hz per camera) and still costs ~30% CPU. Drop the subscriptions once
+        # locked; deferred via a one-shot timer so we don't destroy a subscription
+        # from inside its own callback.
+        if self.publish_once and self._teardown_timer is None:
+            self._teardown_timer = self.node.create_timer(
+                0.2, self._teardown_subscriptions
+            )
         self.node.get_logger().info(
             f"[{self.cfg['name']}] Locked: published smoothed static TF "
             f"{self.child_frame} -> {self.camera_output_frame} "
             f"from {len(self._pose_samples)} samples"
+        )
+
+    def _teardown_subscriptions(self):
+        """Drop camera subscriptions after lock so no more frames are processed."""
+        if self._teardown_timer is not None:
+            self._teardown_timer.cancel()
+            self._teardown_timer = None
+        for sub in (self._image_sub, self._info_sub):
+            if sub is not None:
+                self.node.destroy_subscription(sub)
+        self._image_sub = None
+        self._info_sub = None
+        self.node.get_logger().info(
+            f"[{self.cfg['name']}] Unsubscribed from {self.camera_ns} after lock; "
+            f"camera frames no longer processed."
         )
 
     def _rebroadcast_locked_tf(self):
