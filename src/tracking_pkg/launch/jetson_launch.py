@@ -289,37 +289,12 @@ def generate_launch_description():
             }],
         ),
 
-        # ── World Model Builder (on-demand YOLO, GPU) ─────────────
-        TimerAction(
-            period=9.0,
-            actions=[
-                Node(
-                    package='tracking_pkg',
-                    executable='world_model_builder.py',
-                    name='world_model_builder',
-                    output='screen',
-                    parameters=[{
-                        'model_path': os.environ.get(
-                            'OBB_MODEL_PATH',
-                            os.path.join(os.path.expanduser('~'),
-                                         'robotic_scrub_nurse_ws',
-                                         'ros_unrelated_scripts', 'first_obb_test.pt'),
-                        ),
-                        'camera_mode':           'streaming',
-                        'tray_camera_namespace': '/tray_camera',
-                        'tray_camera_frame':     'tray_camera_color_optical_frame',
-                        'world_frame':           'world',
-                        'conf_threshold':        0.35,
-                        'imgsz':                 1024,
-                        'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
-                        'handle_class_name':     'handle',
-                        'grasp_offset_fraction': 1.0 / 16.0,
-                        'fixed_tool_plane_z_m':  0.04,
-                        'max_image_age_sec':     1.0,
-                    }],
-                ),
-            ]
-        ),
+        # ── World Model Builder — REMOVED from the production launch ──
+        # world_model_builder (/build_world_model) is only called by the manual
+        # test node tool_pick_test_node.cpp (see tool_pick_test_launch.py); the LLM
+        # uses world_model_node's /get_world_model instead. In streaming mode it
+        # converts the tray image at camera rate (cv_bridge) and cost ~63% CPU +
+        # ~1.6 GB here for nothing. Run tool_pick_test_launch.py if you need it.
 
         # ── Collision Publishers (publish /collision_object → NUC move_group) ─
         Node(

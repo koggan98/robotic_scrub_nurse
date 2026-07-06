@@ -121,8 +121,8 @@ class ToolDetectionNode(Node):
 
         self.bridge = CvBridge()
         self._lock = Lock()
-        self._latest_image = None
-        self._latest_depth = None
+        self._latest_color_msg = None
+        self._latest_depth_msg = None
         self._camera_matrix = None
 
         self._model = None
@@ -155,12 +155,15 @@ class ToolDetectionNode(Node):
         )
 
     def _on_color(self, msg):
+        # Store the raw ROS msg; convert to cv2 only at tick time (inference rate),
+        # NOT per camera frame. Otherwise cv_bridge runs at the camera rate (~14-24 Hz)
+        # regardless of inference_rate_hz and dominates CPU at low rates.
         with self._lock:
-            self._latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            self._latest_color_msg = msg
 
     def _on_depth(self, msg):
         with self._lock:
-            self._latest_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
+            self._latest_depth_msg = msg
 
     def _on_camera_info(self, msg):
         with self._lock:
@@ -209,12 +212,16 @@ class ToolDetectionNode(Node):
 
     def _tick(self):
         with self._lock:
-            color = None if self._latest_image is None else self._latest_image.copy()
-            depth = None if self._latest_depth is None else self._latest_depth.copy()
+            color_msg = self._latest_color_msg
+            depth_msg = self._latest_depth_msg
             cam_matrix = self._camera_matrix
 
-        if color is None or cam_matrix is None:
+        if color_msg is None or cam_matrix is None:
             return
+
+        color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
+        depth = (None if depth_msg is None
+                 else self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='16UC1'))
 
         now_msg = self.get_clock().now().to_msg()
 
