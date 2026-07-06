@@ -171,10 +171,10 @@ def generate_launch_description():
                         'imgsz':                 1024,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
-                        # 2 Hz keeps the continuous world model fresh for get_world_model
-                        # (< tracker max_age 3 s so tool IDs stay stable) at a fraction of the
-                        # GPU/CPU cost — the tray is mostly static, so 2 Hz is plenty.
-                        'inference_rate_hz':     2.0,
+                        # 4 Hz keeps the continuous world model fresh for get_world_model
+                        # (<< tracker max_age 3 s so tool IDs stay stable). Raised from 2 Hz
+                        # after the aruco unsubscribe + collision-pub move freed Orin CPU.
+                        'inference_rate_hz':     4.0,
                         'fixed_tool_plane_z_m':  0.04,
                         'publish_annotated_image': True,
                     }],
@@ -237,11 +237,12 @@ def generate_launch_description():
                         'imgsz':                 1024,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
-                        # Slow "stream" — one frame every 5 s. Reclaim = intermediate
+                        # Slow "stream" — one frame every 2 s. Reclaim = intermediate
                         # storage (not time-critical); keeps the RViz annotation updating
-                        # at negligible load. NOTE: if the reclaim is later wired into a
-                        # tracker/world model, set that tracker's max_age > 5 s.
-                        'inference_rate_hz':     0.2,
+                        # at negligible load. Raised from 0.2 Hz after freeing Orin CPU.
+                        # NOTE: if the reclaim is later wired into a tracker/world model,
+                        # set that tracker's max_age > 2 s.
+                        'inference_rate_hz':     0.5,
                         'fixed_tool_plane_z_m':  0.04,
                         'publish_annotated_image': True,
                         'detections_topic':      '/reclaim_tools_obb',
