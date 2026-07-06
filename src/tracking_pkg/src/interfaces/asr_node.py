@@ -51,6 +51,10 @@ class ASRNode(Node):
         self.declare_parameter('energy_threshold', 0.015)
         self.declare_parameter('min_speech_seconds', 0.5)
         self.declare_parameter('device_index', -1)
+        # Select the input device by NAME substring (passed straight to sounddevice),
+        # e.g. 'Samson'. Preferred over device_index: robust to index changes and works
+        # when PulseAudio exposes no capture source (direct ALSA). '' -> use device_index.
+        self.declare_parameter('audio_device', '')
         # Compute device for faster-whisper: 'cuda' (Spark default) or 'cpu'.
         self.declare_parameter('device', 'cuda')
         # CTranslate2 compute type; empty -> auto (float16 on GPU, int8 on CPU).
@@ -66,7 +70,10 @@ class ASRNode(Node):
         self.energy_threshold = float(self.get_parameter('energy_threshold').value)
         self.min_speech_seconds = float(self.get_parameter('min_speech_seconds').value)
         device_idx = int(self.get_parameter('device_index').value)
-        self.device_index = None if device_idx < 0 else device_idx
+        audio_device = self.get_parameter('audio_device').value
+        # A name substring wins over the numeric index; sounddevice accepts str/int/None.
+        self.device_index = audio_device if audio_device else (
+            None if device_idx < 0 else device_idx)
         self.asr_device = self.get_parameter('device').value or 'cuda'
         compute_type = self.get_parameter('compute_type').value
         self.cpu_threads = int(self.get_parameter('cpu_threads').value)

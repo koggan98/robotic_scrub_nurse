@@ -301,6 +301,9 @@ def generate_launch_description():
                         'language':                    'en',
                         'silence_threshold_seconds':   0.5,
                         'cpu_threads':                 3,
+                        # Samson Q2U USB mic via direct ALSA (PulseAudio exposes no
+                        # capture source for it, so the default device is silent).
+                        'audio_device':                'Samson',
                     }],
                 ),
             ]
