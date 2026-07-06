@@ -296,27 +296,12 @@ def generate_launch_description():
         # converts the tray image at camera rate (cv_bridge) and cost ~63% CPU +
         # ~1.6 GB here for nothing. Run tool_pick_test_launch.py if you need it.
 
-        # ── Collision Publishers (publish /collision_object → NUC move_group) ─
-        Node(
-            package='tracking_pkg',
-            executable='mir_publisher.py',
-            name='mir_publisher',
-            output='screen',
-        ),
-        Node(
-            package='tracking_pkg',
-            executable='instrument_tray_collision_publisher.py',
-            name='instrument_tray_collision_publisher',
-            output='screen',
-            parameters=[{'publish_hz': 0.5}],
-        ),
-        Node(
-            package='tracking_pkg',
-            executable='reclaim_tray_collision_publisher.py',
-            name='reclaim_tray_collision_publisher',
-            output='screen',
-            parameters=[{'publish_hz': 0.5}],
-        ),
+        # ── Collision Publishers — MOVED to the NUC (nuc_launch.py) ──
+        # They publish static geometry to move_group (which runs on the NUC) with
+        # latched (TRANSIENT_LOCAL) QoS, so they belong next to move_group: keeps
+        # them off the Jetson CPU and saves a DDS hop. The instrument-tray one
+        # needs world→tray_camera_color_optical_frame, which still arrives on the
+        # NUC from this node's aruco_marker_manager over DDS.
 
         # ── Sound ─────────────────────────────────────────────────
         Node(

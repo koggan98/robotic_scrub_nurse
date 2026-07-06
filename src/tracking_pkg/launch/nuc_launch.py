@@ -211,6 +211,35 @@ def generate_launch_description():
             ]
         ),
 
+        # ── Collision Publishers (moved here from the Jetson) ─────
+        # Publish /collision_object to the local move_group. Latched
+        # (TRANSIENT_LOCAL) QoS means one publish reaches a late/restarting
+        # move_group; kept at a slow 0.2 Hz so the objects are automatically
+        # re-added if the planning scene is ever cleared. The instrument tray
+        # needs world→tray_camera_color_optical_frame, which arrives from the
+        # Jetson's aruco_marker_manager over DDS (its TF-wait loop handles the
+        # startup ordering). mir/reclaim are pure world-frame geometry (no TF).
+        Node(
+            package='tracking_pkg',
+            executable='mir_publisher.py',
+            name='mir_publisher',
+            output='screen',
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='instrument_tray_collision_publisher.py',
+            name='instrument_tray_collision_publisher',
+            output='screen',
+            parameters=[{'publish_hz': 0.2}],
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='reclaim_tray_collision_publisher.py',
+            name='reclaim_tray_collision_publisher',
+            output='screen',
+            parameters=[{'publish_hz': 0.2}],
+        ),
+
         # ── RViz (optional) ───────────────────────────────────────
         TimerAction(
             period=2.0,

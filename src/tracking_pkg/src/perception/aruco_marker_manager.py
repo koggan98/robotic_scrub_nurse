@@ -104,6 +104,22 @@ class _MarkerTracker:
         self.camera_ns = self.detection['camera_namespace'].rstrip('/')
         self.camera_output_frame = self.detection['camera_output_frame']
         self.publish_once = bool(self.detection.get('publish_once', True))
+        # Throttle detectMarkers while still searching so an un-locked tracker
+        # (e.g. marker briefly out of view) doesn't run detection on every
+        # camera frame (~25 Hz) and burn a whole core. After locking, the
+        # publish_once gate in _on_image stops detection entirely.
+        self.search_rate_hz = float(self.detection.get('search_rate_hz', 3.0))
+        self._min_search_interval = (
+            1.0 / self.search_rate_hz if self.search_rate_hz > 0.0 else 0.0
+        )
+        self._last_search_time = 0.0
+        # Lock over several detections instead of the first frame: accumulate
+        # this many pose samples, then lock on the smoothed (median/averaged)
+        # pose so one bad solvePnP frame can't set a wrong transform.
+        self.lock_min_samples = max(
+            1, int(self.detection.get('lock_min_samples', 8))
+        )
+        self._pose_samples = []  # list of (quat_xyzw (4,), t_xyz (3,))
 
         self.bridge = CvBridge()
         self.camera_matrix = None
@@ -166,6 +182,13 @@ class _MarkerTracker:
             self._log_status("Waiting for camera_info before pose estimation can start.")
             return
 
+        # Throttle: only run the expensive conversion + detection at
+        # search_rate_hz, not at the full camera frame rate (~25 Hz).
+        now = time.time()
+        if now - self._last_search_time < self._min_search_interval:
+            return
+        self._last_search_time = now
+
         color = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
 
@@ -202,12 +225,46 @@ class _MarkerTracker:
             )
             return
 
-        self._publish_camera_pose(rvec, tvec)
-
-    def _publish_camera_pose(self, rvec, tvec):
-        # solvePnP gives marker_in_camera. We want camera_in_marker.
+        # solvePnP gives marker_in_camera; invert to camera_in_marker and
+        # accumulate for a smoothed, multi-frame lock (robust to a bad frame).
         quat_inv, t_inv = _invert_pose(rvec, tvec)
+        self._accumulate_and_maybe_lock(quat_inv, t_inv)
 
+    def _accumulate_and_maybe_lock(self, quat_inv, t_inv):
+        """Collect pose samples; lock on the smoothed pose once enough arrive."""
+        self._pose_samples.append((
+            np.asarray(quat_inv, dtype=np.float64),
+            np.asarray(t_inv, dtype=np.float64),
+        ))
+        n = len(self._pose_samples)
+        if n < self.lock_min_samples:
+            self._log_status(
+                f"Marker {self.marker_id}: collecting pose samples "
+                f"({n}/{self.lock_min_samples}) before locking."
+            )
+            return
+        quat, trans = self._smooth_samples()
+        self._publish_camera_pose(quat, trans)
+
+    def _smooth_samples(self):
+        """Median translation + sign-aligned mean quaternion over the samples."""
+        quats = np.stack([s[0] for s in self._pose_samples])  # (N, 4) xyzw
+        trans = np.stack([s[1] for s in self._pose_samples])  # (N, 3)
+        # Median translation is robust to a single outlier frame.
+        trans_med = np.median(trans, axis=0)
+        # Average quaternions: q and -q are the same rotation, so align every
+        # sample's sign to the first, then mean + normalize. Sufficient for the
+        # small spread of a static marker (no full eigen-decomposition needed).
+        ref = quats[0]
+        signs = np.where(quats @ ref < 0.0, -1.0, 1.0)
+        aligned = quats * signs[:, None]
+        q_mean = aligned.mean(axis=0)
+        norm = np.linalg.norm(q_mean)
+        q_mean = ref if norm < 1e-9 else q_mean / norm
+        return q_mean, trans_med
+
+    def _publish_camera_pose(self, quat_inv, t_inv):
+        """Publish the (inverted + smoothed) camera-in-marker TF, then lock."""
         stamp = self.node.get_clock().now().to_msg()
         tf_msg = _make_static_tf(
             stamp,
@@ -227,8 +284,9 @@ class _MarkerTracker:
                 1.0, self._rebroadcast_locked_tf
             )
         self.node.get_logger().info(
-            f"[{self.cfg['name']}] Locked: published static TF "
-            f"{self.child_frame} -> {self.camera_output_frame}"
+            f"[{self.cfg['name']}] Locked: published smoothed static TF "
+            f"{self.child_frame} -> {self.camera_output_frame} "
+            f"from {len(self._pose_samples)} samples"
         )
 
     def _rebroadcast_locked_tf(self):
