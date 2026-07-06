@@ -171,9 +171,10 @@ def generate_launch_description():
                         'imgsz':                 1024,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
-                        # Uncapped from 5; imgsz stays 1024 (trained size) so the Orin GPU
-                        # ceiling is ~7 Hz — 10 lets it run flat-out without over-scheduling.
-                        'inference_rate_hz':     10.0,
+                        # 2 Hz keeps the continuous world model fresh for get_world_model
+                        # (< tracker max_age 3 s so tool IDs stay stable) at a fraction of the
+                        # GPU/CPU cost — the tray is mostly static, so 2 Hz is plenty.
+                        'inference_rate_hz':     2.0,
                         'fixed_tool_plane_z_m':  0.04,
                         'publish_annotated_image': True,
                     }],
@@ -236,7 +237,11 @@ def generate_launch_description():
                         'imgsz':                 1024,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
-                        'inference_rate_hz':     4.0,
+                        # Slow "stream" — one frame every 5 s. Reclaim = intermediate
+                        # storage (not time-critical); keeps the RViz annotation updating
+                        # at negligible load. NOTE: if the reclaim is later wired into a
+                        # tracker/world model, set that tracker's max_age > 5 s.
+                        'inference_rate_hz':     0.2,
                         'fixed_tool_plane_z_m':  0.04,
                         'publish_annotated_image': True,
                         'detections_topic':      '/reclaim_tools_obb',
