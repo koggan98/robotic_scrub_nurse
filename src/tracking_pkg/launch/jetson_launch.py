@@ -131,8 +131,9 @@ def generate_launch_description():
                     parameters=[{
                         'camera_frame': 'scene_camera_color_optical_frame',
                         'world_frame': 'world',
-                        'max_num_hands': 2,
-                        # Use more of the ~25-27 Hz scene feed (capped by camera rate).
+                        # 1 hand ~halves MediaPipe CPU cost (runs on CPU/XNNPACK, not GPU).
+                        'max_num_hands': 1,
+                        # Use more of the ~25 Hz scene feed (capped by camera / MediaPipe rate).
                         'publish_rate_hz': 30.0,
                         'annotated_image_max_hz': 15.0,
                     }],
@@ -170,8 +171,9 @@ def generate_launch_description():
                         'imgsz':                 1024,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
-                        # Raised 5->15; the Orin (MAXN) sustains ~10-15 Hz YOLO-OBB@1024.
-                        'inference_rate_hz':     15.0,
+                        # Uncapped from 5; imgsz stays 1024 (trained size) so the Orin GPU
+                        # ceiling is ~7 Hz — 10 lets it run flat-out without over-scheduling.
+                        'inference_rate_hz':     10.0,
                         'fixed_tool_plane_z_m':  0.04,
                         'publish_annotated_image': True,
                     }],
