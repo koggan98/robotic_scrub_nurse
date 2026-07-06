@@ -96,6 +96,11 @@ class ToolDetectionNode(Node):
         self.declare_parameter('depth_max_m', 2.0)
         self.declare_parameter('fixed_tool_plane_z_m', 0.030)
         self.declare_parameter('publish_annotated_image', True)
+        # Output topics as params so a second instance (e.g. the reclaim tray on
+        # /scene_camera) can publish to distinct topics without colliding with the
+        # instrument-tray detector. Defaults keep the existing tray behaviour.
+        self.declare_parameter('detections_topic', '/detected_tools_obb')
+        self.declare_parameter('annotated_topic', '/tool_detection/annotated_image')
 
         self.model_path = self.get_parameter('model_path').value
         ns = self.get_parameter('tray_camera_namespace').value.rstrip('/')
@@ -111,6 +116,8 @@ class ToolDetectionNode(Node):
         self.depth_max_m = float(self.get_parameter('depth_max_m').value)
         self.fixed_tool_plane_z_m = float(self.get_parameter('fixed_tool_plane_z_m').value)
         self.publish_annotated_image = bool(self.get_parameter('publish_annotated_image').value)
+        self.detections_topic = self.get_parameter('detections_topic').value
+        self.annotated_topic = self.get_parameter('annotated_topic').value
 
         self.bridge = CvBridge()
         self._lock = Lock()
@@ -132,10 +139,10 @@ class ToolDetectionNode(Node):
         )
 
         self.tools_pub = self.create_publisher(
-            ToolDetectionArray, '/detected_tools_obb', 10
+            ToolDetectionArray, self.detections_topic, 10
         )
         self.annotated_pub = (
-            self.create_publisher(Image, '/tool_detection/annotated_image', 10)
+            self.create_publisher(Image, self.annotated_topic, 10)
             if self.publish_annotated_image else None
         )
 

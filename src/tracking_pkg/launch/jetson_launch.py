@@ -207,6 +207,67 @@ def generate_launch_description():
             }],
         ),
 
+        # ── Reclaim Tray perception (2nd chain on the SCENE camera) ─
+        # The scene camera doubles as the reclaim-tray camera (localized via marker
+        # 105). Detection + grasp + semantics analogous to the instrument tray, on
+        # distinct /reclaim_* topics, at a lower rate (reclaim = intermediate storage).
+        # Runs alongside hand_tracker on the same camera. NOT wired into the world
+        # model / execution yet (later phase).
+        # TODO: set fixed_tool_plane_z_m to the measured reclaim tray surface height.
+        TimerAction(
+            period=11.0,
+            actions=[
+                Node(
+                    package='tracking_pkg',
+                    executable='tool_detection_node.py',
+                    name='reclaim_tool_detection_node',
+                    output='screen',
+                    parameters=[{
+                        'model_path': os.environ.get(
+                            'OBB_MODEL_PATH',
+                            os.path.join(os.path.expanduser('~'),
+                                         'robotic_scrub_nurse_ws',
+                                         'ros_unrelated_scripts', 'first_obb_test.pt'),
+                        ),
+                        'tray_camera_namespace': '/scene_camera',
+                        'tray_camera_frame':     'scene_camera_color_optical_frame',
+                        'world_frame':           'world',
+                        'conf_threshold':        0.35,
+                        'imgsz':                 1024,
+                        'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
+                        'handle_class_name':     'handle',
+                        'inference_rate_hz':     4.0,
+                        'fixed_tool_plane_z_m':  0.04,
+                        'publish_annotated_image': True,
+                        'detections_topic':      '/reclaim_tools_obb',
+                        'annotated_topic':       '/reclaim_detection/annotated_image',
+                    }],
+                ),
+            ]
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='grasp_geometry_node.py',
+            name='reclaim_grasp_geometry_node',
+            output='screen',
+            parameters=[{
+                'world_frame':      'world',
+                'grasp_offset_m':   0.035,
+                'detections_topic': '/reclaim_tools_obb',
+                'candidates_topic': '/reclaim_grasp_candidates',
+            }],
+        ),
+        Node(
+            package='tracking_pkg',
+            executable='tool_semantics_node.py',
+            name='reclaim_tool_semantics_node',
+            output='screen',
+            parameters=[{
+                'input_topic':  '/reclaim_grasp_candidates',
+                'output_topic': '/reclaim_enriched_grasp_candidates',
+            }],
+        ),
+
         # ── World Model ───────────────────────────────────────────
         Node(
             package='tracking_pkg',
