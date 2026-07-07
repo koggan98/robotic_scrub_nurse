@@ -7,95 +7,74 @@
 - Contribution and boundary policy: `AGENTS.md`.
 
 ## Summary
-This roadmap keeps the core thesis streams intact while enforcing:
-- hybrid Ubuntu runtime with optional Mac-over-SSH operation,
-- available direct-control alternative path (`socket_mover` with `ur_rtde`),
+The system has moved from a single-host, numeric `/tool_selection` MoveIt loop to a
+**distributed speech → LLM → skill-action → motion** architecture:
+- perception + AI on a Jetson Orin Nano, robot control on an Intel NUC, over a wired CycloneDDS link,
+- an OpenAI function-calling orchestrator driving MoveIt skill actions,
+- a persistent perception-driven world model and force-guided handover,
 - policy-aligned execution and logging standards defined in `AGENTS.md`.
 
-## Workstreams
+## Delivered Workstreams
 
-## Workstream A: Observability and Logging
-- Objective: improve traceability of perception and handover decisions.
-- Outputs:
-  - explicit runtime decision logging for hand detection and reachability,
-  - reproducible terminal-level diagnostics.
-- Dependency: logging standards in `AGENTS.md`.
+### WS-1: Distributed runtime (NUC / Jetson)
+- System split across the Intel NUC (robot control) and Jetson Orin Nano (perception/AI).
+- Per-machine launches (`nuc_launch.py`, `jetson_launch.py`) and CycloneDDS configs.
+- Orin CPU/GPU tuning: ArUco lock-once + subscription teardown, collision publishers moved to the
+  NUC, deferred image conversion, staggered model loads, detection rates fitted to the Orin.
 
-## Workstream B: Reachability Classification and Audio Feedback
-- Objective: classify target hand poses via MoveIt handover planning and provide selective audio feedback.
-- Outputs:
-  - runtime event interface `/handover_event` (`std_msgs/msg/String`) with:
-    - `gesture_detected` (only in valid waiting state after tool pickup),
-    - `reachability:unreachable_plan_failed` (when MoveIt handover planning fails),
-  - audio behavior restricted to gesture-detected and unreachable outcomes,
-  - explicit no-audio behavior for non-waiting or pre-pickup hand pose messages.
-- Dependency: baseline data flow in `ARCHITECTURE.md`.
+### WS-2: Speech + LLM orchestration
+- Local speech-to-text (`asr_node`, faster-whisper, energy VAD, `/user_speech`).
+- OpenAI function-calling orchestrator (`llm_orchestrator_node`) exposing robot skills as tools
+  (`get_world_model`, `pick_and_handover`, `return_tool`, `release_tool`, `return_home`, `abort`).
+- Terse status feedback on `/system_response`; audio cues via `handover_sound_publisher`.
 
-## Workstream C: Target-Hand Selection and ROI Visualization
-- Objective: track intended target hand instead of defaulting to first detection.
-- Outputs:
-  - target-hand selection strategy,
-  - ROI definition and frame visualization.
+### WS-3: Perception + world model
+- YOLOv8-OBB instrument detection with body/handle pairing (`tool_detection_node`).
+- Grasp geometry + semantic enrichment from `tool_knowledge_base.yaml`.
+- Persistent world model with stable tool IDs, serialized as JSON for the LLM (`world_model_node`).
 
-## Workstream D: Context-Aware Planning
-- Objective: replace hardcoded pickup/handover orientation behavior with context-aware strategy.
-- Outputs:
-  - tool/affordance-aware orientation selection,
-  - non-hardcoded pickup decision logic.
+### WS-4: Robust skill execution
+- C++ MoveIt skill executor with pick / handover / release / return_home / return_tool actions.
+- Pre-flight full-sequence planning, grasp verification via Robotiq object-detect, escalating local
+  re-grasp, mid-transport loss abort, holding guard, and force-guided release.
+- Autonomous LLM retries on dropped/lost tools (capped).
 
-## Cross-Cutting Item 1: Execution Context Hardening
-- Verify commands and runbooks are valid for Ubuntu runtime execution.
-- Provide SSH-friendly operator command variants where relevant.
-- Keep development host vs runtime host separation explicit.
+## Open Workstreams
 
-## Cross-Cutting Item 2: Direct Control Path (Alternative Runtime)
-- `socket_mover` is implemented as a MoveIt-free alternative runtime path.
-- IK/planning is externalized to the UR controller via `ur_rtde`.
-- MoveIt runtime remains available and primary for thesis baseline comparisons.
+### WS-5: Reclaim-tray integration
+- A `reclaim_*` perception/grasp/semantics chain already runs on the scene camera (0.5 Hz) but is
+  **not yet wired** into the world model or execution. Objective: fold it into `world_model_node`
+  (with an appropriate tracker max-age) and support reclaim/return-to-holder flows.
+
+### WS-6: Context-aware planning
+- Replace remaining hardcoded pickup/handover orientation behavior with tool/affordance-aware
+  strategy driven by the knowledge base (`grip_strategy`, `handover_rule`, `functional_end`).
+
+### WS-7: Target-hand robustness and evaluation
+- Robust target-hand selection (intended receiver vs. first detection).
+- Consolidated experiment/benchmark tooling and thesis-ready artifact set.
+
+## Cross-Cutting Items
+- **Execution context hardening:** keep runbooks valid for the distributed NUC/Jetson runtime and
+  SSH-friendly; keep the single-host `llm_launch.py` path working as a fallback.
+- **Observability:** ROS-native logging of hand detection, reachability, and accepted/rejected
+  actions with reasons (per `AGENTS.md`).
+- **Legacy paths:** `loop_mover` (numeric `/tool_selection`) and `socket_mover` (RTDE) remain in the
+  tree as alternative/dormant paths; keep safety/logging behavior aligned if they are revived.
 
 ## Milestones
 
-## M0: Baseline Documentation and Alignment
-- Deliverables:
-  - synchronized doc ownership split,
-  - canonical references across `AGENTS.md`, `ARCHITECTURE.md`, `PLAN.md`.
-
-## M1: Reachability Observability
-- Deliverables:
-  - reliable reachable/unreachable traceability in runtime logs,
-  - acceptance checks for decision-path visibility.
-
-## M2: Audio Feedback Integration
-- Deliverables:
-  - integrated event-to-audio signaling via `/handover_event`,
-  - speaker output on Ubuntu runtime via `aplay`,
-  - acceptance checks:
-    - one tone on `gesture_detected`,
-    - one negative tone on `reachability:unreachable_plan_failed`,
-    - no sound for hand pose messages while not waiting for gesture.
-
-## M3: Target-Hand Robustness
-- Deliverables:
-  - target-hand selection implementation concept,
-  - ROI visualization and validation criteria.
-
-## M4: Context-Aware Planning Prototype
-- Deliverables:
-  - context/affordance-aware orientation and pickup strategy,
-  - initial performance/behavior validation protocol.
-
-## M5: Evaluation and Thesis Packaging
-- Deliverables:
-  - consolidated experiment and benchmark outputs,
-  - thesis-ready artifact set (architecture, policy alignment, roadmap completion).
-
-## Decision State: `socket_mover`
-- IK/planning is intentionally moved outside MoveIt for the socket runtime path.
-- Current mode: implemented as alternative path, not removed from scope.
-- Ongoing requirement: keep safety/logging behavior aligned between MoveIt and socket runtimes.
+- **M0 — Baseline documentation alignment:** docs (`ARCHITECTURE.md`, `README.md`, `AGENTS.md`,
+  `deployment_guide.md`, `PLAN.md`) reflect the distributed LLM/skill architecture. *(current)*
+- **M1 — Distributed runtime stable:** NUC/Jetson bring-up reliable within the Orin's resource budget.
+- **M2 — Speech-to-handover loop:** spoken command → pick → gesture-gated, force-released handover.
+- **M3 — Reclaim-tray integration:** reclaim perception wired into the world model and execution.
+- **M4 — Context-aware planning prototype:** affordance-aware pickup/handover orientation.
+- **M5 — Evaluation and thesis packaging:** consolidated benchmarks and thesis-ready artifacts.
 
 ## Interfaces and Types
-- Implemented runtime interface:
-  - `/handover_event` (`std_msgs/msg/String`) with events:
-    - `gesture_detected`
-    - `reachability:unreachable_plan_failed`
+- Actions: `PickTool`, `HandoverTool`, `ReleaseTool`, `ReturnHome`, `ReturnTool` (`tracking_msgs/action`).
+- Services: `GetWorldModel`, `GetWorldState`, `GetToolCandidates`, `GetGraspApproachPose`,
+  `BuildWorldModel` (`tracking_msgs/srv`).
+- Topics: `/user_speech`, `/system_response`, `/hand_state`, `/hand_gesture`, `/system_state_update`,
+  `/tool_grasped`, `/handover_event`, `/collision_object`.

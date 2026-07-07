@@ -19,15 +19,23 @@ When implementing new features of external libraries or APIs (but not internal),
 
 ## Scope of Allowed Modifications
 - Primary ROS feature work: `src/tracking_pkg`.
+- Custom interfaces (msg/srv/action) live in and are built from `src/tracking_msgs`. The duplicated
+  `msg|srv|action` trees under `src/tracking_pkg` are legacy — do not add new interfaces there.
 - Do not modify `src/Universal_Robots_ROS2_Gazebo_Simulation` unless explicitly requested.
 - Non-ROS tasks (standalone logging, helper scripts, data utilities) belong in `ros_unrelated_scripts`.
 
 ## Runtime Policy Enforcement
-- Active runtime path is MoveIt-based:
-  - launch entry: `src/tracking_pkg/launch/loop_launch.py`
-  - core handover node: `src/tracking_pkg/src/moveit_mover/loop_mover.cpp`
-- `socket_mover` is currently dormant/deferred and not part of the active runtime.
-- Do not route new behavior into `socket_mover` unless explicitly requested and scoped.
+- Active runtime path is the **LLM + MoveIt skill-action** pipeline (speech → LLM → skills → motion):
+  - distributed launch: `src/tracking_pkg/launch/jetson_launch.py` (perception/AI, Jetson) +
+    `src/tracking_pkg/launch/nuc_launch.py` (robot control, NUC)
+  - single-host launch: `src/tracking_pkg/launch/llm_launch.py`
+  - reasoning core: `src/tracking_pkg/src/llm/llm_orchestrator_node.py`
+  - motion core: `src/tracking_pkg/src/execution/skill_executor_node.cpp`
+- The LLM provider is **OpenAI** (`gpt-4o-mini`, set in the launch files). Treat the launch
+  parameters as authoritative over `config/system_config.yaml` where they disagree.
+- Legacy/alternative paths — do not route new behavior into these unless explicitly requested:
+  - `loop_mover.cpp` with the numeric `/tool_selection` topic (older MoveIt handover loop)
+  - `socket_mover` with `ur_rtde` (MoveIt-free, dormant/deferred)
 
 ## Logging and Observability Standards
 - Use ROS-native logs:

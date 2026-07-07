@@ -10,12 +10,19 @@
 
 This repository contains the current development workspace for the **Robotic Scrub Nurse** research platform.
 
-The project investigates collaborative robotic instrument handover using a **UR3e manipulator**, combining:
+The project investigates collaborative robotic instrument handover using a **UR3e manipulator**,
+driven by a **speech → LLM → skill-action → motion** pipeline and combining:
 
-- motion planning and manipulation
-- human pose and hand tracking
-- force-guided interaction
+- spoken-command understanding (local speech-to-text + an LLM orchestrator)
+- perception-driven grasp reasoning (YOLOv8-OBB instrument detection)
+- motion planning and manipulation (MoveIt 2)
+- human hand tracking and gesture-triggered handover
+- force-guided interaction and robust grasp/loss recovery
 - ergonomic tool transfer strategies
+
+The runtime is **distributed across two machines**: an **NVIDIA Jetson Orin Nano** (perception + AI)
+and an **Intel NUC** (robot control + MoveIt). See [ARCHITECTURE.md](ARCHITECTURE.md) for the current
+system topology and interface contract.
 
 The goal is to create an extensible research platform for evaluating intelligent robotic assistance in surgical environments.
 
@@ -35,14 +42,25 @@ The goal is to create an extensible research platform for evaluating intelligent
 
 ### tracking_pkg
 
-Core experimental package containing:
+Core experimental package, organized by responsibility under `src/tracking_pkg/src/`:
 
-- motion execution logic (MoveIt 2)
-- hand tracking integration (MediaPipe)
-- event-based handover audio feedback (`/handover_event` -> system speakers via `paplay`/`pw-play`/`aplay`)
-- tool selection workflows
-- scene and visualization helpers
-- RealSense camera integration
+- `perception/` — RealSense integration, YOLOv8-OBB instrument detection, MediaPipe hand
+  tracking + gesture detection, ArUco camera localization
+- `reasoning/` — grasp geometry, tool semantics (knowledge base), and the persistent world model
+- `llm/` — the OpenAI function-calling orchestrator (`llm_orchestrator_node`)
+- `execution/` — the C++ MoveIt skill executor (pick / handover / release / return), gripper
+  control, and force-guided release
+- `interfaces/` — speech-to-text (`asr_node`), handover audio cues, and the operator CLI
+- `publisher/` — MoveIt collision objects (instrument tray, reclaim tray, MiR base)
+
+Two per-machine launch files bring the system up: `jetson_launch.py` (perception + AI) and
+`nuc_launch.py` (robot control). `llm_launch.py` runs the whole graph on a single machine.
+
+### tracking_msgs
+
+The custom interface package (`msg/ srv/ action/`) that defines the contract between subsystems —
+`PickTool`/`HandoverTool`/… actions, `GetWorldModel`/`GetWorldState`/… services, and the
+`ToolDetection`/`GraspCandidate`/`HandState`/`SystemState` messages.
 
 ### Universal_Robots_ROS2_Gazebo_Simulation
 
@@ -54,16 +72,16 @@ Official UR simulation environment included as a git submodule for testing and d
 
 ### Current Focus
 
-- Migration and cleanup from earlier proof-of-concept systems
-- Establishing a stable baseline for thesis development
-- Modularization of motion and interaction logic
-- Preparation for advanced planning and semantic handling
+- Distributed NUC/Jetson runtime (robot control vs. perception/AI) and Orin CPU/GPU tuning
+- Speech + LLM orchestration of robot skills via function-calling
+- Perception-driven grasp reasoning and a persistent world model
+- Robust grasp verification, loss recovery, and force-guided handover
 
 ### Planned Additions
 
-- Advanced motion planning pipelines
-- Semantic tool handling
-- Perception-driven grasp reasoning
+- Wiring the reclaim-tray perception chain into the world model and execution
+- Context/affordance-aware pickup and handover orientation
+- Target-hand selection robustness and evaluation tooling
 
 ---
 
@@ -77,22 +95,29 @@ Official UR simulation environment included as a git submodule for testing and d
 ### Hardware Requirements (for physical deployment)
 
 - Universal Robots UR3e manipulator
-- Intel RealSense D455 camera
 - Robotiq 2F gripper
+- 2× Intel RealSense D455 cameras (scene + instrument tray)
+- Compute: NVIDIA Jetson Orin Nano (perception/AI) + Intel NUC (robot control), or a single
+  GPU workstation for the all-in-one `llm_launch.py` path
+- USB microphone for spoken commands (Samson Q2U in the reference setup)
 
 ### Software Dependencies
 
 - **ROS 2 Humble**: Core robotics framework
-- **MoveIt 2**: Motion planning
-- **ur_rtde**: Direct UR RTDE motion interface for the socket runtime path
-- **Intel RealSense SDK**: Camera integration
-- **MediaPipe**: Hand tracking and pose estimation
+- **MoveIt 2**: Motion planning (installed on the robot-control machine)
+- **Intel RealSense SDK** + `realsense2_camera`: Camera integration
+- **Ultralytics (YOLOv8-OBB)** + **PyTorch**: instrument detection
+- **MediaPipe**: Hand tracking and gesture detection
+- **faster-whisper** + **sounddevice**: local speech-to-text and microphone capture
+- **OpenAI Python SDK**: LLM orchestrator (requires `OPENAI_API_KEY`)
+- **ur_rtde**: Direct UR RTDE motion interface for the legacy socket runtime path
 - **ALSA utils (`aplay`)**: runtime speaker playback for handover events
 
 ### Python Packages
 
 ```bash
-pip install mediapipe pyrealsense2 tabulate ur_rtde ultralytics transformers torch pillow
+pip install mediapipe pyrealsense2 ultralytics torch pillow \
+            faster-whisper sounddevice openai tabulate ur_rtde
 ```
 
 ---
@@ -121,7 +146,21 @@ ros2 launch ur_simulation_gazebo ur_sim_control.launch.py
 
 ### 4. Deploy on Hardware
 
-For detailed step-by-step instructions on physical deployment, see **[Deployment Guide](deployment_guide.md)**.
+The runtime is distributed across two machines that share a `ROS_DOMAIN_ID` over the wired
+`192.168.12.0/24` link (per-machine CycloneDDS configs `cyclone_dds_nuc.xml` / `cyclone_dds_jetson.xml`):
+
+```bash
+# On the Jetson Orin Nano (perception + AI); needs OPENAI_API_KEY in the environment
+ros2 launch tracking_pkg jetson_launch.py
+
+# On the Intel NUC (robot control); start the UR driver separately first
+ros2 launch tracking_pkg nuc_launch.py ur_type:=ur3e
+```
+
+To run everything on a single GPU machine instead, use `ros2 launch tracking_pkg llm_launch.py`.
+
+For detailed step-by-step instructions (network, UR description overrides, permissions, startup
+order), see **[Deployment Guide](deployment_guide.md)**.
 
 ## Standalone YOLO Test
 
@@ -217,7 +256,7 @@ To request a top-down grasp pose in `world` for a tracked TF frame such as `tool
 ros2 service call /get_grasp_approach_pose tracking_pkg/srv/GetGraspApproachPose "{target_frame: tool_holder_frame}"
 ```
 
-`loop_launch.py` starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `-frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
+`nuc_launch.py` (and the single-host `llm_launch.py`) starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `-frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
 
 ## ROS Frame Capture for YOLO Training
 
@@ -419,7 +458,16 @@ ros2 run tracking_pkg joint_state_jogger_node --ros-args \
 
 ---
 
-## Combined MoveIt + Tracking Launch
+---
+
+> **⚠️ Legacy / alternative runtime paths below.**
+> The sections that follow (`loop_with_moveit_launch.py`, the Loop Mover profiles, and the Socket
+> RTDE launch) document the **older** MoveIt loop and the MoveIt-free RTDE path, driven by the
+> numeric `/tool_selection` interface. They are kept for reference and bench testing. The **active**
+> runtime is the LLM + skill-action pipeline via `jetson_launch.py` + `nuc_launch.py` (distributed)
+> or `llm_launch.py` (single host) — see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Combined MoveIt + Tracking Launch (legacy)
 
 If you want Adam-style startup (MoveIt RViz + tracking topics in one command), use:
 

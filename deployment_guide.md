@@ -2,55 +2,69 @@
 
 ## Robotic Scrub Nurse (UR3e)
 
-This document describes how to deploy and run the Robotic Scrub Nurse system on a local workstation connected to a physical UR3e robot.
+This document describes how to deploy and run the Robotic Scrub Nurse system. The active runtime is
+**distributed across two machines**:
+
+- **NVIDIA Jetson Orin Nano** — perception + AI (cameras, detection, hand tracking, world model,
+  speech-to-text, LLM orchestrator). Launch: `jetson_launch.py`.
+- **Intel NUC** — robot control (UR driver, MoveIt, skill execution, gripper, RViz).
+  Launch: `nuc_launch.py`.
+
+Both machines share the same `ROS_DOMAIN_ID` over a wired `192.168.12.0/24` link using CycloneDDS in
+unicast-only mode (per-machine configs `cyclone_dds_nuc.xml` / `cyclone_dds_jetson.xml`).
+
+> To run everything on a single GPU machine (with the robot attached) instead of the two-machine
+> split, skip to [Single-host mode](#9-single-host-mode) and use `llm_launch.py`.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full topology and interface contract.
 
 ---
 
 ## 1. System Overview
 
-The system consists of three main layers:
+Three logical layers, mapped onto the two machines:
 
-1. **Hardware drivers**
-   - UR robot driver
-   - Intel RealSense camera
-
-2. **Motion planning backend**
-   - MoveIt
-
-3. **Application logic**
-   - Hand tracking
-   - Tool selection
-   - Motion execution
-   - Force-guided release
-
-Runtime is started across dedicated terminals; multiple components can be grouped in one launch file.
+1. **Hardware drivers** — UR robot driver, 2× Intel RealSense D455 (NUC drives the robot; the Jetson
+   drives the cameras).
+2. **Motion planning backend** — MoveIt 2 (`move_group`) on the NUC.
+3. **Application logic** — speech-to-text → LLM orchestrator → skill actions → MoveIt motion,
+   plus hand tracking, world model, and force-guided release.
 
 ---
 
 ## 2. Prerequisites
 
-### Software
+### Software (both machines)
 
-Required:
+- Ubuntu 22.04 + ROS 2 Humble, colcon
+- CycloneDDS (`ros-humble-rmw-cyclonedds-cpp`)
 
-- Ubuntu 22.04 + ROS2 Humble
-- colcon
-- MoveIt 2
-- Universal Robots ROS 2 Driver
-- Intel RealSense SDK
-- ALSA utils (`aplay`) for handover sound playback
+### NUC (robot control)
+
+- MoveIt 2, Universal Robots ROS 2 Driver, `ur_moveit_config`
+- ALSA utils (`aplay`) for handover sound playback (if the speaker is on the NUC)
+
+### Jetson (perception + AI)
+
+- Intel RealSense SDK + `realsense2_camera`
+- JetPack / CUDA for YOLO GPU inference
+- `OPENAI_API_KEY` in the environment (for the LLM orchestrator)
 
 ### Python Dependencies
 
 ```bash
-pip install mediapipe pyrealsense2 tabulate ur_rtde
+# NUC
+pip install ur_rtde tabulate
+# Jetson
+pip install mediapipe pyrealsense2 ultralytics torch pillow faster-whisper sounddevice openai
 ```
 
 ---
 
-## 3. Required UR Description Overrides
+## 3. Required UR Description Overrides (NUC)
 
-This project depends on two non-default `ur_description` overrides. Apply them before the first runtime start so the deployed robot model matches the tested thesis setup.
+This project depends on two non-default `ur_description` overrides. Apply them on the **NUC** before
+the first runtime start so the deployed robot model matches the tested thesis setup.
 
 The canonical replacement files are stored in this repository:
 
@@ -77,65 +91,63 @@ sudo cp ~/robotic_scrub_nurse_ws/files/joint_limits.yaml \
   /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
 ```
 
-The two overrides are required for the active setup:
-
 - `ur.urdf.xacro` adds the project-specific tool cylinder to the UR description.
 - `joint_limits.yaml` applies the tested UR3e joint constraints used by this project.
 
-Optional verification:
+Warning: these overrides modify installed `ur_description` files under `/opt/ros/humble`. Reapply
+them after ROS, `ur_description`, or UR driver updates, as package updates can overwrite them.
 
-```bash
-ls -l /opt/ros/humble/share/ur_description/urdf/ur.urdf.xacro
-ls -l /opt/ros/humble/share/ur_description/config/ur3e/joint_limits.yaml
-```
-
-Warning: these overrides modify installed `ur_description` files under `/opt/ros/humble`. Reapply them after ROS, `ur_description`, or UR driver updates, as package updates can overwrite them.
+> Note: `nuc_launch.py` deliberately uses the **standard** `ur_moveit_config` bring-up. The vendored
+> `rsn_ur_moveit.launch.py` / `rsn_ur.urdf.xacro` reference an old UR layout and are broken against
+> UR driver 2.5/2.7 — do not use them.
 
 ---
 
 ## 4. Network Setup
 
-The robot must be configured with a static IP address within the network settings.
+### Robot
 
-### Robot Example Configuration
+The UR controller must have a static IP reachable from the NUC. Example:
 
-- Robot IP: 192.168.12.10
-- Netmask: 255.255.255.0
-- Gateway: 0.0.0.0
+- Robot IP: 192.168.12.10, Netmask: 255.255.255.0, Gateway: 0.0.0.0
 
-Update the IP address in the following files:
-- `gripper_mover.py`
-- `gripper_opener_with_zeroer.py`
+Under `Installation` on the UR control panel, set the host IP to the NUC's address. The gripper
+control node reads the robot IP from the `UR_ROBOT_IP` environment variable.
 
-Then update the robot IP in the launch command accordingly:
+### NUC ↔ Jetson DDS link
 
-```bash
-ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.12.10 launch_rviz:=false
-```
-
-Use the following command to find your workstation's IP address:
+Both machines sit on the wired `192.168.12.0/24` switch and use unicast CycloneDDS:
 
 ```bash
-ifconfig
+# NUC
+export CYCLONEDDS_URI=file://$HOME/robotic_scrub_nurse_ws/cyclone_dds_nuc.xml
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export ROS_DOMAIN_ID=<same on both machines>
+
+# Jetson
+export CYCLONEDDS_URI=file://$HOME/robotic_scrub_nurse_ws/cyclone_dds_jetson.xml
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export ROS_DOMAIN_ID=<same on both machines>
 ```
-Then, under `Installation` in the UR control panel, change the host IP according to the terminal output.
+
+The configs pin the NUC to interface `192.168.12.5` and the Jetson to `192.168.12.6`. Verify
+cross-machine discovery with `ros2 topic list` on each side after both launches are up.
 
 ---
 
 ## 5. File Permissions
 
-If scripts are not executable, grant permissions:
+If scripts are not executable, grant permissions (on the machine that runs them):
 
 ```bash
-chmod +x src/tracking_pkg/src/publisher/camera_publisher.py
-chmod +x src/tracking_pkg/src/publisher/frame_publisher.py
-chmod +x src/tracking_pkg/src/publisher/gesture_pose_publisher.py
-chmod +x src/tracking_pkg/src/hand_tracker/hand_tracker.py
-chmod +x src/tracking_pkg/src/moveit_mover/gripper_mover.py
-chmod +x src/tracking_pkg/src/moveit_mover/gripper_opener_with_zeroer.py
-chmod +x src/tracking_pkg/src/moveit_mover/reclaim_controller.py
-chmod +x src/tracking_pkg/src/publisher/tool_selection.py
-chmod +x src/tracking_pkg/src/publisher/handover_sound_publisher.py
+# Jetson
+chmod +x src/tracking_pkg/src/perception/*.py \
+         src/tracking_pkg/src/reasoning/*.py \
+         src/tracking_pkg/src/llm/*.py \
+         src/tracking_pkg/src/interfaces/*.py
+# NUC
+chmod +x src/tracking_pkg/src/execution/*.py \
+         src/tracking_pkg/src/publisher/*.py
 ```
 
 ---
@@ -148,11 +160,7 @@ Set up the hardware according to the system setup:
 
 ---
 
-## 7. Startup Procedure
-
-Start each component in a separate terminal, in the following order:
-
-### Terminal 0 (once): Build + source workspace
+## 7. Build (both machines)
 
 ```bash
 cd ~/robotic_scrub_nurse_ws
@@ -161,95 +169,68 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 ```
 
-### Terminal 1: UR Hardware Driver
+---
+
+## 8. Startup Procedure (distributed)
+
+Bring up the machines in this order. Each terminal must first `source /opt/ros/humble/setup.bash`,
+`source install/setup.bash`, and export the DDS env vars from [Section 4](#4-network-setup).
+
+### NUC — Terminal 1: UR Hardware Driver
 
 ```bash
-cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
   ur_type:=ur3e \
   robot_ip:=192.168.12.10 \
   launch_rviz:=false
 ```
 
-Add `External Control` on the UR control panel and start the program.
+On the UR control panel add `External Control` and start the program, then activate the Robotiq gripper.
 
-Activate the robotiq gripper.
-
-### Terminal 2: Tool Selector
+### NUC — Terminal 2: Robot control stack (MoveIt + skill executor + RViz)
 
 ```bash
-cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run tracking_pkg tool_selection.py
+export UR_ROBOT_IP=192.168.12.10
+ros2 launch tracking_pkg nuc_launch.py ur_type:=ur3e
 ```
 
-### Terminal 3 (recommended): MoveIt + RViz + tracking loop
+Pass `tracking_rviz:=false` for a headless NUC (e.g. over SSH without a display).
 
-This starts:
-- `ur_moveit_config` (without its default RViz)
-- RViz with preloaded tracking displays
-- TF visualization with directly visible frames (`camera_frame`, `aruco_board_frame`, and robot TCP frame)
-- `tracking_pkg/loop_launch.py` (camera, frames, hand tracker, loop mover, sound node, ...)
+### Jetson — Terminal 3: Perception + AI stack
 
 ```bash
-cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch tracking_pkg loop_with_moveit_launch.py \
-  ur_type:=ur3e \
-  tracking_rviz:=true
+export OPENAI_API_KEY=sk-...
+ros2 launch tracking_pkg jetson_launch.py
 ```
 
-Optional: run the same command without RViz:
+Optional environment overrides: `SCENE_CAM_SERIAL`, `TRAY_CAM_SERIAL`, `OBB_MODEL_PATH`,
+`OBB_DEVICE` (default `cuda:0`). Heavy model loads are staggered on boot; give the Jetson ~15 s to
+settle before speaking.
+
+### Operate
+
+Speak a command into the Samson USB microphone (e.g. *"give me the scissors"*). The LLM publishes a
+terse status on `/system_response`. Without a microphone you can inject commands manually:
 
 ```bash
-ros2 launch tracking_pkg loop_with_moveit_launch.py \
-  ur_type:=ur3e \
-  tracking_rviz:=false
+ros2 topic pub --once /user_speech std_msgs/msg/String "{data: 'give me the scissors'}"
 ```
 
-### Terminal 3 (alternative): Socket + RTDE runtime (MoveIt-free)
+The robot picks the tool, presents it, waits for the surgeon's `double_open_close` gesture, moves to
+the hand, and releases on a force tug.
 
-This launch replaces `loop_mover` with `socket_mover` and uses `ur_rtde` for motion execution with controller-side IK.
+---
 
-```bash
-cd ~/robotic_scrub_nurse_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch tracking_pkg web_socket_launch.py
-```
+## 9. Single-host mode
 
-Optional: disable the annotated hand image window if you do not want the lightweight annotated image viewer:
+To run the whole graph on one GPU machine with the robot attached (no NUC/Jetson split):
 
 ```bash
-ros2 launch tracking_pkg web_socket_launch.py show_annotated_feed:=false
-```
-
-`socket_mover` loads tool, orientation, handover, and reclaim parameters from:
-
-- `src/tracking_pkg/config/loop_mover_profiles.yaml` (`socket_mover.ros__parameters`)
-
-The socket runtime also applies `rtde.input_pose_frame_rotation_rpy` before Cartesian RTDE motions. The default is `[0.0, 0.0, pi]`, which compensates for the UR `base_link` to controller `base` rotation and keeps the existing MoveIt-calibrated tool coordinates consistent.
-The launch also injects a static `world -> base` TF so hand tracking keeps working after MoveIt is removed from the runtime path.
-Handover release and reclaim sensing are read directly from RTDE TCP force data, so this launch does not require a parallel `ur_robot_driver` process.
-
-### Optional split mode
-
-Use this only if you intentionally want separate launches for MoveIt and tracking.
-
-Terminal A:
-
-```bash
-ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e launch_rviz:=true
-```
-
-Terminal B:
-
-```bash
-ros2 launch tracking_pkg loop_launch.py
+# Terminal 1: UR driver
+ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.12.10 launch_rviz:=false
+# Terminal 2: everything else (perception + AI + robot control)
+export OPENAI_API_KEY=sk-...
+ros2 launch tracking_pkg llm_launch.py ur_type:=ur3e
 ```
 
 ---
