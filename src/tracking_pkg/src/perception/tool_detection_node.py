@@ -97,7 +97,7 @@ class ToolDetectionNode(Node):
         self.declare_parameter('fixed_tool_plane_z_m', 0.030)
         self.declare_parameter('publish_annotated_image', True)
         # Output topics as params so a second instance (e.g. the reclaim tray on
-        # /scene_camera) can publish to distinct topics without colliding with the
+        # /reclaim_tray_camera) can publish to distinct topics without colliding with the
         # instrument-tray detector. Defaults keep the existing tray behaviour.
         self.declare_parameter('detections_topic', '/detected_tools_obb')
         self.declare_parameter('annotated_topic', '/tool_detection/annotated_image')

@@ -8,7 +8,7 @@ Robot control (UR driver, MoveIt, skill execution) runs separately on the NUC vi
 nuc_launch.py. Both machines must share the same ROS_DOMAIN_ID and use CycloneDDS.
 
 Env vars:
-  SCENE_CAM_SERIAL   Serial of the scene camera  (default: 239222300719)
+  RECLAIM_TRAY_CAM_SERIAL   Serial of the reclaim tray camera  (default: 239222300719)
   TRAY_CAM_SERIAL    Serial of the tray camera   (default: 239222302690)
   OBB_MODEL_PATH     Path to the YOLO OBB model
   OBB_DEVICE         YOLO inference device       (default: cuda:0)
@@ -34,7 +34,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
 
-    scene_cam_serial = os.environ.get('SCENE_CAM_SERIAL', '239222300719')
+    reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
     tray_cam_serial  = os.environ.get('TRAY_CAM_SERIAL',  '239222302690')
 
     ur_type       = LaunchConfiguration('ur_type')
@@ -79,13 +79,13 @@ def generate_launch_description():
             ]
         ),
 
-        # ── Scene Camera ───────────────────────────────────────────
+        # ── Reclaim Tray Camera ───────────────────────────────────────────
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rs_launch_file),
             launch_arguments={
-                'camera_name': 'scene_camera',
+                'camera_name': 'reclaim_tray_camera',
                 'camera_namespace': '',
-                'serial_no': f"'{scene_cam_serial}'",
+                'serial_no': f"'{reclaim_tray_cam_serial}'",
                 'enable_color': 'true',
                 'enable_depth': 'true',
                 'rgb_camera.color_profile': '640,480,30',
@@ -100,7 +100,7 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # ── Tray Camera (delayed 5 s to let scene camera claim USB first) ─
+        # ── Tray Camera (delayed 5 s to let reclaim tray camera claim USB first) ─
         ExecuteProcess(
             cmd=[
                 'bash', '-c',
@@ -129,18 +129,18 @@ def generate_launch_description():
                     name='hand_tracker',
                     output='screen',
                     parameters=[{
-                        'camera_frame': 'scene_camera_color_optical_frame',
+                        'camera_frame': 'reclaim_tray_camera_color_optical_frame',
                         'world_frame': 'world',
                         # 1 hand ~halves MediaPipe CPU cost (runs on CPU/XNNPACK, not GPU).
                         'max_num_hands': 1,
-                        # Use more of the ~25 Hz scene feed (capped by camera / MediaPipe rate).
+                        # Use more of the ~25 Hz camera feed (capped by camera / MediaPipe rate).
                         'publish_rate_hz': 30.0,
                         'annotated_image_max_hz': 15.0,
                     }],
                     remappings=[
-                        ('color_image', '/scene_camera/color/image_raw'),
-                        ('depth_image', '/scene_camera/aligned_depth_to_color/image_raw'),
-                        ('camera_info',  '/scene_camera/color/camera_info'),
+                        ('color_image', '/reclaim_tray_camera/color/image_raw'),
+                        ('depth_image', '/reclaim_tray_camera/aligned_depth_to_color/image_raw'),
+                        ('camera_info',  '/reclaim_tray_camera/color/camera_info'),
                     ],
                 ),
             ]
@@ -208,12 +208,11 @@ def generate_launch_description():
             }],
         ),
 
-        # ── Reclaim Tray perception (2nd chain on the SCENE camera) ─
-        # The scene camera doubles as the reclaim-tray camera (localized via marker
-        # 105). Detection + grasp + semantics analogous to the instrument tray, on
-        # distinct /reclaim_* topics, at a lower rate (reclaim = intermediate storage).
-        # Runs alongside hand_tracker on the same camera. NOT wired into the world
-        # model / execution yet (later phase).
+        # ── Reclaim Tray perception (2nd chain on reclaim_tray_camera) ─
+        # reclaim_tray_camera also runs hand_tracker + marker-105 localization (above).
+        # This adds reclaim-tray detection + grasp + semantics, analogous to the instrument
+        # tray, on distinct /reclaim_* topics, at a lower rate (reclaim = intermediate
+        # storage). NOT wired into the world model / execution yet (later phase).
         # TODO: set fixed_tool_plane_z_m to the measured reclaim tray surface height.
         TimerAction(
             period=11.0,
@@ -230,11 +229,11 @@ def generate_launch_description():
                                          'robotic_scrub_nurse_ws',
                                          'ros_unrelated_scripts', 'first_obb_test.pt'),
                         ),
-                        'tray_camera_namespace': '/scene_camera',
-                        'tray_camera_frame':     'scene_camera_color_optical_frame',
+                        'tray_camera_namespace': '/reclaim_tray_camera',
+                        'tray_camera_frame':     'reclaim_tray_camera_color_optical_frame',
                         'world_frame':           'world',
                         'conf_threshold':        0.35,
-                        # Scene camera streams native 640x480 (vs 1280x720 on the tray),
+                        # Reclaim tray camera streams native 640x480 (vs 1280x720 on the tray),
                         # so imgsz=640 matches the native resolution — no upscale to 1024,
                         # which buys no real detail and just wastes Orin compute. Re-validate
                         # (or match this imgsz in training) once the reclaim perspective is

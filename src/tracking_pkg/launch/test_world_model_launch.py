@@ -11,13 +11,13 @@ tray_camera_color_optical_frame TF chains together with the static
 world -> aruco_marker_110_frame so service results land in world frame.
 
 No MoveIt and no execution. The official realsense2_camera node starts the
-scene camera for marker-105 localization and hand tracking.
+reclaim tray camera for marker-105 localization and hand tracking.
 The MiR base and tray-camera volume are also published as collision objects
 for quick Planning Scene / RViz checks when a consumer is available.
 
 Usage:
-  # The scene camera defaults to serial 239222300719. Override if needed:
-  SCENE_CAM_SERIAL=239222300719 ros2 launch tracking_pkg test_world_model_launch.py
+  # The reclaim tray camera defaults to serial 239222300719. Override if needed:
+  RECLAIM_TRAY_CAM_SERIAL=239222300719 ros2 launch tracking_pkg test_world_model_launch.py
 
   # The tray camera defaults to serial 239222302690. Override if needed:
   TRAY_CAM_SERIAL=239222302690 ros2 launch tracking_pkg test_world_model_launch.py
@@ -45,7 +45,7 @@ def generate_launch_description():
     rs_launch_file = PathJoinSubstitution(
         [FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py']
     )
-    scene_cam_serial = os.environ.get('SCENE_CAM_SERIAL', '239222300719')
+    reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
     tray_cam_serial = os.environ.get('TRAY_CAM_SERIAL', '239222302690')
 
     obb_model_path = os.environ.get(
@@ -80,9 +80,9 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rs_launch_file),
             launch_arguments={
-                'camera_name': 'scene_camera',
+                'camera_name': 'reclaim_tray_camera',
                 'camera_namespace': '',
-                'serial_no': f"'{scene_cam_serial}'",
+                'serial_no': f"'{reclaim_tray_cam_serial}'",
                 'enable_color': 'true',
                 'enable_depth': 'true',
                 'rgb_camera.color_profile': '640,480,30',
@@ -164,16 +164,16 @@ def generate_launch_description():
                     name='hand_tracker',
                     output='screen',
                     parameters=[{
-                        'camera_frame': 'scene_camera_color_optical_frame',
+                        'camera_frame': 'reclaim_tray_camera_color_optical_frame',
                         'world_frame': 'world',
                         'max_num_hands': 2,
                         'publish_rate_hz': 15.0,
                         'annotated_image_max_hz': 12.0,
                     }],
                     remappings=[
-                        ('color_image', '/scene_camera/color/image_raw'),
-                        ('depth_image', '/scene_camera/aligned_depth_to_color/image_raw'),
-                        ('camera_info', '/scene_camera/color/camera_info'),
+                        ('color_image', '/reclaim_tray_camera/color/image_raw'),
+                        ('depth_image', '/reclaim_tray_camera/aligned_depth_to_color/image_raw'),
+                        ('camera_info', '/reclaim_tray_camera/color/camera_info'),
                     ],
                 ),
             ],

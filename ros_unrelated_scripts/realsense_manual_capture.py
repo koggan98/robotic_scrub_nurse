@@ -6,7 +6,9 @@ Usage:
     python3 ros_unrelated_scripts/realsense_manual_capture.py --preview
     python3 ros_unrelated_scripts/realsense_manual_capture.py --output-dir ~/datasets/tool_detector/custom_session
     python3 ros_unrelated_scripts/realsense_manual_capture.py --list-cameras
-    python3 ros_unrelated_scripts/realsense_manual_capture.py --serial 239222300719   # scene/reclaim camera
+    python3 ros_unrelated_scripts/realsense_manual_capture.py --serial 239222300719   # reclaim tray camera
+    python3 ros_unrelated_scripts/realsense_manual_capture.py --serial 239222300719 --preview //mit preview
+    python3 ros_unrelated_scripts/realsense_manual_capture.py --serial 239222302690 --width 1280 --height 720 --preview
 """
 
 from __future__ import annotations
@@ -117,7 +119,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Serial number of the RealSense to capture from. Required when more than one "
-            "camera is connected (e.g. the scene/reclaim camera 239222300719). Use "
+            "camera is connected (e.g. the reclaim tray camera 239222300719). Use "
             "--list-cameras to see the connected serials."
         ),
     )

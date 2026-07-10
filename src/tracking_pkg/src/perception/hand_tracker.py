@@ -9,8 +9,8 @@ Replaces the old gesture-triggered hand_tracker that only published
 on double-open-close or shaka gestures.
 
 Subscriptions:
-  /color_image (sensor_msgs/Image) - RGB from scene camera
-  /depth_image (sensor_msgs/Image) - Depth from scene camera
+  /color_image (sensor_msgs/Image) - RGB from reclaim tray camera
+  /depth_image (sensor_msgs/Image) - Depth from reclaim tray camera
   /camera_info (sensor_msgs/CameraInfo) - Camera intrinsics
 
 Publishers:
@@ -134,7 +134,7 @@ class HandTrackerNode(Node):
         self.declare_parameter('min_tracking_confidence', 0.5)
         self.declare_parameter('publish_rate_hz', 15.0)
         self.declare_parameter('annotated_image_max_hz', 12.0)
-        self.declare_parameter('camera_frame', 'scene_camera_color_optical_frame')
+        self.declare_parameter('camera_frame', 'reclaim_tray_camera_color_optical_frame')
         self.declare_parameter('world_frame', 'world')
         self.declare_parameter('gesture_window_sec', 1.5)
         self.declare_parameter('gesture_debounce_sec', 3.0)
@@ -241,7 +241,7 @@ class HandTrackerNode(Node):
         """Transform camera-frame point to world frame via single TF lookup.
 
         TF chain (produced by aruco_marker_manager + launch):
-          world -> base -> aruco_marker_105_frame -> scene_camera_color_optical_frame
+          world -> base -> aruco_marker_105_frame -> reclaim_tray_camera_color_optical_frame
         tf2 collapses this into a single lookup.
         """
         try:

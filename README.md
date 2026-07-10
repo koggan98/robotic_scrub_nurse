@@ -96,7 +96,7 @@ Official UR simulation environment included as a git submodule for testing and d
 
 - Universal Robots UR3e manipulator
 - Robotiq 2F gripper
-- 2× Intel RealSense D455 cameras (scene + instrument tray)
+- 2× Intel RealSense D455 cameras (reclaim tray + instrument tray)
 - Compute: NVIDIA Jetson Orin Nano (perception/AI) + Intel NUC (robot control), or a single
   GPU workstation for the all-in-one `llm_launch.py` path
 - USB microphone for spoken commands (Samson Q2U in the reference setup)
@@ -295,16 +295,16 @@ Run the isolated world-model test with:
 ros2 launch tracking_pkg test_world_model_launch.py
 ```
 
-The scene camera is started through the official `realsense2_camera`
+The reclaim tray camera is started through the official `realsense2_camera`
 `rs_launch.py` launch file and defaults to serial `239222300719`. It publishes
-RGB, aligned depth, and camera info under `/scene_camera/...`. Override it with
-`SCENE_CAM_SERIAL` if the camera changes:
+RGB, aligned depth, and camera info under `/reclaim_tray_camera/...`. Override it with
+`RECLAIM_TRAY_CAM_SERIAL` if the camera changes:
 
 ```bash
-SCENE_CAM_SERIAL=239222300719 ros2 launch tracking_pkg test_world_model_launch.py
+RECLAIM_TRAY_CAM_SERIAL=239222300719 ros2 launch tracking_pkg test_world_model_launch.py
 ```
 
-The direct tray camera path defaults to serial `239222302690`, so the scene
+The direct tray camera path defaults to serial `239222302690`, so the reclaim tray
 camera and tray camera stay pinned to different devices.
 
 Then trigger one on-demand tray capture and OBB inference:
@@ -325,9 +325,9 @@ the center, and forceps keep the configured fallback offset.
 The ArUco manager publishes the configured marker-105 frame as
 `world -> aruco_marker_105_frame` in general launches. The pick-test launches
 publish that static frame directly so it is always visible in RViz; once marker
-ID 105 is visible in the scene camera image, the ArUco manager locks
+ID 105 is visible in the reclaim tray camera image, the ArUco manager locks
 `aruco_marker_105_frame ->
-scene_camera_color_optical_frame` for hand tracking in `world`.
+reclaim_tray_camera_color_optical_frame` for hand tracking in `world`.
 It also publishes the MiR base collision object and a
 `tray_camera_volume` collision object on `/collision_object`. The camera volume
 contains a 140 x 40 x 40 mm frame box centered at
@@ -353,7 +353,7 @@ ros2 launch tracking_pkg tool_pick_test_launch.py ur_type:=ur3e
 ```
 
 This starts MoveIt, RViz, the fixed tray-camera TF, `world_model_builder.py`,
-the official scene-camera RealSense node, marker-105 localization, hand
+the official reclaim_tray_camera RealSense node, marker-105 localization, hand
 tracking, the gripper bridge, the MiR collision object, and the
 `tray_camera_volume` collision object. It intentionally does not start
 `loop_mover`, so there is no competing `/tool_selection` runtime.
@@ -481,7 +481,7 @@ This launch starts `ur_moveit_config` without its default RViz and opens RViz wi
 - `/gesture_pose_marker`
 - `/hand_pose_marker`
 - `/hand_pose`
-- TF display (including frames such as `world`, `base`, `tray_camera_color_optical_frame`, `aruco_marker_105_frame`, `scene_camera_color_optical_frame`, and `tool_holder_frame`)
+- TF display (including frames such as `world`, `base`, `tray_camera_color_optical_frame`, `aruco_marker_105_frame`, `reclaim_tray_camera_color_optical_frame`, and `tool_holder_frame`)
 
 The active MoveIt tracking path now uses `world` as the canonical tracking frame. RViz is configured with `world` as its fixed frame, `/hand_pose` positions are interpreted in `world`, and the expected TF chain is `world -> base -> aruco_board_frame -> camera_frame`.
 

@@ -1,4 +1,4 @@
-# Hand state from scene perception (side camera)
+# Hand state from hand tracking (reclaim_tray_camera)
 # Replaces the old gesture-triggered hand_pose
 
 std_msgs/Header header

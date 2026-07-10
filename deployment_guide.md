@@ -203,7 +203,7 @@ export OPENAI_API_KEY=sk-...
 ros2 launch tracking_pkg jetson_launch.py
 ```
 
-Optional environment overrides: `SCENE_CAM_SERIAL`, `TRAY_CAM_SERIAL`, `OBB_MODEL_PATH`,
+Optional environment overrides: `RECLAIM_TRAY_CAM_SERIAL`, `TRAY_CAM_SERIAL`, `OBB_MODEL_PATH`,
 `OBB_DEVICE` (default `cuda:0`). Heavy model loads are staggered on boot; give the Jetson ~15 s to
 settle before speaking.
 

@@ -42,7 +42,7 @@ The system has moved from a single-host, numeric `/tool_selection` MoveIt loop t
 ## Open Workstreams
 
 ### WS-5: Reclaim-tray integration
-- A `reclaim_*` perception/grasp/semantics chain already runs on the scene camera (0.5 Hz) but is
+- A `reclaim_*` perception/grasp/semantics chain already runs on the reclaim tray camera (0.5 Hz) but is
   **not yet wired** into the world model or execution. Objective: fold it into `world_model_node`
   (with an appropriate tracker max-age) and support reclaim/return-to-holder flows.
 

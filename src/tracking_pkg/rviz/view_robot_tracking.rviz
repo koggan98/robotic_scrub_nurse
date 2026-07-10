@@ -52,7 +52,7 @@ Visualization Manager:
           Value: true
         aruco_marker_110_frame:
           Value: true
-        scene_camera_color_optical_frame:
+        reclaim_tray_camera_color_optical_frame:
           Value: true
         tray_camera_color_optical_frame:
           Value: true
@@ -321,11 +321,11 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /scene_camera/color/image_raw
+        Value: /reclaim_tray_camera/color/image_raw
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: Scene Camera (raw)
+      Name: Reclaim Tray Camera (raw)
       Normalize Range: true
       Queue Size: 2
       Transport Hint: raw

@@ -5,11 +5,11 @@ New architecture with natural language interaction, OBB-based tool detection,
 grasp reasoning, world model, and LLM-driven execution.
 
 Cameras use the official realsense2_camera ROS2 package.
-Set SCENE_CAM_SERIAL / TRAY_CAM_SERIAL env vars or edit serial_no below.
+Set RECLAIM_TRAY_CAM_SERIAL / TRAY_CAM_SERIAL env vars or edit serial_no below.
 
 Startup order:
   1. Static TFs (world→base, world→aruco_marker_110_frame for tray camera)
-  2. Scene camera (realsense2_camera, side: hand tracking + marker)
+  2. Reclaim tray camera (realsense2_camera, side: hand tracking + marker)
   3. Tray camera  (realsense2_camera, top-down: instrument detection) [when available]
   4. ArUco marker manager (config-driven static + detection TFs)
   5. Hand tracker (continuous, no gestures)
@@ -51,7 +51,7 @@ def generate_launch_description():
 
     # ── Camera serial numbers ─────────────────────────────────
     # Set via environment variable or hardcode here.
-    scene_cam_serial = os.environ.get('SCENE_CAM_SERIAL', '239222300719')
+    reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
     tray_cam_serial = os.environ.get('TRAY_CAM_SERIAL', '239222302690')
 
     # ── UR MoveIt include ─────────────────────────────────────
@@ -170,18 +170,18 @@ def generate_launch_description():
             ]
         ),
 
-        # ── Layer 1: Scene Camera (realsense2_camera) ─────────────
-        # Publishes to /scene_camera/color/image_raw,
-        #              /scene_camera/aligned_depth_to_color/image_raw,
-        #              /scene_camera/color/camera_info, etc.
+        # ── Layer 1: Reclaim Tray Camera (realsense2_camera) ─────────────
+        # Publishes to /reclaim_tray_camera/color/image_raw,
+        #              /reclaim_tray_camera/aligned_depth_to_color/image_raw,
+        #              /reclaim_tray_camera/color/camera_info, etc.
         # publish_tf is disabled: aruco_marker_manager wires camera frames
         # into the world tree on first marker detection.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(rs_launch_file),
             launch_arguments={
-                'camera_name': 'scene_camera',
+                'camera_name': 'reclaim_tray_camera',
                 'camera_namespace': '',
-                'serial_no': f"'{scene_cam_serial}'",
+                'serial_no': f"'{reclaim_tray_cam_serial}'",
                 'enable_color': 'true',
                 'enable_depth': 'true',
                 'rgb_camera.color_profile': '640,480,30',
@@ -204,7 +204,7 @@ def generate_launch_description():
         # world_model_builder (camera_mode='streaming', on-demand).
         # Started via ExecuteProcess+sleep instead of TimerAction because
         # TimerAction(IncludeLaunchDescription) does not reliably delay in
-        # ROS2 Jazzy. The shell sleep ensures the scene camera is fully
+        # ROS2 Jazzy. The shell sleep ensures the reclaim tray camera is fully
         # streaming before the tray camera negotiates USB bandwidth.
         ExecuteProcess(
             cmd=[
@@ -239,7 +239,7 @@ def generate_launch_description():
                     name='hand_tracker',
                     output='screen',
                     parameters=[{
-                        'camera_frame': 'scene_camera_color_optical_frame',
+                        'camera_frame': 'reclaim_tray_camera_color_optical_frame',
                         'world_frame': 'world',
                         'max_num_hands': 2,
                         'publish_rate_hz': 15.0,
@@ -247,9 +247,9 @@ def generate_launch_description():
                     }],
                     # Remap to match realsense2_camera topic names
                     remappings=[
-                        ('color_image', '/scene_camera/color/image_raw'),
-                        ('depth_image', '/scene_camera/aligned_depth_to_color/image_raw'),
-                        ('camera_info', '/scene_camera/color/camera_info'),
+                        ('color_image', '/reclaim_tray_camera/color/image_raw'),
+                        ('depth_image', '/reclaim_tray_camera/aligned_depth_to_color/image_raw'),
+                        ('camera_info', '/reclaim_tray_camera/color/camera_info'),
                     ],
                 ),
             ]

@@ -9,7 +9,7 @@
 ## System Context
 The active baseline is a ROS 2 Humble workspace centered on `src/tracking_pkg`, implementing a
 **speech → LLM → skill-action → motion** pipeline for surgical instrument handover with a UR3e:
-- RealSense perception (scene + instrument-tray cameras),
+- RealSense perception (reclaim-tray + instrument-tray cameras),
 - YOLOv8-OBB instrument detection with body/handle pairing and grasp reasoning,
 - MediaPipe hand tracking and gesture detection (`double_open_close`),
 - a persistent, continuously-updated world model serialized as JSON for the LLM,
@@ -106,12 +106,12 @@ RViz live only on the NUC.
 tray_camera  → tool_detection_node (YOLOv8-OBB, GPU, 4 Hz) → /detected_tools_obb
                 → grasp_geometry_node → /tool_grasp_candidates
                 → tool_semantics_node (+ tool_knowledge_base.yaml) → /enriched_tool_grasp_candidates
-scene_camera → hand_tracker (MediaPipe, CPU) → /hand_state, /hand_gesture
-scene_camera → aruco_marker_manager (marker 105) → scene camera TF (lock once)
+reclaim_tray_camera → hand_tracker (MediaPipe, CPU) → /hand_state, /hand_gesture
+reclaim_tray_camera → aruco_marker_manager (marker 105) → reclaim tray camera TF (lock once)
 tray_camera  → aruco_marker_manager (marker 110) → tray camera TF (lock once)
    → world_model_node (persistent tool IDs) → /get_world_model (JSON) + /get_world_state (typed)
 ```
-A parallel `reclaim_*` detection/grasp/semantics chain runs on the scene camera at 0.5 Hz for the
+A parallel `reclaim_*` detection/grasp/semantics chain runs on the reclaim tray camera at 0.5 Hz for the
 intermediate reclaim tray; it is **not yet wired into the world model or execution**.
 
 ## Current Constraints
@@ -161,8 +161,8 @@ intermediate reclaim tray; it is **not yet wired into the world model or executi
 ## Tracking Frame Contract
 - Canonical planning/tracking frame: `world`.
 - `world → base` is a static TF published on the NUC (`nuc_launch.py`, yaw π).
-- Camera localization is provided by ArUco on the Jetson: marker **105** localizes the scene camera
-  (`aruco_marker_105_frame → scene_camera_color_optical_frame`), marker **110** localizes the tray
+- Camera localization is provided by ArUco on the Jetson: marker **105** localizes the reclaim tray camera
+  (`aruco_marker_105_frame → reclaim_tray_camera_color_optical_frame`), marker **110** localizes the tray
   camera (`aruco_marker_110_frame → tray_camera_color_optical_frame`). Both lock once from a smoothed
   multi-frame estimate, then re-broadcast at 1 Hz for late TF subscribers. Marker 120 is retired.
 - Static `world → aruco_marker_105_frame` and `world → aruco_marker_110_frame` are published by the
