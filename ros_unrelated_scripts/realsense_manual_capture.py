@@ -5,6 +5,8 @@ Usage:
     python3 ros_unrelated_scripts/realsense_manual_capture.py
     python3 ros_unrelated_scripts/realsense_manual_capture.py --preview
     python3 ros_unrelated_scripts/realsense_manual_capture.py --output-dir ~/datasets/tool_detector/custom_session
+    python3 ros_unrelated_scripts/realsense_manual_capture.py --list-cameras
+    python3 ros_unrelated_scripts/realsense_manual_capture.py --serial 239222300719   # scene/reclaim camera
 """
 
 from __future__ import annotations
@@ -111,6 +113,20 @@ def parse_args() -> argparse.Namespace:
         help="Color stream frame rate (default: 30).",
     )
     parser.add_argument(
+        "--serial",
+        default=None,
+        help=(
+            "Serial number of the RealSense to capture from. Required when more than one "
+            "camera is connected (e.g. the scene/reclaim camera 239222300719). Use "
+            "--list-cameras to see the connected serials."
+        ),
+    )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="List the connected RealSense cameras (name + serial) and exit.",
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
         help="Show a local OpenCV preview window in addition to terminal controls.",
@@ -148,24 +164,61 @@ def check_dependencies(preview_enabled: bool) -> int:
     return 0
 
 
+def enumerate_devices() -> list[tuple[str, str]]:
+    """Return a list of (name, serial) for every connected RealSense device."""
+    devices = []
+    for dev in rs.context().devices:
+        try:
+            name = str(dev.get_info(rs.camera_info.name))
+        except Exception:
+            name = "Unknown RealSense"
+        try:
+            serial = str(dev.get_info(rs.camera_info.serial_number))
+        except Exception:
+            serial = "unknown-serial"
+        devices.append((name, serial))
+    return devices
+
+
+def format_device_list(devices: list[tuple[str, str]]) -> str:
+    if not devices:
+        return "  (none)"
+    return "\n".join(f"  - {name}  (serial {serial})" for name, serial in devices)
+
+
 def create_pipeline(
     width: int,
     height: int,
     fps: int,
+    serial: Optional[str] = None,
 ) -> tuple[Optional["rs.pipeline"], Optional["rs.pipeline_profile"], int]:
     try:
-        context = rs.context()
-        device_count = len(context.devices)
+        devices = enumerate_devices()
     except Exception as exc:
         print(f"ERROR: Failed to query RealSense devices: {exc}")
         return None, None, 1
 
-    if device_count == 0:
+    if not devices:
         print("ERROR: No Intel RealSense camera detected.")
+        return None, None, 1
+
+    available_serials = [serial_number for _, serial_number in devices]
+
+    if serial is not None:
+        if serial not in available_serials:
+            print(f"ERROR: No connected RealSense with serial '{serial}'. Connected cameras:")
+            print(format_device_list(devices))
+            return None, None, 1
+    elif len(devices) > 1:
+        # Refuse to silently grab the wrong camera when several are attached.
+        print("ERROR: Multiple RealSense cameras detected — select one with --serial. Connected cameras:")
+        print(format_device_list(devices))
         return None, None, 1
 
     pipeline = rs.pipeline()
     config = rs.config()
+    if serial is not None:
+        config.enable_device(serial)
     config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
 
     try:
@@ -184,6 +237,15 @@ def get_device_name(profile: Optional["rs.pipeline_profile"]) -> str:
         return str(profile.get_device().get_info(rs.camera_info.name))
     except Exception:
         return "Unknown RealSense"
+
+
+def get_device_serial(profile: Optional["rs.pipeline_profile"]) -> str:
+    if profile is None:
+        return "unknown-serial"
+    try:
+        return str(profile.get_device().get_info(rs.camera_info.serial_number))
+    except Exception:
+        return "unknown-serial"
 
 
 def print_controls() -> None:
@@ -239,11 +301,26 @@ def build_preview_frame(image_bgr: "np.ndarray", saved_count: int) -> "np.ndarra
 def main() -> int:
     args = parse_args()
 
+    if args.list_cameras:
+        if rs is None:
+            print("ERROR: pyrealsense2 is required to list cameras.")
+            return 2
+        try:
+            devices = enumerate_devices()
+        except Exception as exc:
+            print(f"ERROR: Failed to query RealSense devices: {exc}")
+            return 1
+        print("Connected RealSense cameras:")
+        print(format_device_list(devices))
+        return 0
+
     dependency_status = check_dependencies(args.preview)
     if dependency_status != 0:
         return dependency_status
 
-    pipeline, profile, pipeline_status = create_pipeline(args.width, args.height, args.fps)
+    pipeline, profile, pipeline_status = create_pipeline(
+        args.width, args.height, args.fps, args.serial
+    )
     if pipeline_status != 0:
         return pipeline_status
 
@@ -264,8 +341,9 @@ def main() -> int:
     saved_count = 0
     latest_frame = None
     device_name = get_device_name(profile)
+    device_serial = get_device_serial(profile)
 
-    print(f"Using camera: {device_name}")
+    print(f"Using camera: {device_name}  (serial {device_serial})")
     print(f"Output directory: {args.output_dir}")
     print(f"Color stream: {args.width}x{args.height} @ {args.fps} FPS")
     if args.preview:

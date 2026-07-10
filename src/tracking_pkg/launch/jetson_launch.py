@@ -234,7 +234,12 @@ def generate_launch_description():
                         'tray_camera_frame':     'scene_camera_color_optical_frame',
                         'world_frame':           'world',
                         'conf_threshold':        0.35,
-                        'imgsz':                 1024,
+                        # Scene camera streams native 640x480 (vs 1280x720 on the tray),
+                        # so imgsz=640 matches the native resolution — no upscale to 1024,
+                        # which buys no real detail and just wastes Orin compute. Re-validate
+                        # (or match this imgsz in training) once the reclaim perspective is
+                        # fine-tuned into the OBB model.
+                        'imgsz':                 640,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
                         # Slow "stream" — one frame every 2 s. Reclaim = intermediate
