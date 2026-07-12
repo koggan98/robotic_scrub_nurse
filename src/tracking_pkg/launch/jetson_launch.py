@@ -33,21 +33,28 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
+def _default_model_path(filename):
+    """Find model weights in either supported workspace directory layout."""
+    home = os.path.expanduser('~')
+    candidates = [
+        os.path.join(home, 'robotic_scrub_nurse', 'ros_unrelated_scripts', filename),
+        os.path.join(home, 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts', filename),
+    ]
+    return next((path for path in candidates if os.path.isfile(path)), candidates[0])
+
+
 def generate_launch_description():
 
     reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
     tray_cam_serial  = os.environ.get('TRAY_CAM_SERIAL',  '239222302690')
 
-    model_dir = os.path.join(
-        os.path.expanduser('~'), 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts'
-    )
     instrument_tray_model_path = os.environ.get(
         'INSTRUMENT_TRAY_MODEL_PATH',
-        os.path.join(model_dir, 'instrument_tray_detector.pt'),
+        _default_model_path('instrument_tray_detector.pt'),
     )
     reclaim_tray_model_path = os.environ.get(
         'RECLAIM_TRAY_MODEL_PATH',
-        os.path.join(model_dir, 'reclaim_tray_detector.pt'),
+        _default_model_path('reclaim_tray_detector.pt'),
     )
 
     ur_type       = LaunchConfiguration('ur_type')
