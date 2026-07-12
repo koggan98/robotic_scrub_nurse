@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/BuildWorldModel.srv"
   "srv/GetWorldModel.srv"
   "action/PickTool.action"
+  "action/GraspTool.action"
   "action/HandoverTool.action"
   "action/ReleaseTool.action"
   "action/ReturnHome.action"

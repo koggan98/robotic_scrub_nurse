@@ -102,6 +102,10 @@ class ToolDetectionNode(Node):
         # instrument-tray detector. Defaults keep the existing tray behaviour.
         self.declare_parameter('detections_topic', '/detected_tools_obb')
         self.declare_parameter('annotated_topic', '/tool_detection/annotated_image')
+        # Which tray this instance watches. Stamped onto every ToolDetection and
+        # carried downstream so the world model can keep the two trays apart and
+        # the executor can tell where a tool it is about to grasp came from.
+        self.declare_parameter('location', 'instrument_tray')
 
         self.model_path = self.get_parameter('model_path').value
         ns = self.get_parameter('tray_camera_namespace').value.rstrip('/')
@@ -122,6 +126,7 @@ class ToolDetectionNode(Node):
         )
         self.detections_topic = self.get_parameter('detections_topic').value
         self.annotated_topic = self.get_parameter('annotated_topic').value
+        self.location = self.get_parameter('location').value
 
         self.bridge = CvBridge()
         self._lock = Lock()
@@ -154,7 +159,8 @@ class ToolDetectionNode(Node):
         self.create_timer(period, self._tick)
 
         self.get_logger().info(
-            f'ToolDetectionNode ready (ns={ns}, model={self.model_path or "<unset>"}, '
+            f'ToolDetectionNode ready (ns={ns}, location={self.location}, '
+            f'model={self.model_path or "<unset>"}, plane_z={self.fixed_tool_plane_z_m}, '
             f'rate={self.inference_rate_hz} Hz, device={self.device})'
         )
 
@@ -263,6 +269,7 @@ class ToolDetectionNode(Node):
             det.header = out.header
             det.tool_id = tool_id
             det.tool_class = body.cls_name
+            det.location = self.location
             det.confidence = body.conf
             det.body_obb = body.to_msg()
             det.handle_obb = handle.to_msg()

@@ -1,10 +1,11 @@
-# Single detected tool on the instrument tray
-# Published by the tray perception node
+# Single detected tool on one of the trays
+# Published by the tray perception nodes (one instance per tray)
 
 std_msgs/Header header
 
 string tool_id                              # Persistent tracking ID (e.g. "tool_3")
 string tool_class                           # Class name from OBB model (e.g. "needle_holder")
+string location                             # Which tray: "instrument_tray" | "reclaim_tray"
 float32 confidence                          # Detection confidence [0.0, 1.0]
 
 tracking_msgs/OrientedBoundingBox2D body_obb    # OBB around entire instrument body

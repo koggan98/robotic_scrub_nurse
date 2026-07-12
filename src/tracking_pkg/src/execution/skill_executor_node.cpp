@@ -6,9 +6,11 @@
 //
 // Actions:
 //   /pick_tool       (tracking_msgs/action/PickTool)
+//   /grasp_tool      (tracking_msgs/action/GraspTool)
 //   /handover_tool   (tracking_msgs/action/HandoverTool)
 //   /release_tool    (tracking_msgs/action/ReleaseTool)
 //   /return_home     (tracking_msgs/action/ReturnHome)
+//   /return_tool     (tracking_msgs/action/ReturnTool)
 //
 // State updates on /system_state_update use the convention
 //   "STATE:tool_id:tool_class" parsed by world_model_node._state_cb.
@@ -41,6 +43,7 @@
 #include <tracking_msgs/msg/hand_state.hpp>
 #include <tracking_msgs/srv/get_world_state.hpp>
 #include <tracking_msgs/action/pick_tool.hpp>
+#include <tracking_msgs/action/grasp_tool.hpp>
 #include <tracking_msgs/action/handover_tool.hpp>
 #include <tracking_msgs/action/release_tool.hpp>
 #include <tracking_msgs/action/return_home.hpp>
@@ -62,16 +65,24 @@
 namespace {
 
 using PickTool = tracking_msgs::action::PickTool;
+using GraspTool = tracking_msgs::action::GraspTool;
 using HandoverTool = tracking_msgs::action::HandoverTool;
 using ReleaseTool = tracking_msgs::action::ReleaseTool;
 using ReturnHome = tracking_msgs::action::ReturnHome;
 using ReturnTool = tracking_msgs::action::ReturnTool;
 
 using GoalHandlePick = rclcpp_action::ServerGoalHandle<PickTool>;
+using GoalHandleGrasp = rclcpp_action::ServerGoalHandle<GraspTool>;
 using GoalHandleHandover = rclcpp_action::ServerGoalHandle<HandoverTool>;
 using GoalHandleRelease = rclcpp_action::ServerGoalHandle<ReleaseTool>;
 using GoalHandleHome = rclcpp_action::ServerGoalHandle<ReturnHome>;
 using GoalHandleReturnTool = rclcpp_action::ServerGoalHandle<ReturnTool>;
+
+// Tray names, as stamped onto every GraspCandidate by tool_detection_node's
+// `location` parameter. GraspTool defaults to the reclaim tray: picking from the
+// instrument tray goes through PickTool, which also presents the tool.
+constexpr const char *kInstrumentLocation = "instrument_tray";
+constexpr const char *kReclaimLocation = "reclaim_tray";
 
 struct Vec3 {
     double x;
@@ -246,6 +257,12 @@ public:
         post_gesture_settle_sec_ = declare_parameter("post_gesture_settle_sec", 0.5);
         // return_tool releases the wrong tool this far above the pickup pose.
         return_release_height_m_ = declare_parameter("return_release_height_m", 0.005);
+        // grasp_tool on the reclaim tray rises to this absolute world z after the
+        // lift, before attaching the held-tool box. The reclaim tray sits inside
+        // a bracket whose top bar spans z ~= [-0.015, +0.015]; attaching the
+        // 0.30 m tool box down at the approach pose would put it through the
+        // bracket's drop wall and wedge every later plan.
+        reclaim_hold_z_m_ = declare_parameter("reclaim_hold_z_m", 0.10);
         // After a successful pick the arm rotates shoulder_pan to this angle to
         // present the tool. 250 deg = 4.36332 rad (requires the widened
         // shoulder_pan limit on the live robot).
@@ -350,6 +367,15 @@ public:
             std::bind(&SkillExecutor::pickHandleAccepted, this,
                       std::placeholders::_1));
 
+        grasp_srv_ = rclcpp_action::create_server<GraspTool>(
+            this, "grasp_tool",
+            std::bind(&SkillExecutor::graspHandleGoal, this,
+                      std::placeholders::_1, std::placeholders::_2),
+            std::bind(&SkillExecutor::graspHandleCancel, this,
+                      std::placeholders::_1),
+            std::bind(&SkillExecutor::graspHandleAccepted, this,
+                      std::placeholders::_1));
+
         handover_srv_ = rclcpp_action::create_server<HandoverTool>(
             this, "handover_tool",
             std::bind(&SkillExecutor::handoverHandleGoal, this,
@@ -448,7 +474,8 @@ private:
             std::lock_guard<std::mutex> lock(state_mutex_);
             current_state_ = state;
             if (state == "PICKING" || state == "TRANSPORTING"
-                || state == "HANDOVER" || state == "RELEASING") {
+                || state == "HANDOVER" || state == "RELEASING"
+                || state == "HOLDING") {
                 active_tool_id_ = tool_id;
                 active_tool_class_ = tool_class;
             } else if (state == "IDLE") {
@@ -485,19 +512,27 @@ private:
         return true;
     }
 
+    // location_filter: "instrument_tray" | "reclaim_tray", or "" for both trays.
+    // The world model returns candidates from both trays in one list; each one
+    // carries the tray it was seen on in `location`.
     bool collectCandidates(std::vector<tracking_msgs::msg::GraspCandidate> &out_sorted,
+                           const std::string &location_filter,
                            std::string &err) {
         std::vector<tracking_msgs::msg::GraspCandidate> all;
         if (!fetchCandidates(all, err)) return false;
         for (const auto &c : all) {
-            if (hasUsableWorldXy(c)) out_sorted.push_back(c);
+            if (!hasUsableWorldXy(c)) continue;
+            if (!location_filter.empty() && c.location != location_filter) continue;
+            out_sorted.push_back(c);
         }
         std::sort(out_sorted.begin(), out_sorted.end(),
                   [](const auto &a, const auto &b) {
                       return a.grasp_confidence > b.grasp_confidence;
                   });
         if (out_sorted.empty()) {
-            err = "no usable candidates from world model";
+            err = "no usable candidates from world model" +
+                  (location_filter.empty() ? std::string()
+                                           : (" at " + location_filter));
             return false;
         }
         return true;
@@ -888,7 +923,7 @@ private:
         goal_handle->publish_feedback(fb);
     }
 
-    // ── Skill: PickTool ──────────────────────────────────────────────
+    // ── Pick sequence planning ───────────────────────────────────────
 
     bool tryPlanPickSequence(
         const tracking_msgs::msg::GraspCandidate &cand,
@@ -930,11 +965,28 @@ private:
         return true;
     }
 
-    bool doPick(const std::string &tool_id_arg,
-                std::string &picked_id_out,
-                std::string &picked_class_out,
-                std::string &err) {
-        // Holding-guard: never start a pick while the gripper already holds a
+    // ── Grasp core (shared by PickTool and GraspTool) ────────────────
+
+    // Holding-guard → candidate selection → pre-flight (approach + descend +
+    // lift all planned before any motion) → approach → open → descend → close →
+    // /tool_grasped check → lift → post-lift verify → escalating local re-grasp
+    // → attachToolBox().
+    //
+    // Ends with the tool in the gripper and moves the arm no further. Presenting,
+    // handing over and placing are the caller's business.
+    //
+    // `clearout_world_z` is an absolute world z to rise to after the lift and
+    // before the tool box is attached; pass NaN to skip it (see below).
+    // `chosen_out` is filled as soon as pre-flight commits to a candidate, so a
+    // caller can name the tool even when a later motion phase fails.
+    bool graspToolCore(const std::string &tool_id_arg,
+                       const std::string &location_filter,
+                       double clearout_world_z,
+                       tracking_msgs::msg::GraspCandidate &chosen_out,
+                       geometry_msgs::msg::Pose &grasp_pose_out,
+                       geometry_msgs::msg::Pose &approach_pose_out,
+                       std::string &err) {
+        // Holding-guard: never start a grasp while the gripper already holds a
         // tool — the approach phase opens the gripper and would drop it. A fresh
         // check (not a possibly-stale monitor value) reflects the real state.
         if (freshGripperHoldsTool()) {
@@ -946,14 +998,14 @@ private:
             err = "already_holding_tool" +
                   (held_class.empty() ? std::string() : (": " + held_class));
             RCLCPP_WARN(get_logger(),
-                "Pick refused: gripper already holds a tool (%s). "
+                "Grasp refused: gripper already holds a tool (%s). "
                 "Hand it over or return it first.",
                 held_class.empty() ? "unknown" : held_class.c_str());
             return false;
         }
 
         std::vector<tracking_msgs::msg::GraspCandidate> candidates;
-        if (!collectCandidates(candidates, err)) return false;
+        if (!collectCandidates(candidates, location_filter, err)) return false;
 
         // Restrict to a specific tool_id when explicitly requested.
         if (!tool_id_arg.empty()) {
@@ -969,7 +1021,7 @@ private:
 
         // Pre-flight: try each candidate in confidence order. Only when
         // approach + descend + lift all plan successfully do we commit to
-        // a pick. No motion happens before this loop succeeds.
+        // a grasp. No motion happens before this loop succeeds.
         moveit::planning_interface::MoveGroupInterface::Plan approach_plan, descend_plan, lift_plan;
         geometry_msgs::msg::Pose approach_pose, grasp_pose;
         tracking_msgs::msg::GraspCandidate chosen;
@@ -995,8 +1047,9 @@ private:
             return false;
         }
 
-        picked_id_out = chosen.tool_id;
-        picked_class_out = chosen.tool_class;
+        chosen_out = chosen;
+        grasp_pose_out = grasp_pose;
+        approach_pose_out = approach_pose;
 
         RCLCPP_INFO(get_logger(),
             "Pre-flight OK for %s (%s). grasp z=%.4f approach z=%.4f. Executing.",
@@ -1096,10 +1149,64 @@ private:
             return false;
         }
 
-        // Tool is now in the gripper: make it visible to the planner so the
-        // presentation rotation (and later handover) avoids the tray-camera
-        // stand and accounts for the tool's reach beyond the gripper box.
+        // Clear-out lift, before the tool box is attached.
+        //
+        // attachToolBox() hangs a 0.30 m long box off the TCP. On the reclaim
+        // tray the approach height is still down inside the tray: the box would
+        // sweep through the tray's vertical drop wall, and MoveIt would then
+        // refuse every later plan with "start state in collision" — the arm
+        // would be stuck holding the tool. So rise clear of the tray first and
+        // attach up there. The instrument tray needs none of this (its approach
+        // pose is already in free space), so doPick passes NaN and this is
+        // skipped — its behaviour is unchanged.
+        if (std::isfinite(clearout_world_z) &&
+            clearout_world_z > approach_pose.position.z + 1e-6) {
+            geometry_msgs::msg::Pose clear = approach_pose;
+            clear.position.z = clearout_world_z;
+            moveit::planning_interface::MoveGroupInterface::Plan clear_plan;
+            move_group_->setStartStateToCurrentState();
+            std::string clear_err;
+            if (planLinearPose(clear, clear_plan, clear_err) &&
+                executePlan(clear_plan, clear_err)) {
+                RCLCPP_INFO(get_logger(),
+                    "Clear-out lift to z=%.3f before attaching tool box.",
+                    clearout_world_z);
+            } else if (!moveToPoseTarget(clear, clear_err)) {
+                // Do not attach the box at a pose where it is in collision —
+                // that would wedge the planner. Bail out holding the tool and
+                // let the caller decide.
+                err = "clear-out lift: " + clear_err;
+                return false;
+            }
+        }
+
+        // Tool is now in the gripper: make it visible to the planner so any
+        // onward motion (present rotation, handover, place-back) avoids the
+        // tray-camera stand and accounts for the tool's reach beyond the box.
         attachToolBox();
+        return true;
+    }
+
+    // ── Skill: PickTool ──────────────────────────────────────────────
+
+    bool doPick(const std::string &tool_id_arg,
+                std::string &picked_id_out,
+                std::string &picked_class_out,
+                std::string &err) {
+        tracking_msgs::msg::GraspCandidate chosen;
+        geometry_msgs::msg::Pose grasp_pose, approach_pose;
+        // NaN = no clear-out lift: the instrument tray's approach pose is
+        // already in free space, so the tool box can be attached right there.
+        const bool grasped = graspToolCore(
+            tool_id_arg, kInstrumentLocation,
+            std::numeric_limits<double>::quiet_NaN(),
+            chosen, grasp_pose, approach_pose, err);
+        // chosen is filled the moment pre-flight commits, so the tool can still
+        // be named when a later motion phase fails — the LLM keys its retry on
+        // the class.
+        picked_id_out = chosen.tool_id;
+        picked_class_out = chosen.tool_class;
+        if (!grasped) return false;
 
         publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
         // From here the tool is in transit: a /tool_grasped=false stops the
@@ -1474,6 +1581,73 @@ private:
         }
     }
 
+    // ── Action: GraspTool ────────────────────────────────────────────
+    // Bare grasp: pick the tool up and hold it there. No present rotation, no
+    // handover. Used to bring tools off the reclaim tray, and as the first leg
+    // of putting a used tool back on the instrument tray.
+
+    rclcpp_action::GoalResponse graspHandleGoal(
+        const rclcpp_action::GoalUUID &,
+        std::shared_ptr<const GraspTool::Goal> goal) {
+        RCLCPP_INFO(get_logger(),
+                    "GraspTool goal received: tool_id='%s' location='%s'",
+                    goal->tool_id.c_str(),
+                    goal->location.empty() ? kReclaimLocation
+                                           : goal->location.c_str());
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }
+    rclcpp_action::CancelResponse graspHandleCancel(
+        const std::shared_ptr<GoalHandleGrasp>) {
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+    void graspHandleAccepted(const std::shared_ptr<GoalHandleGrasp> goal_handle) {
+        std::thread([this, goal_handle] { this->graspExecute(goal_handle); }).detach();
+    }
+    void graspExecute(const std::shared_ptr<GoalHandleGrasp> goal_handle) {
+        std::unique_lock<std::mutex> lock(execution_mutex_, std::try_to_lock);
+        auto result = std::make_shared<GraspTool::Result>();
+        if (!lock.owns_lock()) {
+            result->success = false;
+            result->message = "another skill is currently executing";
+            goal_handle->abort(result);
+            return;
+        }
+        const auto goal = goal_handle->get_goal();
+        const std::string location =
+            goal->location.empty() ? kReclaimLocation : goal->location;
+
+        // The reclaim tray sits down inside a bracket; rise clear of it before
+        // the tool box is attached. The instrument tray does not need it.
+        const double clearout = (location == kReclaimLocation)
+            ? reclaim_hold_z_m_
+            : std::numeric_limits<double>::quiet_NaN();
+
+        tracking_msgs::msg::GraspCandidate chosen;
+        geometry_msgs::msg::Pose grasp_pose, approach_pose;
+        std::string err;
+        const bool ok = graspToolCore(goal->tool_id, location, clearout, chosen,
+                                      grasp_pose, approach_pose, err);
+        result->success = ok;
+        result->grasped_tool_id = chosen.tool_id;
+        result->grasped_tool_class = chosen.tool_class;
+        if (ok) {
+            result->message = "ok";
+            // The arm stops here, holding the tool. HOLDING (not TRANSPORTING)
+            // so toolGraspedCb does not treat a gripper report as an in-transit
+            // drop and stop a motion that is not running.
+            publishState("HOLDING", chosen.tool_id, chosen.tool_class);
+            RCLCPP_INFO(get_logger(),
+                "GraspTool: holding %s (%s) above %s. Arm idle.",
+                chosen.tool_id.c_str(), chosen.tool_class.c_str(),
+                location.c_str());
+            goal_handle->succeed(result);
+        } else {
+            result->message = err;
+            publishState("IDLE", "", "");
+            goal_handle->abort(result);
+        }
+    }
+
     // ── Action: HandoverTool ─────────────────────────────────────────
 
     rclcpp_action::GoalResponse handoverHandleGoal(
@@ -1654,6 +1828,7 @@ private:
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;
     double return_release_height_m_;
+    double reclaim_hold_z_m_;
     double present_shoulder_pan_rad_;
     double present_wrist1_rad_;
     double present_wrist2_rad_;
@@ -1677,6 +1852,7 @@ private:
 
     // Action servers
     rclcpp_action::Server<PickTool>::SharedPtr pick_srv_;
+    rclcpp_action::Server<GraspTool>::SharedPtr grasp_srv_;
     rclcpp_action::Server<HandoverTool>::SharedPtr handover_srv_;
     rclcpp_action::Server<ReleaseTool>::SharedPtr release_srv_;
     rclcpp_action::Server<ReturnHome>::SharedPtr home_srv_;

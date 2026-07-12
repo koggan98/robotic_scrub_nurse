@@ -191,6 +191,7 @@ def generate_launch_description():
                         # after the aruco unsubscribe + collision-pub move freed Orin CPU.
                         'inference_rate_hz':     4.0,
                         'fixed_tool_plane_z_m':  0.04,
+                        'location':              'instrument_tray',
                         'publish_annotated_image': True,
                     }],
                 ),
@@ -227,8 +228,7 @@ def generate_launch_description():
         # reclaim_tray_camera also runs hand_tracker + marker-105 localization (above).
         # This adds reclaim-tray detection + grasp + semantics, analogous to the instrument
         # tray, on distinct /reclaim_* topics, at a lower rate (reclaim = intermediate
-        # storage). NOT wired into the world model / execution yet (later phase).
-        # TODO: set fixed_tool_plane_z_m to the measured reclaim tray surface height.
+        # storage). Feeds world_model_node's reclaim_candidates_topic.
         TimerAction(
             period=11.0,
             actions=[
@@ -254,7 +254,16 @@ def generate_launch_description():
                         # Match the instrument-tray detector so both annotated tool feeds
                         # update consistently in RViz.
                         'inference_rate_hz':     4.0,
-                        'fixed_tool_plane_z_m':  0.04,
+                        # Reclaim tray surface. The collision model puts the tray's
+                        # bottom bar top face at world z = -0.155; tools lying on it
+                        # are detected ~1 tool-thickness above that. Because the
+                        # reclaim camera looks at the tray from the SIDE (it also
+                        # does hand tracking), the ray-plane projection is sensitive
+                        # to this value: get it wrong and the grasp point walks
+                        # laterally. Measure against a tool at a known spot before
+                        # trusting a real grasp.
+                        'fixed_tool_plane_z_m':  -0.145,
+                        'location':              'reclaim_tray',
                         'publish_annotated_image': True,
                         'annotation_line_width_px': 1,
                         'detections_topic':      '/reclaim_tools_obb',
@@ -296,6 +305,10 @@ def generate_launch_description():
                 'track_distance_threshold_m': 0.05,
                 'track_max_age_sec':          3.0,
                 'candidates_topic':           '/enriched_tool_grasp_candidates',
+                'reclaim_candidates_topic':   '/reclaim_enriched_grasp_candidates',
+                # The reclaim tray changes slowly and the surgeon reaches over it
+                # constantly; a 3 s eviction would drop tools on every occlusion.
+                'reclaim_track_max_age_sec':  10.0,
                 'hand_state_topic':           '/hand_state',
                 'world_frame':               'world',
                 'hand_confidence_threshold':  0.3,

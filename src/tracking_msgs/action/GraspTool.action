@@ -1,0 +1,15 @@
+# Goal: grasp the named tool and lift it. The arm then holds still — no
+# presentation rotation, no handover. This is the bare grasp primitive, shared
+# by the reclaim-tray bench test and (later) the return-used-tool skill.
+string tool_id       # Empty = highest-confidence candidate at `location`
+string location      # Empty = "reclaim_tray"
+---
+# Result
+bool success
+string message
+string grasped_tool_id
+string grasped_tool_class
+---
+# Feedback
+string phase         # APPROACH | DESCEND | GRASP | LIFT
+float32 progress     # 0.0 .. 1.0

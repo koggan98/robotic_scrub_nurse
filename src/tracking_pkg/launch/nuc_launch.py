@@ -165,6 +165,10 @@ def generate_launch_description():
                         'gesture_wait_timeout_sec':          0.0,
                         'post_gesture_settle_sec':           0.5,
                         'return_release_height_m':           0.005,
+                        # grasp_tool rises to this world z after lifting a tool off
+                        # the reclaim tray, before the held-tool box is attached —
+                        # clear of the tray bracket's top bar (z ~= +0.015).
+                        'reclaim_hold_z_m':                  0.10,
                         'hand_offset':                       [-0.08, 0.0, 0.08],
                         'handover_orientation':              [-0.63, 0.63, -0.321, 0.321],
                         'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,
@@ -225,6 +229,9 @@ def generate_launch_description():
             executable='reclaim_tray_collision_publisher.py',
             name='reclaim_tray_collision_publisher',
             output='screen',
+            # include_bottom_bar defaults to False: modelling the tray's support
+            # surface makes it ungraspable, because the gripper's collision
+            # cylinder reaches 38 mm past the TCP. See the node for the geometry.
             parameters=[{'publish_hz': 0.2}],
         ),
 

@@ -51,11 +51,17 @@ class _Track:
 
 
 class ToolTracker:
-    """Greedy XY-distance matcher, class-bound. Evicts stale tracks per update."""
+    """Greedy XY-distance matcher, class-bound. Evicts stale tracks per update.
 
-    def __init__(self, threshold_m, max_age_s):
+    One instance per tray. `id_prefix` keeps the two trays' ids in separate
+    namespaces (tool_0, tool_1, ... vs reclaim_0, reclaim_1, ...) so a single
+    world model can hold both without id collisions.
+    """
+
+    def __init__(self, threshold_m, max_age_s, id_prefix='tool'):
         self.threshold = float(threshold_m)
         self.max_age = float(max_age_s)
+        self.id_prefix = id_prefix
         self.tracks = []
         self._counter = 0
 
@@ -83,7 +89,7 @@ class ToolTracker:
                 cand.tool_id = self.tracks[best_i].id
                 used.add(best_i)
             else:
-                new_id = f'tool_{self._counter}'
+                new_id = f'{self.id_prefix}_{self._counter}'
                 self._counter += 1
                 self.tracks.append(
                     _Track(new_id, cand_xy, now_s, cand.tool_class)
@@ -100,6 +106,12 @@ class WorldModelNode(Node):
         self.declare_parameter('track_distance_threshold_m', 0.05)
         self.declare_parameter('track_max_age_sec', 3.0)
         self.declare_parameter('candidates_topic', '/enriched_tool_grasp_candidates')
+        # Reclaim tray. Empty = disabled, so a launch that does not set it keeps
+        # the instrument-tray-only behaviour unchanged.
+        self.declare_parameter('reclaim_candidates_topic', '')
+        # The reclaim tray changes slowly and the surgeon's hands occlude it often;
+        # a 3 s eviction would drop tools on every reach-over. Hence its own age.
+        self.declare_parameter('reclaim_track_max_age_sec', 10.0)
         self.declare_parameter('hand_state_topic', '/hand_state')
         self.declare_parameter('world_frame', 'world')
         self.declare_parameter('hand_confidence_threshold', 0.3)
@@ -107,16 +119,22 @@ class WorldModelNode(Node):
         threshold = float(self.get_parameter('track_distance_threshold_m').value)
         max_age = float(self.get_parameter('track_max_age_sec').value)
         candidates_topic = self.get_parameter('candidates_topic').value
+        reclaim_topic = (self.get_parameter('reclaim_candidates_topic').value or '').strip()
+        reclaim_max_age = float(self.get_parameter('reclaim_track_max_age_sec').value)
         hand_state_topic = self.get_parameter('hand_state_topic').value
         self.world_frame = self.get_parameter('world_frame').value
         self.hand_confidence_threshold = float(
             self.get_parameter('hand_confidence_threshold').value
         )
 
-        self._tracker = ToolTracker(threshold, max_age)
+        self._tracker = ToolTracker(threshold, max_age, id_prefix='tool')
+        self._reclaim_tracker = ToolTracker(
+            threshold, reclaim_max_age, id_prefix='reclaim'
+        )
         self._lock = Lock()
 
         self._latest_candidates = []
+        self._latest_reclaim_candidates = []
         self._hand_state: Optional[HandState] = None
         self._hand_available = False
         self._state = 'IDLE'
@@ -135,6 +153,10 @@ class WorldModelNode(Node):
         self.create_subscription(
             GraspCandidateArray, candidates_topic, self._cand_cb, 10
         )
+        if reclaim_topic:
+            self.create_subscription(
+                GraspCandidateArray, reclaim_topic, self._reclaim_cand_cb, 10
+            )
         self.create_subscription(
             HandState, hand_state_topic, self._hand_cb, 10
         )
@@ -164,6 +186,8 @@ class WorldModelNode(Node):
         self.get_logger().info(
             f'WorldModelNode ready (track_threshold={threshold:.3f} m, '
             f'max_age={max_age:.1f} s, candidates={candidates_topic}, '
+            f'reclaim={reclaim_topic or "<disabled>"} '
+            f'(max_age={reclaim_max_age:.1f} s), '
             f'hand_state={hand_state_topic})'
         )
 
@@ -175,6 +199,13 @@ class WorldModelNode(Node):
         cands = self._tracker.update(cands, now_s)
         with self._lock:
             self._latest_candidates = cands
+
+    def _reclaim_cand_cb(self, msg):
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        cands = list(msg.candidates)
+        cands = self._reclaim_tracker.update(cands, now_s)
+        with self._lock:
+            self._latest_reclaim_candidates = cands
 
     def _hand_cb(self, msg):
         with self._lock:
@@ -215,6 +246,7 @@ class WorldModelNode(Node):
         with self._lock:
             return (
                 list(self._latest_candidates),
+                list(self._latest_reclaim_candidates),
                 self._hand_state,
                 self._hand_available,
                 self._state,
@@ -229,7 +261,12 @@ class WorldModelNode(Node):
 
     def _get_world_state_cb(self, request, response):
         del request
-        cands, hand, hand_avail, state, atid, atc, joints, robot_ready, _, _, _ = self._snapshot()
+        (cands, reclaim_cands, hand, hand_avail, state, atid, atc, joints,
+         robot_ready, _, _, _) = self._snapshot()
+
+        # Both trays go into tool_candidates so the executor can resolve any
+        # tool_id it is handed; each candidate carries its own `location`.
+        all_cands = cands + reclaim_cands
 
         s = SystemState()
         s.header.stamp = self.get_clock().now().to_msg()
@@ -237,7 +274,7 @@ class WorldModelNode(Node):
         s.state = state
         s.active_tool_id = atid
         s.active_tool_class = atc
-        s.tool_candidates = cands
+        s.tool_candidates = all_cands
         s.target_hand = hand if hand is not None else HandState()
         s.hand_available = hand_avail
         s.tcp_pose = self._tcp_pose
@@ -245,66 +282,74 @@ class WorldModelNode(Node):
         s.robot_ready = robot_ready
 
         response.success = True
-        response.message = f'{len(cands)} tools, hand_available={hand_avail}'
+        response.message = (
+            f'{len(cands)} tray tools, {len(reclaim_cands)} reclaim tools, '
+            f'hand_available={hand_avail}'
+        )
         response.world_state = s
         return response
 
     def _get_tool_candidates_cb(self, request, response):
-        cands, *_ = self._snapshot()
+        cands, reclaim_cands, *_ = self._snapshot()
+        all_cands = cands + reclaim_cands
         filt = (request.tool_class_filter or '').strip().lower()
         if filt:
-            cands = [c for c in cands if c.tool_class.lower() == filt]
+            all_cands = [c for c in all_cands if c.tool_class.lower() == filt]
         response.success = True
-        response.message = f'{len(cands)} candidates'
-        response.candidates = cands
+        response.message = f'{len(all_cands)} candidates'
+        response.candidates = all_cands
         return response
+
+    @staticmethod
+    def _tool_to_dict(c):
+        return {
+            'id': c.tool_id,
+            'class': c.tool_class,
+            'location': c.location,
+            'display_name': c.display_name,
+            'confidence': float(c.grasp_confidence),
+            'pose_frame': c.grasp_pose.header.frame_id,
+            'grasp_point': [
+                float(c.grasp_pose.pose.position.x),
+                float(c.grasp_pose.pose.position.y),
+                float(c.grasp_pose.pose.position.z),
+            ],
+            'grasp_orientation_quat': [
+                float(c.grasp_pose.pose.orientation.x),
+                float(c.grasp_pose.pose.orientation.y),
+                float(c.grasp_pose.pose.orientation.z),
+                float(c.grasp_pose.pose.orientation.w),
+            ],
+            'handle_axis': [
+                float(c.handle_axis.x),
+                float(c.handle_axis.y),
+                float(c.handle_axis.z),
+            ],
+            'functional_end_axis': [
+                float(c.functional_end_dir.x),
+                float(c.functional_end_dir.y),
+                float(c.functional_end_dir.z),
+            ],
+            'approach_direction': [
+                float(c.approach_direction.x),
+                float(c.approach_direction.y),
+                float(c.approach_direction.z),
+            ],
+            'preferred_handover_rule': c.handover_rule,
+            'handover_description': c.handover_description,
+            'functional_end_label': c.functional_end_label,
+            'grip_strategy': c.grip_strategy,
+            'lift_height_m': float(c.lift_height),
+        }
 
     def _get_world_model_cb(self, request, response):
         del request
-        (cands, hand, _, state, atid, atc, joints, robot_ready,
+        (cands, reclaim_cands, hand, _, state, atid, atc, joints, robot_ready,
          last_gesture, last_gesture_sec, gripper_holds_tool) = self._snapshot()
         now_s = self.get_clock().now().nanoseconds * 1e-9
 
-        available_tools = []
-        for c in cands:
-            available_tools.append({
-                'id': c.tool_id,
-                'class': c.tool_class,
-                'display_name': c.display_name,
-                'confidence': float(c.grasp_confidence),
-                'pose_frame': c.grasp_pose.header.frame_id,
-                'grasp_point': [
-                    float(c.grasp_pose.pose.position.x),
-                    float(c.grasp_pose.pose.position.y),
-                    float(c.grasp_pose.pose.position.z),
-                ],
-                'grasp_orientation_quat': [
-                    float(c.grasp_pose.pose.orientation.x),
-                    float(c.grasp_pose.pose.orientation.y),
-                    float(c.grasp_pose.pose.orientation.z),
-                    float(c.grasp_pose.pose.orientation.w),
-                ],
-                'handle_axis': [
-                    float(c.handle_axis.x),
-                    float(c.handle_axis.y),
-                    float(c.handle_axis.z),
-                ],
-                'functional_end_axis': [
-                    float(c.functional_end_dir.x),
-                    float(c.functional_end_dir.y),
-                    float(c.functional_end_dir.z),
-                ],
-                'approach_direction': [
-                    float(c.approach_direction.x),
-                    float(c.approach_direction.y),
-                    float(c.approach_direction.z),
-                ],
-                'preferred_handover_rule': c.handover_rule,
-                'handover_description': c.handover_description,
-                'functional_end_label': c.functional_end_label,
-                'grip_strategy': c.grip_strategy,
-                'lift_height_m': float(c.lift_height),
-            })
+        available_tools = [self._tool_to_dict(c) for c in cands]
+        reclaim_tools = [self._tool_to_dict(c) for c in reclaim_cands]
 
         if hand is not None and hand.is_tracked:
             receiver_hand = {
@@ -347,13 +392,14 @@ class WorldModelNode(Node):
             'robot_ready': robot_ready,
             'joint_positions': joints,
             'available_tools': available_tools,
+            'reclaim_tools': reclaim_tools,
             'receiver_hand': receiver_hand,
             'last_gesture': gesture_block,
         }
 
         response.success = True
         response.message = (
-            f'{len(available_tools)} tools, '
+            f'{len(available_tools)} tools, {len(reclaim_tools)} reclaim, '
             f'hand_detected={receiver_hand.get("detected", False)}'
         )
         response.world_model_json = json.dumps(snapshot, indent=2)

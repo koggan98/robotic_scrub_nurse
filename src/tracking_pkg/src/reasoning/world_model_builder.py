@@ -1088,6 +1088,8 @@ class WorldModelBuilder(Node):
         msg = ToolDetection()
         msg.tool_id = tool_id
         msg.tool_class = body.cls_name
+        # This builder only ever looks at the instrument tray (/tray_camera).
+        msg.location = 'instrument_tray'
         msg.confidence = body.conf
         msg.body_obb = body.to_msg()
         msg.handle_obb = handle.to_msg()
@@ -1110,6 +1112,7 @@ class WorldModelBuilder(Node):
         msg = GraspCandidate()
         msg.tool_id = tool_id
         msg.tool_class = body.cls_name
+        msg.location = 'instrument_tray'
         msg.grasp_confidence = float(min(body.conf, handle.conf))
         msg.handover_rule = kb_entry.get('handover_rule', 'neutral')
 

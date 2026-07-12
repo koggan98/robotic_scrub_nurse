@@ -107,6 +107,7 @@ class GraspGeometryNode(Node):
         cand.header.frame_id = self.world_frame
         cand.tool_id = det.tool_id
         cand.tool_class = det.tool_class
+        cand.location = det.location
         cand.grasp_confidence = float(det.confidence)
         cand.handover_rule = ''
 

@@ -5,6 +5,7 @@ std_msgs/Header header
 
 string tool_id                              # References ToolDetection.tool_id
 string tool_class                           # Tool class for context
+string location                             # Which tray: "instrument_tray" | "reclaim_tray"
 
 # Grasp geometry in world frame
 geometry_msgs/PoseStamped grasp_pose        # Where to grasp (handle centroid + approach orientation)

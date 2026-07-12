@@ -57,6 +57,21 @@ class ReclaimTrayCollisionPublisher(Node):
             self.declare_parameter("post40_length_m", POST40_LENGTH).value)
         self.post40_tilt_rad = math.radians(
             float(self.declare_parameter("post40_tilt_deg", POST40_TILT_DEG).value))
+        # The bottom bar is the surface the tools lie on, and modelling it makes
+        # the tray ungraspable: gripper_tip_link is the TCP, but the gripper's
+        # collision cylinder (dummy_gripper_link, 0.16 m long) reaches 38 mm
+        # PAST it. Descending to a grasp at z = -0.141 puts that cylinder at
+        # -0.179, i.e. 24 mm inside the bar (top face -0.155) -> every cartesian
+        # descend fails the fraction check and pre-flight rejects the candidate.
+        # The 38 mm overhang is a modelling artifact (the real fingertips stop at
+        # the TCP), so the honest fix is to leave the support surface out of the
+        # scene -- which is exactly what instrument_tray_collision_publisher
+        # already does: it models only the camera mast, never the tray surface.
+        # The bar's real job (stopping the arm from below) is already done by the
+        # tray being at the very bottom of the workspace.
+        # Set true only if you also allow gripper<->shelf contact in the ACM.
+        self.include_bottom_bar = bool(
+            self.declare_parameter("include_bottom_bar", False).value)
         self.publish_hz = float(self.declare_parameter("publish_hz", 2.0).value)
 
         qos = QoSProfile(
@@ -84,7 +99,8 @@ class ReclaimTrayCollisionPublisher(Node):
             f"bar_thickness_z {self.bar_thickness_m:.3f}m, "
             f"post40 {self.post40_size_m:.3f}x{self.post40_size_m:.3f}x"
             f"{self.post40_length_m:.3f}m (flush +X/-Y, tilt "
-            f"{math.degrees(self.post40_tilt_rad):.1f}deg about X ->-Y)."
+            f"{math.degrees(self.post40_tilt_rad):.1f}deg about X ->-Y), "
+            f"bottom_bar={'ON' if self.include_bottom_bar else 'OFF (graspable)'}."
         )
         self.publish_collision_object()
 
@@ -128,7 +144,7 @@ class ReclaimTrayCollisionPublisher(Node):
             post_base_y - half_post * math.sin(tilt),
             post_base_z + half_post * math.cos(tilt),
         ]
-        return [
+        segments = [
             (
                 # top bar, runs +X
                 [self.segment1_length_m, self.width_y_m, self.bar_thickness_m],
@@ -142,6 +158,17 @@ class ReclaimTrayCollisionPublisher(Node):
                 [0.0, 0.0, 0.0],
             ),
             (
+                # 40x40 post, flush against the drop's +X face and the -Y edge,
+                # tilted about local X so the top leans toward -Y (foot fixed).
+                [self.post40_size_m, self.post40_size_m, self.post40_length_m],
+                post_center,
+                [tilt, 0.0, 0.0],
+            ),
+        ]
+
+        # The tool support surface. Off by default — see include_bottom_bar.
+        if self.include_bottom_bar:
+            segments.append((
                 # bottom bar, runs +X, at the bottom of the drop
                 [self.segment2_length_m, self.width_y_m, self.bar_thickness_m],
                 [
@@ -150,15 +177,9 @@ class ReclaimTrayCollisionPublisher(Node):
                     -self.drop_length_m,
                 ],
                 [0.0, 0.0, 0.0],
-            ),
-            (
-                # 40x40 post, flush against the drop's +X face and the -Y edge,
-                # tilted about local X so the top leans toward -Y (foot fixed).
-                [self.post40_size_m, self.post40_size_m, self.post40_length_m],
-                post_center,
-                [tilt, 0.0, 0.0],
-            ),
-        ]
+            ))
+
+        return segments
 
     def _box(self, dimensions):
         primitive = SolidPrimitive()
