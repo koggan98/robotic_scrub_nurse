@@ -106,8 +106,8 @@ if(BUILD_EXECUTION_NODES)
   find_package(moveit_msgs REQUIRED)
   find_package(moveit_ros_planning_interface REQUIRED)
 
-  # Legacy MoveIt-based executor (still referenced by llm_launch.py until the new
-  # Python execution layer replaces it).
+  # Legacy MoveIt-based executor retained for direct, manual bench testing.
+  # The active nuc_launch.py and llm_launch.py runtimes use skill_executor_node.
   add_executable(loop_mover src/execution/loop_mover.cpp)
   ament_target_dependencies(loop_mover rclcpp geometry_msgs sensor_msgs std_msgs moveit_msgs moveit_ros_planning_interface tracking_msgs)
   target_link_libraries(loop_mover tracking_msgs::tracking_msgs__rosidl_typesupport_cpp)

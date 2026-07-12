@@ -68,8 +68,8 @@ RViz live only on the NUC.
 
 ### Legacy / Alternative Paths (not the active runtime)
 - **Loop path (MoveIt-centric, numeric tool selection):** `loop_mover.cpp` driven by the
-  `/tool_selection` topic. `loop_mover` is still launched by `nuc_launch.py`/`llm_launch.py`
-  for continuity, but the LLM `skill_executor` path is primary. This is the older generation.
+  `/tool_selection` topic. The executable is retained for direct manual bench testing, but neither
+  `nuc_launch.py` nor `llm_launch.py` starts it. This is the older generation.
 - **Socket + RTDE (MoveIt-free):** `src/tracking_pkg/src/socket_mover/` with `ur_rtde`
   (controller-side IK, RTDE TCP force). Dormant/deferred; not part of the active runtime.
 - **Manual pick test:** `tool_pick_test_launch.py` + `tool_pick_test_node` and the on-demand
@@ -111,7 +111,7 @@ reclaim_tray_camera → aruco_marker_manager (marker 105) → reclaim tray camer
 tray_camera  → aruco_marker_manager (marker 110) → tray camera TF (lock once)
    → world_model_node (persistent tool IDs) → /get_world_model (JSON) + /get_world_state (typed)
 ```
-A parallel `reclaim_*` detection/grasp/semantics chain runs on the reclaim tray camera at 0.5 Hz for the
+A parallel `reclaim_*` detection/grasp/semantics chain runs on the reclaim tray camera at 4 Hz for the
 intermediate reclaim tray; it is **not yet wired into the world model or execution**.
 
 ## Current Constraints

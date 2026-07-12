@@ -488,18 +488,6 @@ def generate_launch_description():
             output='screen',
             parameters=[profile_config],
         ),
-        TimerAction(
-            period=5.0,
-            actions=[
-                Node(
-                    package='tracking_pkg',
-                    executable='loop_mover',
-                    name='loop_mover',
-                    output='screen',
-                    parameters=[profile_config],
-                ),
-            ]
-        ),
 
         # ── Layer 6: Interfaces ───────────────────────────────────
         Node(

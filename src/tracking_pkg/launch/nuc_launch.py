@@ -198,18 +198,6 @@ def generate_launch_description():
             output='screen',
             parameters=[profile_config],
         ),
-        TimerAction(
-            period=5.0,
-            actions=[
-                Node(
-                    package='tracking_pkg',
-                    executable='loop_mover',
-                    name='loop_mover',
-                    output='screen',
-                    parameters=[profile_config],
-                ),
-            ]
-        ),
 
         # ── Collision Publishers (moved here from the Jetson) ─────
         # Publish /collision_object to the local move_group. Latched

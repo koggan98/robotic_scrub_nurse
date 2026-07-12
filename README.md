@@ -474,41 +474,17 @@ ros2 run tracking_pkg joint_state_jogger_node --ros-args \
 ---
 
 > **⚠️ Legacy / alternative runtime paths below.**
-> The sections that follow (`loop_with_moveit_launch.py`, the Loop Mover profiles, and the Socket
-> RTDE launch) document the **older** MoveIt loop and the MoveIt-free RTDE path, driven by the
-> numeric `/tool_selection` interface. They are kept for reference and bench testing. The **active**
+> The sections that follow document the older MoveIt loop and the MoveIt-free RTDE path driven by
+> the numeric `/tool_selection` interface. The `loop_mover` executable is retained only for direct
+> manual bench testing and is not started by `nuc_launch.py` or `llm_launch.py`. The **active**
 > runtime is the LLM + skill-action pipeline via `jetson_launch.py` + `nuc_launch.py` (distributed)
 > or `llm_launch.py` (single host) — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Combined MoveIt + Tracking Launch (legacy)
+## Combined MoveIt + Tracking Launch (retired)
 
-If you want Adam-style startup (MoveIt RViz + tracking topics in one command), use:
-
-```bash
-ros2 launch tracking_pkg loop_with_moveit_launch.py ur_type:=ur3e
-```
-
-This launch starts `ur_moveit_config` without its default RViz and opens RViz with a preloaded config that already includes:
-- `/annotated_hand_image`
-- `/tool_detection/annotated_image`
-- `/gesture_pose_marker`
-- `/hand_pose_marker`
-- `/hand_pose`
-- TF display (including frames such as `world`, `base`, `tray_camera_color_optical_frame`, `aruco_marker_105_frame`, `reclaim_tray_camera_color_optical_frame`, and `tool_holder_frame`)
-
-The active MoveIt tracking path now uses `world` as the canonical tracking frame. RViz is configured with `world` as its fixed frame, `/hand_pose` positions are interpreted in `world`, and the expected TF chain is `world -> base -> aruco_board_frame -> camera_frame`.
-
-`world -> base` and `base -> aruco_board_frame` are now started as their own static TFs in the MoveIt launch path, so the upstream frames no longer depend on `frame_publisher.py` starting cleanly. `frame_publisher.py` is now responsible only for `aruco_board_frame -> camera_frame` and keeps retrying until it sees the first valid ArUco board pose. If the board is not visible yet, you should now see repeated warning logs instead of a silent partial initialization.
-
-The instrument-camera/world-model path now starts `world -> tray_camera_color_optical_frame` as a fixed static TF. ArUco marker 120 has been removed from the active configuration.
-
-The same launch now also starts `grasp_approach_pose_service.py`, which exposes `/get_grasp_approach_pose` for on-demand conversion of a TF target frame such as `tool_holder_frame` into a top-down robot grasp pose in `world`.
-
-In the LLM/action handover path, unreachable gesture targets are ignored before any motion, state change, or release-side effect. The robot keeps holding the tool in the previous state, waits for the next reachable gesture, and can still be preempted by `return_tool`.
-
-`loop_launch.py` now starts the camera publisher and static board TF first, then starts tracking consumers slightly later. `loop_with_moveit_launch.py` also delays RViz briefly so the TF tree is usually already populated when RViz opens, which reduces startup-time warning noise on slower hosts such as the NUC.
-
-During handover, the robot now holds briefly at the target pose before force-guided release sensing is enabled. Audio events are queued sequentially so the initial `gesture_detected` tone is not overwritten by a following `unreachable` tone.
+`loop_with_moveit_launch.py` is retained as historical source but is not a supported launch path: it
+references the removed `loop_launch.py`. It is intentionally not repaired as part of the active LLM
+runtime. Use the distributed or single-host active launch described above.
 
 ## Loop Mover Profiles
 
@@ -527,7 +503,9 @@ The same YAML also contains reclaim settings for the dropoff pose, force thresho
 
 For hammer pickup in the MoveIt path, `loop_mover` now approaches the hammer with a pure `z` lift, descends straight down to grasp, and only applies the extra Cartesian offset on the return lift: `lift_height` in `z` plus `0.05 m` in `x`.
 
-After changing the YAML values, restart the launch so `loop_mover`, `gripper_opener_with_zeroer`, and `reclaim_controller` reload the updated parameters.
+After changing the YAML values, restart whichever consumers are in use. The active runtime reloads
+the file through `gripper_opener_with_zeroer` and `reclaim_controller`; a manually started
+`loop_mover` must be restarted separately.
 
 ## Socket RTDE Launch (MoveIt-free)
 
