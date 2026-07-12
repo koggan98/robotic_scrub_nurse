@@ -224,6 +224,10 @@ public:
     : Node("skill_executor_node") {
         // ── Parameters (same defaults as tool_pick_test_node.cpp) ──────
         z_offset_m_ = declare_parameter("z_offset", 0.004);
+        // Same thing for the reclaim tray, kept separate: its grasp points come
+        // from a side camera projected onto a fixed plane, so its depth error is
+        // not the instrument tray's. 5 mm shallower than the instrument tray.
+        reclaim_z_offset_m_ = declare_parameter("reclaim_z_offset", 0.009);
         approach_height_m_ = declare_parameter("approach_height_m", 0.04);
         // Fast local re-grasp: on a failed/slipped grasp, retry at the tray with
         // an escalating pose nudge instead of present→home→re-perceive.
@@ -925,8 +929,13 @@ private:
 
     // ── Pick sequence planning ───────────────────────────────────────
 
+    // z_offset_m: how far ABOVE the perceived grasp point the TCP stops. Per-tray,
+    // because the two trays are perceived differently (top-down camera + depth-free
+    // plane on the instrument tray vs. a side camera on the reclaim tray), so their
+    // depth errors do not have the same sign or size.
     bool tryPlanPickSequence(
         const tracking_msgs::msg::GraspCandidate &cand,
+        double z_offset_m,
         moveit::planning_interface::MoveGroupInterface::Plan &approach_plan,
         moveit::planning_interface::MoveGroupInterface::Plan &descend_plan,
         moveit::planning_interface::MoveGroupInterface::Plan &lift_plan,
@@ -935,7 +944,7 @@ private:
         std::string &err) {
         grasp_pose_out.position.x = cand.grasp_pose.pose.position.x;
         grasp_pose_out.position.y = cand.grasp_pose.pose.position.y;
-        grasp_pose_out.position.z = cand.grasp_pose.pose.position.z + z_offset_m_;
+        grasp_pose_out.position.z = cand.grasp_pose.pose.position.z + z_offset_m;
         grasp_pose_out.orientation = topDownQuaternionFromHandleAxis(
             cand.handle_axis, tool_yaw_offset_rad_);
         approach_pose_out = grasp_pose_out;
@@ -1019,6 +1028,9 @@ private:
             }
         }
 
+        const double z_off = (location_filter == kReclaimLocation)
+            ? reclaim_z_offset_m_ : z_offset_m_;
+
         // Pre-flight: try each candidate in confidence order. Only when
         // approach + descend + lift all plan successfully do we commit to
         // a grasp. No motion happens before this loop succeeds.
@@ -1029,7 +1041,7 @@ private:
         bool found = false;
         for (const auto &cand : candidates) {
             std::string plan_err;
-            if (tryPlanPickSequence(cand, approach_plan, descend_plan, lift_plan,
+            if (tryPlanPickSequence(cand, z_off, approach_plan, descend_plan, lift_plan,
                                     approach_pose, grasp_pose, plan_err)) {
                 chosen = cand;
                 found = true;
@@ -1803,6 +1815,7 @@ private:
 
     // Params
     double z_offset_m_;
+    double reclaim_z_offset_m_;
     double approach_height_m_;
     double tool_yaw_offset_rad_;
     std::string move_group_name_;

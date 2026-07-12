@@ -190,7 +190,13 @@ def generate_launch_description():
                         # (<< tracker max_age 3 s so tool IDs stay stable). Raised from 2 Hz
                         # after the aruco unsubscribe + collision-pub move freed Orin CPU.
                         'inference_rate_hz':     4.0,
-                        'fixed_tool_plane_z_m':  0.04,
+                        # Measured with tcp_probe.py + closed gripper: the tray
+                        # surface is at +0.044, not the +0.040 assumed before.
+                        # This plane is what every detected pixel is ray-cast onto,
+                        # so it sets the grasp point's x/y as well as its z — it is
+                        # NOT just a height knob. Grasp DEPTH is held constant by
+                        # z_offset in nuc_launch.py: plane + z_offset = TCP.
+                        'fixed_tool_plane_z_m':  0.044,
                         'location':              'instrument_tray',
                         'publish_annotated_image': True,
                     }],
@@ -254,15 +260,15 @@ def generate_launch_description():
                         # Match the instrument-tray detector so both annotated tool feeds
                         # update consistently in RViz.
                         'inference_rate_hz':     4.0,
-                        # Reclaim tray surface. The collision model puts the tray's
-                        # bottom bar top face at world z = -0.155; tools lying on it
-                        # are detected ~1 tool-thickness above that. Because the
-                        # reclaim camera looks at the tray from the SIDE (it also
-                        # does hand tracking), the ray-plane projection is sensitive
-                        # to this value: get it wrong and the grasp point walks
-                        # laterally. Measure against a tool at a known spot before
-                        # trusting a real grasp.
-                        'fixed_tool_plane_z_m':  -0.145,
+                        # Reclaim tray surface, measured with tcp_probe.py + closed
+                        # gripper: -0.137 (the earlier -0.145 sat 8 mm too low).
+                        # This matters more here than on the instrument tray: the
+                        # reclaim camera looks at the tray from the SIDE, so a plane
+                        # that is too low makes the ray overshoot and walks the grasp
+                        # point LATERALLY away from the camera, not just downward.
+                        # Grasp DEPTH is held constant by reclaim_z_offset in
+                        # nuc_launch.py: plane + reclaim_z_offset = TCP.
+                        'fixed_tool_plane_z_m':  -0.137,
                         'location':              'reclaim_tray',
                         'publish_annotated_image': True,
                         'annotation_line_width_px': 1,

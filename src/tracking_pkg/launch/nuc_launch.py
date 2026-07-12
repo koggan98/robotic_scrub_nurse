@@ -147,7 +147,18 @@ def generate_launch_description():
                     name='skill_executor_node',
                     output='screen',
                     parameters=[{
-                        'z_offset':                          0.004,
+                        # Grasp TCP = fixed_tool_plane_z_m (jetson_launch) + this.
+                        # Both trays are measured, so the plane now IS the tray
+                        # surface and the gripper grasps right at it — which is what
+                        # a flat instrument needs (the fingers must reach the surface
+                        # to close around it sideways). Hence ~0.
+                        #   instrument: +0.044 + 0.000 = +0.044
+                        #   reclaim:    -0.137 + 0.001 = -0.136
+                        # Both are exactly where grasping already worked. If you
+                        # retune a plane for x/y accuracy, move the matching offset
+                        # by the same amount in reverse or you change grasp depth.
+                        'z_offset':                          0.000,
+                        'reclaim_z_offset':                  0.001,
                         'approach_height_m':                 0.04,
                         'tool_yaw_offset_rad':               1.57079632679,
                         'velocity_scale':                    0.6,
@@ -229,9 +240,9 @@ def generate_launch_description():
             executable='reclaim_tray_collision_publisher.py',
             name='reclaim_tray_collision_publisher',
             output='screen',
-            # include_bottom_bar defaults to False: modelling the tray's support
-            # surface makes it ungraspable, because the gripper's collision
-            # cylinder reaches 38 mm past the TCP. See the node for the geometry.
+            # The tray's support surface IS in the scene (include_bottom_bar), sunk
+            # 4 cm below the real surface so the descend keeps clearance. This only
+            # works with the shortened gripper cylinder from files/ur.urdf.xacro.
             parameters=[{'publish_hz': 0.2}],
         ),
 

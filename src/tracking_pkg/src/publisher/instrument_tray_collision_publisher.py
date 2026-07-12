@@ -101,6 +101,15 @@ class InstrumentTrayCollisionPublisher(Node):
             .get_parameter_value()
             .double_value
         )
+        # Raises the two horizontal pieces at the foot of the post (the short
+        # connecting bar and the wide cross block) without moving the post itself,
+        # which hangs off the camera frame and is already correct. Positive = up.
+        # Measured against the real stand: 0.03 sat too high.
+        self.horizontal_z_offset_m = (
+            self.declare_parameter("horizontal_z_offset_m", 0.01)
+            .get_parameter_value()
+            .double_value
+        )
         self.publish_hz = (
             self.declare_parameter("publish_hz", 2.0)
             .get_parameter_value()
@@ -129,7 +138,8 @@ class InstrumentTrayCollisionPublisher(Node):
             f"vertical_post='{self.post_id}' (in {self.world_frame}, "
             f"{self.post_thickness_m:.3f} x {self.post_thickness_m:.3f} x "
             f"{self.post_length_m:.3f} m, "
-            f"+y offset {self.behind_offset_y_m:.3f} m)."
+            f"+y offset {self.behind_offset_y_m:.3f} m, "
+            f"horizontal parts z_offset {self.horizontal_z_offset_m:+.3f} m)."
         )
         self.publish_collision_objects()
 
@@ -206,7 +216,12 @@ class InstrumentTrayCollisionPublisher(Node):
         msg.primitives.append(post_primitive)
         msg.primitive_poses.append(post_pose)
 
-        bar_center_z = post_bottom_z + (self.horizontal_bar_thickness_m / 2.0)
+        # Both horizontal pieces below share this height.
+        bar_center_z = (
+            post_bottom_z
+            + (self.horizontal_bar_thickness_m / 2.0)
+            + self.horizontal_z_offset_m
+        )
         bar_end_y = (
             post_center_y
             - (self.post_thickness_m / 2.0)
