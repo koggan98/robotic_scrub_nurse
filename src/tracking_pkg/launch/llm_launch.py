@@ -53,6 +53,15 @@ def generate_launch_description():
     # Set via environment variable or hardcode here.
     reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
     tray_cam_serial = os.environ.get('TRAY_CAM_SERIAL', '239222302690')
+    instrument_tray_model_path = os.environ.get(
+        'INSTRUMENT_TRAY_MODEL_PATH',
+        os.path.join(
+            os.path.expanduser('~'),
+            'robotic_scrub_nurse_ws',
+            'ros_unrelated_scripts',
+            'instrument_tray_detector.pt',
+        ),
+    )
 
     # ── UR MoveIt include ─────────────────────────────────────
     # Brings up ur_robot_driver, ros2_control, MoveIt2, and publishes
@@ -266,10 +275,7 @@ def generate_launch_description():
                     name='tool_detection_node',
                     output='screen',
                     parameters=[{
-                        'model_path': os.environ.get(
-                            'OBB_MODEL_PATH',
-                            os.path.join(os.path.expanduser('~'), 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts', 'first_obb_test.pt'),
-                        ),
+                        'model_path': instrument_tray_model_path,
                         'tray_camera_namespace': '/tray_camera',
                         'tray_camera_frame': 'tray_camera_color_optical_frame',
                         'world_frame': 'world',
@@ -354,10 +360,7 @@ def generate_launch_description():
                     name='world_model_builder',
                     output='screen',
                     parameters=[{
-                        'model_path': os.environ.get(
-                            'OBB_MODEL_PATH',
-                            os.path.join(os.path.expanduser('~'), 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts', 'first_obb_test.pt'),
-                        ),
+                        'model_path': instrument_tray_model_path,
                         # Streaming mode: builder subscribes to /tray_camera/*
                         # alongside tool_detection_node. Shared realsense2_camera
                         # node owns the hardware.

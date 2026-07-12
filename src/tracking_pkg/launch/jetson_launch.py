@@ -10,8 +10,9 @@ nuc_launch.py. Both machines must share the same ROS_DOMAIN_ID and use CycloneDD
 Env vars:
   RECLAIM_TRAY_CAM_SERIAL   Serial of the reclaim tray camera  (default: 239222300719)
   TRAY_CAM_SERIAL    Serial of the tray camera   (default: 239222302690)
-  OBB_MODEL_PATH     Path to the YOLO OBB model
-  OBB_DEVICE         YOLO inference device       (default: cuda:0)
+  INSTRUMENT_TRAY_MODEL_PATH  Instrument-tray YOLO OBB model
+  RECLAIM_TRAY_MODEL_PATH     Reclaim-tray YOLO OBB model
+  OBB_DEVICE                  YOLO inference device (default: cuda:0)
   OPENAI_API_KEY     OpenAI API key for LLM
 """
 
@@ -36,6 +37,18 @@ def generate_launch_description():
 
     reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
     tray_cam_serial  = os.environ.get('TRAY_CAM_SERIAL',  '239222302690')
+
+    model_dir = os.path.join(
+        os.path.expanduser('~'), 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts'
+    )
+    instrument_tray_model_path = os.environ.get(
+        'INSTRUMENT_TRAY_MODEL_PATH',
+        os.path.join(model_dir, 'instrument_tray_detector.pt'),
+    )
+    reclaim_tray_model_path = os.environ.get(
+        'RECLAIM_TRAY_MODEL_PATH',
+        os.path.join(model_dir, 'reclaim_tray_detector.pt'),
+    )
 
     ur_type       = LaunchConfiguration('ur_type')
 
@@ -158,12 +171,7 @@ def generate_launch_description():
                     name='tool_detection_node',
                     output='screen',
                     parameters=[{
-                        'model_path': os.environ.get(
-                            'OBB_MODEL_PATH',
-                            os.path.join(os.path.expanduser('~'),
-                                         'robotic_scrub_nurse_ws',
-                                         'ros_unrelated_scripts', 'first_obb_test.pt'),
-                        ),
+                        'model_path': instrument_tray_model_path,
                         'tray_camera_namespace': '/tray_camera',
                         'tray_camera_frame':     'tray_camera_color_optical_frame',
                         'world_frame':           'world',
@@ -223,12 +231,7 @@ def generate_launch_description():
                     name='reclaim_tool_detection_node',
                     output='screen',
                     parameters=[{
-                        'model_path': os.environ.get(
-                            'OBB_MODEL_PATH',
-                            os.path.join(os.path.expanduser('~'),
-                                         'robotic_scrub_nurse_ws',
-                                         'ros_unrelated_scripts', 'first_obb_test.pt'),
-                        ),
+                        'model_path': reclaim_tray_model_path,
                         'tray_camera_namespace': '/reclaim_tray_camera',
                         'tray_camera_frame':     'reclaim_tray_camera_color_optical_frame',
                         'world_frame':           'world',

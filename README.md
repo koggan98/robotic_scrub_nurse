@@ -159,6 +159,12 @@ ros2 launch tracking_pkg nuc_launch.py ur_type:=ur3e
 
 To run everything on a single GPU machine instead, use `ros2 launch tracking_pkg llm_launch.py`.
 
+The perception pipelines use separate YOLO-OBB weights by default:
+`ros_unrelated_scripts/instrument_tray_detector.pt` for the instrument tray and
+`ros_unrelated_scripts/reclaim_tray_detector.pt` for the reclaim tray. Override them when needed
+with `INSTRUMENT_TRAY_MODEL_PATH` and `RECLAIM_TRAY_MODEL_PATH`; `OBB_DEVICE` selects the inference
+device (default: `cuda:0`). The single-host launch currently runs only the instrument-tray detector.
+
 For detailed step-by-step instructions (network, UR description overrides, permissions, startup
 order), see **[Deployment Guide](deployment_guide.md)**.
 
