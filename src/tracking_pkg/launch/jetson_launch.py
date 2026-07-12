@@ -251,14 +251,12 @@ def generate_launch_description():
                         'imgsz':                 640,
                         'device':                os.environ.get('OBB_DEVICE', 'cuda:0'),
                         'handle_class_name':     'handle',
-                        # Slow "stream" — one frame every 2 s. Reclaim = intermediate
-                        # storage (not time-critical); keeps the RViz annotation updating
-                        # at negligible load. Raised from 0.2 Hz after freeing Orin CPU.
-                        # NOTE: if the reclaim is later wired into a tracker/world model,
-                        # set that tracker's max_age > 2 s.
-                        'inference_rate_hz':     0.5,
+                        # Match the instrument-tray detector so both annotated tool feeds
+                        # update consistently in RViz.
+                        'inference_rate_hz':     4.0,
                         'fixed_tool_plane_z_m':  0.04,
                         'publish_annotated_image': True,
+                        'annotation_line_width_px': 1,
                         'detections_topic':      '/reclaim_tools_obb',
                         'annotated_topic':       '/reclaim_detection/annotated_image',
                     }],

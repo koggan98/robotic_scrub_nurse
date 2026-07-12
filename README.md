@@ -167,6 +167,11 @@ device (default: `cuda:0`). The launch files detect both the `~/robotic_scrub_nu
 directory and the `~/robotic_scrub_nurse_ws` development workspace. The single-host launch
 currently runs only the instrument-tray detector.
 
+RViz shows three processed camera views: the instrument-tray tool detections, reclaim-tray hand
+annotations, and reclaim-tray tool detections. Raw camera feeds are intentionally omitted. In the
+distributed Jetson launch, both tool-detection feeds run at 4 Hz. The lower-resolution reclaim
+tool feed uses 1 px detection outlines; the instrument feed retains the 2 px default.
+
 For detailed step-by-step instructions (network, UR description overrides, permissions, startup
 order), see **[Deployment Guide](deployment_guide.md)**.
 

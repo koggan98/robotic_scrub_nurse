@@ -96,6 +96,7 @@ class ToolDetectionNode(Node):
         self.declare_parameter('depth_max_m', 2.0)
         self.declare_parameter('fixed_tool_plane_z_m', 0.030)
         self.declare_parameter('publish_annotated_image', True)
+        self.declare_parameter('annotation_line_width_px', 2)
         # Output topics as params so a second instance (e.g. the reclaim tray on
         # /reclaim_tray_camera) can publish to distinct topics without colliding with the
         # instrument-tray detector. Defaults keep the existing tray behaviour.
@@ -116,6 +117,9 @@ class ToolDetectionNode(Node):
         self.depth_max_m = float(self.get_parameter('depth_max_m').value)
         self.fixed_tool_plane_z_m = float(self.get_parameter('fixed_tool_plane_z_m').value)
         self.publish_annotated_image = bool(self.get_parameter('publish_annotated_image').value)
+        self.annotation_line_width_px = max(
+            1, int(self.get_parameter('annotation_line_width_px').value)
+        )
         self.detections_topic = self.get_parameter('detections_topic').value
         self.annotated_topic = self.get_parameter('annotated_topic').value
 
@@ -417,8 +421,14 @@ class ToolDetectionNode(Node):
         return float(np.median(valid))
 
     def _annotate(self, img, body, handle, tool_id):
-        cv2.polylines(img, [body.corners.astype(np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA)
-        cv2.polylines(img, [handle.corners.astype(np.int32)], True, (255, 180, 0), 2, cv2.LINE_AA)
+        cv2.polylines(
+            img, [body.corners.astype(np.int32)], True, (0, 255, 0),
+            self.annotation_line_width_px, cv2.LINE_AA,
+        )
+        cv2.polylines(
+            img, [handle.corners.astype(np.int32)], True, (255, 180, 0),
+            self.annotation_line_width_px, cv2.LINE_AA,
+        )
         center = body.center.astype(int)
         cv2.putText(
             img, f'{tool_id} {body.cls_name} {body.conf:.2f}',
