@@ -30,6 +30,20 @@ class TrayOpenings:
             for p in (polygons or [])
             if len(p) >= 3
         ]
+        # The same openings, but stretched out along their LONG axis so the two
+        # SHORT ends effectively disappear. Used for two things, both of which must
+        # ignore the short ends:
+        #
+        #  - the FINGERTIPS. The jaws open perpendicular to the tool, and the tools
+        #    lie across the slot — so the two fingers sit beside each other ALONG
+        #    the slot's long axis, 32.5 mm out on either side. At the short ends the
+        #    frame is stepped down, so a fingertip may hang over it. Only the two
+        #    LONG rails are real obstacles for them.
+        #  - the CENTRING objective. The distance to the short ends does not change
+        #    as the grasp point slides along the tool, so including it would flatten
+        #    the objective for any tool near an end, and the grasp would stop being
+        #    centred exactly where it matters.
+        self.polygons_lateral = [_extend_along_long_axis(p) for p in self.polygons]
 
     def __bool__(self):
         """False when no opening is known — callers must then stay shallow."""
@@ -50,19 +64,33 @@ class TrayOpenings:
                 return True
         return False
 
-    def clearance(self, point_xy):
-        """How deep inside an opening the point sits. 0.0 if it is in none of them.
+    def contains_lateral(self, point_xy, margin_m=None):
+        """Like contains(), but only the two LONG rails count — the short ends are
+        ignored. This is the test for the FINGERTIPS: they stick out along the
+        slot's long axis, and the frame is stepped down at its short ends, so a
+        fingertip may hang over one. It may never touch a long rail.
+        """
+        margin = self.edge_margin_m if margin_m is None else float(margin_m)
+        p = np.asarray(point_xy, dtype=float)[:2]
+        for poly in self.polygons_lateral:
+            if _point_in_polygon(p, poly) and _distance_to_boundary(p, poly) >= margin:
+                return True
+        return False
 
-        This is what "grasp as centrally as possible" reduces to. The openings are
-        long NARROW slots and the tools always lie ACROSS them, so the distance to
-        the boundary is dominated by the two long edges — maximising it puts the
-        point on the slot's centre line, along its short axis. Exactly where a flat
-        instrument should be grasped. The largest possible clearance from the
-        profile comes along for free.
+    def clearance(self, point_xy):
+        """Distance to the nearest LONG rail — i.e. how centred the point is across
+        the slot. 0.0 if it is not inside an opening at all.
+
+        This is what "grasp as centrally as possible" reduces to: the tools lie
+        ACROSS the slot, so sliding the grasp point along the tool moves it between
+        the two long rails, and maximising this distance puts it on the centre line
+        of the short axis. The short ends are deliberately excluded — their distance
+        does not change as the point slides, so counting them would flatten the
+        objective for a tool lying near an end.
         """
         p = np.asarray(point_xy, dtype=float)[:2]
         best = 0.0
-        for poly in self.polygons:
+        for poly in self.polygons_lateral:
             if _point_in_polygon(p, poly):
                 best = max(best, _distance_to_boundary(p, poly))
         return best
@@ -80,6 +108,22 @@ class TrayOpenings:
             polygons=polys,
             edge_margin_m=tray_cfg.get('edge_margin_m', 0.008),
         )
+
+
+def _extend_along_long_axis(poly, extra_m=1.0):
+    """Push the polygon's two SHORT ends far out, leaving the long rails where they
+    are. For a rectangular slot this simply makes it very long and equally narrow —
+    so a containment test against it means "clear of the long rails", regardless of
+    how close to an end the point is.
+    """
+    c = poly.mean(axis=0)
+    d = poly - c
+    # The principal axis of the vertices IS the slot's long axis.
+    _, _, vt = np.linalg.svd(d, full_matrices=False)
+    long_axis = vt[0]
+    # Slide each vertex outward along that axis, away from the centre.
+    t = d @ long_axis
+    return poly + np.sign(t)[:, None] * extra_m * long_axis
 
 
 def _point_in_polygon(point, poly):

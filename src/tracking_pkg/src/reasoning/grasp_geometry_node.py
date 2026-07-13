@@ -367,10 +367,24 @@ class GraspGeometryNode(Node):
             if self._clears_profile(handle_c, fed, float(d), tray)
         ]
         if not feasible:
-            return self._no_slide(
-                det, nominal_d, shallow_z,
+            # WHY did nothing work? Two failures, two different fixes — so check
+            # which it was rather than guess.
+            point_reaches = any(
+                tray.contains(handle_c[:2] + float(d) * fed[:2])
+                for d in np.arange(d_lo, d_hi + 0.5 * step, step)
+            )
+            reason = (
+                # The grasp point can sit in the slot, but a fingertip still fouls a
+                # LONG rail — the tool must be lying at a slant, not across.
+                'the grasp point reaches the opening but a fingertip fouls a long '
+                'rail — the tool is lying at a slant rather than across the slot'
+                if point_reaches else
+                # The grasp point never gets into the slot at all.
                 f'no spot in {d_lo * 1000:.0f}..{d_hi * 1000:.0f} mm reaches the '
-                f'opening — usually slide_max_m is too small for {det.tool_class}')
+                f'opening — raise slide_max_m for {det.tool_class}, or the tool '
+                f'does not cross the slot at all'
+            )
+            return self._no_slide(det, nominal_d, shallow_z, reason)
 
         # Of the safe spots, take the one that sits DEEPEST inside the opening.
         #
@@ -397,12 +411,26 @@ class GraspGeometryNode(Node):
         return nominal_d, shallow_z, False, 'sliding_no_opening'
 
     def _clears_profile(self, handle_c, fed, distance_m, tray):
-        """Would the grasp point AND both fingertips land inside the opening?"""
+        """Can the gripper descend here?
+
+        Two different tests, because the two kinds of edge are different obstacles:
+
+        - The GRASP POINT must stay clear of every edge, short ends included — it is
+          the TCP, and the tool has to be there.
+        - The FINGERTIPS stick out 32.5 mm on either side, ALONG the slot's long
+          axis (the jaws open perpendicular to the tool, and the tools lie across
+          the slot). At the short ends the frame is stepped down, so a fingertip may
+          hang over one. They must only clear the two long rails.
+
+        Testing the fingers against the short ends as well would sacrifice ~38 mm at
+        each end of the slot — on the 217 mm reclaim tray that is a third of it.
+        """
         grasp_xy = handle_c[:2] + distance_m * fed[:2]
-        return all(
-            tray.contains(q)
-            for q in gripper_footprint(grasp_xy, fed[:2], self.finger_half_span_m)
-        )
+        if not tray.contains(grasp_xy):
+            return False
+        fingers = gripper_footprint(
+            grasp_xy, fed[:2], self.finger_half_span_m)[1:]
+        return all(tray.contains_lateral(f) for f in fingers)
 
 
 def main(args=None):

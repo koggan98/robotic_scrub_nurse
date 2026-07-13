@@ -1755,6 +1755,38 @@ private:
         approach_out.position.z = release_out.position.z + approach_height_m_;
     }
 
+    // The goal names a tool — but WHICH kind of name? A track id (reclaim_0), a
+    // tool class (hammer), or a registry slot id (hammer_1).
+    //
+    // Track ids are EPHEMERAL: the world model evicts a tool after ~10 s of
+    // occlusion and re-mints a fresh id when it reappears. So insisting on one
+    // would be fragile even for a caller that gets it right — by the time we
+    // grasp, reclaim_0 may already be reclaim_3. Match leniently, and let the
+    // CLASS be the durable name.
+    static std::string classGuessFromName(std::string q) {
+        for (const std::string &p : {std::string("tool_"), std::string("reclaim_")}) {
+            if (q.rfind(p, 0) == 0) { q = q.substr(p.size()); break; }
+        }
+        // A registry slot id: strip a trailing "_<digits>" ("hammer_1" -> "hammer").
+        const auto us = q.rfind('_');
+        if (us != std::string::npos && us + 1 < q.size()) {
+            bool digits = true;
+            for (size_t i = us + 1; i < q.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(q[i]))) { digits = false; break; }
+            }
+            if (digits) q = q.substr(0, us);
+        }
+        return q;
+    }
+
+    static bool nameMatches(const tracking_msgs::msg::GraspCandidate &c,
+                            const std::string &q) {
+        if (q.empty()) return true;
+        return c.tool_id == q
+            || c.tool_class == q
+            || c.tool_class == classGuessFromName(q);
+    }
+
     bool doReturnToolHome(const std::string &tool_id_arg,
                           std::vector<std::string> &returned_out,
                           std::vector<std::string> &skipped_ids_out,
@@ -1764,12 +1796,17 @@ private:
         std::vector<tracking_msgs::msg::GraspCandidate> candidates;
         if (!collectCandidates(candidates, kReclaimLocation, err)) return false;
         if (!tool_id_arg.empty()) {
+            std::string on_tray;
+            for (const auto &c : candidates) {
+                on_tray += (on_tray.empty() ? "" : ", ") + c.tool_class;
+            }
             candidates.erase(
                 std::remove_if(candidates.begin(), candidates.end(),
-                    [&](const auto &c) { return c.tool_id != tool_id_arg; }),
+                    [&](const auto &c) { return !nameMatches(c, tool_id_arg); }),
                 candidates.end());
             if (candidates.empty()) {
-                err = "tool_id '" + tool_id_arg + "' not on the reclaim tray";
+                err = "'" + tool_id_arg + "' is not on the reclaim tray (there: "
+                      + (on_tray.empty() ? "nothing" : on_tray) + ")";
                 return false;
             }
         }

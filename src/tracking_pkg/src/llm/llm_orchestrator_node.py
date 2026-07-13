@@ -49,10 +49,12 @@ from tracking_msgs.srv import CountInstruments, GetWorldModel
 # ── Pydantic tool-argument models ──────────────────────────────────
 
 class PutToolBackArgs(BaseModel):
-    tool_id: str = Field(
+    tool: str = Field(
         default='',
-        description="Reclaim-tray tool id to put back on its own place on the "
-                    "instrument tray. Empty = all of them, one by one.")
+        description="Which tool on the reclaim tray to put back. Give its CLASS, "
+                    "e.g. 'hammer' or 'awl' or 'scissors_long' — that is the "
+                    "durable name. Its id from reclaim_tools works too, but ids "
+                    "change when a tool is briefly occluded. Empty = all of them.")
 
 
 class PickAndHandoverArgs(BaseModel):
@@ -232,14 +234,17 @@ Rules:
 4. If several tools match and you truly cannot choose, ask one short question.
    Note the instruments above are distinct: long vs short scissors, and large vs
    medium vs small forceps. Use the surgeon's words to pick the right one.
-10. The RECLAIM tray holds USED tools. Exactly ONE thing may happen to them: they
-   go back to their own place on the instrument tray, via put_tool_back(tool_id).
-   They are NEVER handed to the surgeon.
-   - Asks for a tool that the inventory says is ON_RECLAIM? Just tell him, and do
-     nothing else: "Scissors on reclaim tray." Do NOT call pick_and_handover for
-     it — that will fail anyway. He decides what happens next.
-   - Says "scissors back" / "put that away" / "done with it"? Then
-     put_tool_back(tool_id) for that tool. Never do this on your own.
+10. reclaim_tools in the world model are USED tools lying on the reclaim tray.
+   Exactly ONE thing may happen to them: they go back to their own place on the
+   instrument tray via put_tool_back. They are NEVER handed to the surgeon.
+   - He asks for a tool that is in reclaim_tools and NOT in available_tools?
+     Name the tool HE asked for, say where it is, and stop there: "Awl on reclaim
+     tray." Do NOT call pick_and_handover for it — it would fail anyway.
+   - He says "awl back" / "put that away" / "done with it"? Call put_tool_back
+     with the tool's CLASS: put_tool_back({{"tool": "awl"}}). Never on your own.
+   - put_tool_back returns stage "putting_back": the robot has only STARTED.
+     Say "Putting back." — NEVER "Done". The robot reports for itself when it has
+     actually finished.
 11. "Count the instruments" / "we're done" / "end of operation" ->
    count_instruments(). Report briefly what is NOT back home. The ones in `in_use`
    matter most: those are nowhere visible — possibly still inside the patient.
@@ -310,8 +315,9 @@ Rules:
                 "name": "put_tool_back",
                 "description": "Take a tool the surgeon left on the reclaim tray "
                                "and return it to its own place on the instrument "
-                               "tray. Only on his explicit say-so — a tool on the "
-                               "reclaim tray may be one he wants back in a moment.",
+                               "tray. Starts the robot and returns immediately — "
+                               "it is NOT finished when this returns. Only on his "
+                               "explicit say-so.",
                 "parameters": PutToolBackArgs.model_json_schema()}},
             {"type": "function", "function": {
                 "name": "count_instruments",
@@ -605,8 +611,34 @@ Rules:
         except ValidationError as e:
             return json.dumps({"success": False, "message": f"bad args: {e}"})
 
+        # Resolve the name against what is ACTUALLY on the reclaim tray, right now,
+        # before moving anything. Two reasons:
+        #  - the model reliably guesses ids that do not exist ('hammer', 'tool_awl'),
+        #    and a rejection that arrives seconds later, after it has already said
+        #    "done", is worse than useless;
+        #  - track ids are ephemeral anyway (the tracker re-mints one after ~10 s of
+        #    occlusion), so we hand the executor the CLASS, which is durable.
+        reclaim = self._reclaim_tools()
+        if reclaim is None:
+            return json.dumps({"success": False,
+                               "message": "cannot read the world model"})
+        if not reclaim:
+            return json.dumps({"success": False,
+                               "message": "nothing on the reclaim tray"})
+
+        match = self._match_reclaim_tool(parsed.tool, reclaim)
+        if match is None:
+            there = ', '.join(t.get('display_name') or t.get('class', '?')
+                              for t in reclaim)
+            return json.dumps({
+                "success": False,
+                "message": f"'{parsed.tool}' is not on the reclaim tray. "
+                           f"There: {there}"})
+
         goal = ReturnToolHome.Goal()
-        goal.tool_id = parsed.tool_id
+        # The class, not the track id — it survives the tool being occluded between
+        # now and the moment the arm actually grasps it.
+        goal.tool_id = match['class']
 
         # Started asynchronously, like the handover — and for the same reason.
         # self._busy is a single lock around the whole conversation, so blocking
@@ -617,7 +649,44 @@ Rules:
         if gh is None:
             return json.dumps({"success": False, "message": err})
         gh.get_result_async().add_done_callback(self._on_put_back_done)
-        return json.dumps({"success": True, "stage": "putting_back"})
+        # STARTED, not done. The prompt tells the model to say so.
+        return json.dumps({
+            "success": True,
+            "stage": "putting_back",
+            "tool": match.get('display_name') or match['class'],
+        })
+
+    def _reclaim_tools(self):
+        """What is on the reclaim tray right now. None if the world model is mute."""
+        if not self.world_model_client.wait_for_service(timeout_sec=3.0):
+            return None
+        fut = self.world_model_client.call_async(GetWorldModel.Request())
+        resp = self._wait_for_future(fut, 5.0)
+        if resp is None or not resp.success:
+            return None
+        try:
+            return json.loads(resp.world_model_json).get('reclaim_tools', []) or []
+        except Exception:
+            return None
+
+    @staticmethod
+    def _match_reclaim_tool(name, reclaim):
+        """Find the tool the surgeon means, however the model chose to name it."""
+        q = (name or '').strip().lower()
+        if not q:
+            return reclaim[0] if len(reclaim) == 1 else None
+        for t in reclaim:
+            if q in (str(t.get('id', '')).lower(),
+                     str(t.get('class', '')).lower(),
+                     str(t.get('display_name', '')).lower()):
+                return t
+        # A half-remembered id ('tool_awl') or a registry slot id ('hammer_1'):
+        # does the class appear as a whole word inside it?
+        for t in reclaim:
+            cls = str(t.get('class', '')).lower()
+            if cls and cls in q.split('_'):
+                return t
+        return None
 
     def _on_put_back_done(self, future):
         try:
@@ -628,7 +697,7 @@ Rules:
         res = wrapped.result
         if getattr(res, 'success', False):
             n = len(res.returned_slot_ids)
-            self._publish_response(f'{n} back' if n != 1 else 'back')
+            self._publish_response(f'{n} back' if n != 1 else 'Back.')
         else:
             skipped = list(getattr(res, 'skipped_reasons', []) or [])
             reason = skipped[0] if skipped else getattr(res, 'message', 'failed')
