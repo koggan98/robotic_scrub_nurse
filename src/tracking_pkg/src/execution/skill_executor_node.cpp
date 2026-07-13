@@ -240,6 +240,12 @@ public:
         regrasp_deeper_step_m_ = declare_parameter("regrasp_deeper_step_m", 0.0015);
         regrasp_center_step_m_ = declare_parameter("regrasp_center_step_m", 0.005);
         tool_yaw_offset_rad_ = declare_parameter("tool_yaw_offset_rad", 1.57079632679);
+        // The held tool's collision box, measured FROM THE JAWS along the tool —
+        // not from its middle. See attachToolBox().
+        tool_box_handle_m_ = declare_parameter("tool_box_handle_m", 0.08);
+        tool_box_tip_m_ = declare_parameter("tool_box_tip_m", 0.18);
+        tool_box_width_m_ = declare_parameter("tool_box_width_m", 0.05);
+        tool_box_height_m_ = declare_parameter("tool_box_height_m", 0.05);
         move_group_name_ = declare_parameter("move_group_name", std::string("ur_manipulator"));
         end_effector_link_ = declare_parameter("end_effector_link", std::string("gripper_tip_link"));
         reference_frame_ = declare_parameter("reference_frame", std::string("world"));
@@ -795,13 +801,51 @@ private:
     }
 
     // ── Attached tool collision object ───────────────────────────────
-    // A single conservative box for every tool: 30 cm along the TCP Y axis,
-    // 5 cm in X and Z, centered on gripper_tip_link (tool gripped in the
-    // middle). Attaching it makes the held tool visible to the planner so it
-    // avoids the tray-camera stand during the rotation and handover, and
-    // explains the real reach of the gripper beyond its own collision box.
+    // The held tool, as the planner sees it: a box along the TCP Y axis (which is
+    // the tool's own axis, because the jaws close across it). Attaching it keeps
+    // the onward motion — present rotation, handover, place-back — clear of the
+    // tray-camera stand, and explains the tool's reach beyond the gripper's own
+    // collision geometry.
+    //
+    // The box is LOPSIDED, and that is the point. The jaws never hold a tool in
+    // its middle: the grasp point is handle_center + d * functional_end_dir, so the
+    // handle ends a few cm behind the jaws while the working end runs far ahead of
+    // them. A box centred on the TCP therefore has to be as long as the longest
+    // possible overhang in BOTH directions, and the half that sticks out behind the
+    // gripper is pure fiction — it models nothing, and it fouls things the real tool
+    // would never touch. Reaching further toward the tip than toward the handle
+    // models the same tool with far less phantom volume.
 
-    void attachToolBox() {
+    void attachToolBox(const tracking_msgs::msg::GraspCandidate &cand,
+                       const geometry_msgs::msg::Pose &grasp_pose) {
+        // Which way along TCP Y does the TIP lie? A lopsided box makes this a real
+        // question — get it backwards and the tool is modelled sticking out of the
+        // wrong side of the jaws. So derive it instead of assuming it: today the
+        // grasp orientation is built from handle_axis (= -functional_end_dir) with
+        // tool_yaw_offset_rad, which puts +Y on the handle side — but both of those
+        // are conventions that could be re-tuned, and this stays right if they are.
+        const auto &q = grasp_pose.orientation;
+        const double tcp_y_x = 2.0 * (q.x * q.y - q.w * q.z);
+        const double tcp_y_y = 1.0 - 2.0 * (q.x * q.x + q.z * q.z);
+        const double toward_tip = tcp_y_x * cand.functional_end_dir.x
+                                + tcp_y_y * cand.functional_end_dir.y;
+
+        double handle_len = tool_box_handle_m_;
+        double tip_len = tool_box_tip_m_;
+        double tip_sign = (toward_tip >= 0.0) ? 1.0 : -1.0;
+        if (std::abs(toward_tip) < 0.5) {
+            // TCP Y does not run along the tool at all, so "toward the tip" has no
+            // meaning here and the lopsided box would be aimed at a guess. Fall back
+            // to a symmetric one that covers the tool whichever way it points.
+            RCLCPP_WARN(get_logger(),
+                "Tool axis is not along TCP Y (|dot| = %.2f) — cannot tell tip from "
+                "handle, attaching a symmetric %.0f cm box instead.",
+                std::abs(toward_tip), 200.0 * tip_len);
+            handle_len = tip_len;
+            tip_sign = 1.0;
+        }
+        const double length = handle_len + tip_len;
+
         moveit_msgs::msg::AttachedCollisionObject aco;
         aco.link_name = end_effector_link_;
         aco.object.id = "held_tool";
@@ -810,10 +854,14 @@ private:
 
         shape_msgs::msg::SolidPrimitive box;
         box.type = shape_msgs::msg::SolidPrimitive::BOX;
-        box.dimensions = {0.05, 0.30, 0.05};  // x, y (long axis), z
+        box.dimensions = {tool_box_width_m_, length, tool_box_height_m_};
 
-        geometry_msgs::msg::Pose pose;  // identity = centered on the TCP
+        geometry_msgs::msg::Pose pose;
         pose.orientation.w = 1.0;
+        // Offset the centre so the box reaches tip_len toward the tip and
+        // handle_len toward the handle: its centre sits (length/2 - handle_len)
+        // from the TCP, on the tip side.
+        pose.position.y = tip_sign * (0.5 * length - handle_len);
 
         aco.object.primitives.push_back(box);
         aco.object.primitive_poses.push_back(pose);
@@ -823,8 +871,10 @@ private:
             "flange", "tool0",
         };
         psi_.applyAttachedCollisionObject(aco);
-        RCLCPP_INFO(get_logger(), "Attached held_tool collision box to %s.",
-                    end_effector_link_.c_str());
+        RCLCPP_INFO(get_logger(),
+            "Attached held_tool box to %s: %.0f cm toward the tip, %.0f cm toward "
+            "the handle.",
+            end_effector_link_.c_str(), 100.0 * tip_len, 100.0 * handle_len);
     }
 
     void detachToolBox() {
@@ -1289,14 +1339,14 @@ private:
 
         // Clear-out lift, before the tool box is attached.
         //
-        // attachToolBox() hangs a 0.30 m long box off the TCP. On the reclaim
-        // tray the approach height is still down inside the tray: the box would
-        // sweep through the tray's vertical drop wall, and MoveIt would then
-        // refuse every later plan with "start state in collision" — the arm
-        // would be stuck holding the tool. So rise clear of the tray first and
-        // attach up there. The instrument tray needs none of this (its approach
-        // pose is already in free space), so doPick passes NaN and this is
-        // skipped — its behaviour is unchanged.
+        // attachToolBox() hangs a box off the TCP that reaches tool_box_tip_m_
+        // (0.18 m) toward the tool's tip. On the reclaim tray the approach height
+        // is still down inside the tray: the box would sweep through the tray's
+        // vertical drop wall, and MoveIt would then refuse every later plan with
+        // "start state in collision" — the arm would be stuck holding the tool. So
+        // rise clear of the tray first and attach up there. The instrument tray
+        // needs none of this (its approach pose is already in free space), so doPick
+        // passes NaN and this is skipped — its behaviour is unchanged.
         if (std::isfinite(clearout_world_z) &&
             clearout_world_z > approach_pose.position.z + 1e-6) {
             geometry_msgs::msg::Pose clear = approach_pose;
@@ -1321,7 +1371,7 @@ private:
         // Tool is now in the gripper: make it visible to the planner so any
         // onward motion (present rotation, handover, place-back) avoids the
         // tray-camera stand and accounts for the tool's reach beyond the box.
-        attachToolBox();
+        attachToolBox(chosen, grasp_pose);
 
         rememberHeldTool(chosen, grasp_pose);
         publishHeldToolEvent("PICKED");
@@ -2234,6 +2284,10 @@ private:
     double reclaim_z_offset_m_;
     double approach_height_m_;
     double tool_yaw_offset_rad_;
+    double tool_box_handle_m_;
+    double tool_box_tip_m_;
+    double tool_box_width_m_;
+    double tool_box_height_m_;
     std::string move_group_name_;
     std::string end_effector_link_;
     std::string reference_frame_;
