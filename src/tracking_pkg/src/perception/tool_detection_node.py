@@ -106,6 +106,7 @@ class ToolDetectionNode(Node):
         # carried downstream so the world model can keep the two trays apart and
         # the executor can tell where a tool it is about to grasp came from.
         self.declare_parameter('location', 'instrument_tray')
+        self.declare_parameter('tray_geometry_path', '')
 
         self.model_path = self.get_parameter('model_path').value
         ns = self.get_parameter('tray_camera_namespace').value.rstrip('/')
@@ -127,6 +128,8 @@ class ToolDetectionNode(Node):
         self.detections_topic = self.get_parameter('detections_topic').value
         self.annotated_topic = self.get_parameter('annotated_topic').value
         self.location = self.get_parameter('location').value
+        self.world_offset_xy = self._load_world_offset(
+            self.get_parameter('tray_geometry_path').value)
 
         self.bridge = CvBridge()
         self._lock = Lock()
@@ -163,6 +166,36 @@ class ToolDetectionNode(Node):
             f'model={self.model_path or "<unset>"}, plane_z={self.fixed_tool_plane_z_m}, '
             f'rate={self.inference_rate_hz} Hz, device={self.device})'
         )
+
+    def _load_world_offset(self, path):
+        """This camera's systematic world-XY bias, from config/tray_geometry.yaml.
+
+        Added to every projected point. Zero unless a tray has been calibrated.
+        """
+        import os
+
+        import yaml
+        from ament_index_python.packages import get_package_share_directory
+
+        if not path:
+            path = os.path.join(
+                get_package_share_directory('tracking_pkg'),
+                'config', 'tray_geometry.yaml',
+            )
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+            tray = (data.get('trays', {}) or {}).get(self.location, {}) or {}
+            off = [float(v) for v in tray.get('world_offset_xy', [0.0, 0.0])]
+            if any(abs(v) > 1e-9 for v in off):
+                self.get_logger().info(
+                    f'{self.location}: correcting a systematic world-XY bias of '
+                    f'[{off[0]:+.4f}, {off[1]:+.4f}] m from {path}')
+            return off
+        except Exception as e:
+            self.get_logger().warn(
+                f'No tray geometry at {path} ({e}) — no bias correction applied.')
+            return [0.0, 0.0]
 
     def _on_color(self, msg):
         # Store the raw ROS msg; convert to cv2 only at tick time (inference rate),
@@ -351,6 +384,21 @@ class ToolDetectionNode(Node):
     # readings on the tools are unreliable. Once the camera is repositioned,
     # set fixed_tool_plane_z_m to NaN to revert to depth-based projection.
     def _pixel_to_world(self, pt_px, depth_img, cam_matrix, tf_world_from_cam):
+        world = self._pixel_to_world_raw(
+            pt_px, depth_img, cam_matrix, tf_world_from_cam)
+        if world is None:
+            return None
+        # Systematic XY bias of this camera, from config/tray_geometry.yaml. The
+        # reclaim camera reports x ~10 mm too large (oblique side view + the lens
+        # distortion coefficients being ignored above), which sent the robot past
+        # the tool. tray_opening_calib.py applies the SAME offset, so the tool
+        # grasp points and the tray opening polygon stay in one frame — the
+        # robot's.
+        world[0] += self.world_offset_xy[0]
+        world[1] += self.world_offset_xy[1]
+        return world
+
+    def _pixel_to_world_raw(self, pt_px, depth_img, cam_matrix, tf_world_from_cam):
         if tf_world_from_cam is None or cam_matrix is None:
             return None
 

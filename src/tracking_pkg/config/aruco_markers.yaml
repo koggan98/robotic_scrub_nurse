@@ -29,9 +29,14 @@ markers:
     static_pose:
       parent_frame: "world"
       child_frame: "aruco_marker_105_frame"
-      # TODO: measure x in world frame
-      # y = -0.44 in world (marker sits 44 cm along -y_world; = +y_base)
+      # x = 0.0: the marker sits exactly ON the x axis (measured, confirmed).
+      # y = -0.44 in world (marker sits 44 cm along -y_world; = +y_base) (measured)
       # z = top_edge (-0.028) - size/2 (0.0575) = -0.0855  (center below base plane)
+      # This pose is correct. The residual ~10 mm +x bias in everything this camera
+      # reports is NOT from here — it comes from solvePnP on the oblique side view
+      # (and the projection ignoring the lens distortion coefficients). It is
+      # compensated by world_offset_xy in config/tray_geometry.yaml. Do not "fix"
+      # it by nudging these numbers; they are measured.
       translation: [0.0, -0.44, -0.0855]
       # Axis mapping (marker frame -> world frame):
       #   marker_X -> +world_X

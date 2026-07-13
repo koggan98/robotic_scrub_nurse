@@ -111,13 +111,18 @@ def world_to_pixel(p_world, K, T_world_cam):
 
 
 class TrayCalib(Node):
-    def __init__(self, tray_key, plane_z, stored_polys):
+    def __init__(self, tray_key, plane_z, stored_polys, world_offset_xy):
         super().__init__('tray_opening_calib')
         cfg = TRAYS[tray_key]
         self.tray_name = cfg['name']
         self.cam_frame = cfg['frame']
         self.plane_z = plane_z
         self.stored_polys = stored_polys
+        # Same systematic bias correction tool_detection_node applies. Without it
+        # the polygon would sit in the camera's biased frame while the tool grasp
+        # points sit in the corrected one, and the two would disagree by exactly
+        # the bias — which is how the gripper ends up over a profile.
+        self.off = np.array(world_offset_xy, dtype=float)
 
         self.bridge = CvBridge()
         self.image = None
@@ -157,6 +162,7 @@ class TrayCalib(Node):
         if p is None:
             self.get_logger().warn('Strahl trifft die Ebene nicht — Klick ignoriert.')
             return
+        p[:2] += self.off          # in denselben korrigierten Frame wie die Werkzeuge
         self.corners.append(p)
         self.corners_px.append((x, y))
         print(f'  Ecke {len(self.corners)}: Pixel ({x:4d},{y:4d}) '
@@ -176,9 +182,14 @@ def draw(node, frame):
     T = node.T_world_cam()
 
     # Gespeichertes Polygon zurueckprojizieren (gruen) — der Drift-Check.
+    # Das Polygon steht im KORRIGIERTEN Frame, die Kamera-Projektion ist aber die
+    # unkorrigierte. Also den Offset erst wieder herausrechnen, sonst laege die
+    # gruene Kontur um genau den Bias daneben und man wuerde eine Drift sehen,
+    # die gar keine ist.
     if T is not None and node.K is not None:
         for poly in node.stored_polys:
-            pts = [world_to_pixel([x, y, node.plane_z], node.K, T)
+            pts = [world_to_pixel([x - node.off[0], y - node.off[1], node.plane_z],
+                                  node.K, T)
                    for x, y in poly]
             pts = [p for p in pts if p is not None]
             if len(pts) >= 2:
@@ -215,17 +226,20 @@ def main():
     args = ap.parse_args()
 
     tray_name = TRAYS[args.tray]['name']
-    plane_z, stored = 0.0, []
+    plane_z, stored, offset = 0.0, [], [0.0, 0.0]
     try:
         with open(args.yaml) as f:
             cfg = (yaml.safe_load(f) or {}).get('trays', {}).get(tray_name, {})
         plane_z = float(cfg.get('plane_z', 0.0))
         stored = [o.get('polygon', []) for o in (cfg.get('openings') or [])]
+        offset = [float(v) for v in cfg.get('world_offset_xy', [0.0, 0.0])]
     except Exception as e:
         print(f'WARNUNG: {args.yaml} nicht lesbar ({e}) — plane_z=0.0')
 
     print(f'\nTray  : {tray_name}')
     print(f'Ebene : z = {plane_z:+.4f}  (muss fixed_tool_plane_z_m entsprechen)')
+    print(f'Bias  : world_offset_xy = [{offset[0]:+.4f}, {offset[1]:+.4f}] '
+          f'-> wird auf jeden Klick addiert (wie in tool_detection_node)')
     print(f'Bereits gespeichert: {len(stored)} Polygon(e) -> werden gruen zurueckprojiziert')
     if args.tray == 'reclaim':
         print('ACHTUNG: Seitenkamera. Immer die OBERE Innenkante des Profils klicken,')
@@ -233,7 +247,7 @@ def main():
     print()
 
     rclpy.init()
-    node = TrayCalib(args.tray, plane_z, stored)
+    node = TrayCalib(args.tray, plane_z, stored, offset)
     win = f'tray_opening_calib [{tray_name}]'
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, node.on_click)

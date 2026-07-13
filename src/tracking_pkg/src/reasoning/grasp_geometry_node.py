@@ -72,11 +72,12 @@ class GraspGeometryNode(Node):
         self.declare_parameter('candidates_topic', '/tool_grasp_candidates')
         self.declare_parameter('knowledge_base_path', '')
         self.declare_parameter('tray_geometry_path', '')
-        # How far the fingertips sit from the grasp point, ACROSS the tool axis,
-        # while descending. The executor orients the jaws perpendicular to the
-        # tool (tool_yaw_offset_rad = pi/2), so these are the two points that
-        # would hit a profile bar. Conservative by design — verify with tcp_probe.
-        self.declare_parameter('finger_half_span_m', 0.035)
+        # Half the gripper's OUTER width across the tool axis, i.e. how far the
+        # outer edge of each finger sits from the grasp point while descending.
+        # The executor orients the jaws perpendicular to the tool
+        # (tool_yaw_offset_rad = pi/2), so these are the two points that would hit
+        # a profile bar. Measured: 65 mm outer edge to outer edge -> 32.5 mm.
+        self.declare_parameter('finger_half_span_m', 0.0325)
         # Step size when searching along the tool axis for a spot over the opening.
         self.declare_parameter('slide_step_m', 0.002)
 

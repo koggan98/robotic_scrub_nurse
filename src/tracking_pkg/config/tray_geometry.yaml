@@ -32,23 +32,48 @@ trays:
     # Profile top surface. Must match fixed_tool_plane_z_m in jetson_launch.py.
     plane_z: 0.044
 
+    # Systematic bias of everything this tray's camera reports, in world XY.
+    # ADDED to every projected point (so it is the NEGATIVE of the observed error).
+    # Applied by tool_detection_node AND by tray_opening_calib.py, so the polygon
+    # below and the tool grasp points always live in the same, corrected frame —
+    # the robot's.
+    world_offset_xy: [0.0, 0.0]
+
     # Inner edge of the profile frame, world XY, walking around the rim.
-    # EMPTY until measured — the safe default (no deep grasps).
-    openings: []
-    # openings:
-    #   - name: main
-    #     polygon: [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
+    # A long narrow SLOT: ~665 mm along x, only ~64 mm across in y. Consequence:
+    # a tool lying ACROSS the slot can be grasped deep (the fingers straddle it
+    # along the slot, where there is room), but a tool lying ALONG the slot cannot
+    # — the 65 mm-wide gripper does not fit beside it in a 64 mm gap. Those stay
+    # shallow, which is correct.
+    openings:
+      - name: main
+        polygon: [[0.3170, 0.3987], [0.3167, 0.3375], [-0.3481, 0.3334], [-0.3437, 0.3973]]
 
     # How far the grasp point AND both fingertips must stay from a polygon edge.
-    edge_margin_m: 0.008
+    # The profiles are stepped down a little at some edges, so 10 mm is enough.
+    edge_margin_m: 0.010
 
   reclaim_tray:
     plane_z: -0.137
 
-    # This camera looks at the tray from the SIDE, so you see the profile's inner
-    # WALL, not just its top edge — click too low on the wall and the ray lands
-    # behind the true inner corner, over-estimating the hole. Click the TOP inner
-    # edge, and cross-check with tcp_probe.py before filling this in.
-    openings: []
+    # Measured: the robot drives ~10 mm too far in +x when sent to a grasp point
+    # from this camera, so it reports x ~10 mm too large. The ArUco marker 105
+    # pose is NOT the culprit (its x=0 / y=-0.44 are measured and correct) — the
+    # residual comes from solvePnP on this camera's oblique SIDE view plus the
+    # projection ignoring the lens distortion coefficients. Compensate it here.
+    world_offset_xy: [-0.010, 0.0]
 
-    edge_margin_m: 0.008
+    # Side camera: you see the profile's inner WALL, not just its top edge. Click
+    # too low on the wall and the ray lands behind the true inner corner, making
+    # the hole look BIGGER than it is — the error direction that drives the
+    # gripper into the profile. Click the TOP inner edge, cross-check with
+    # tcp_probe.py.
+    #
+    # NOTE: this polygon has already been corrected by world_offset_xy above (it
+    # was clicked before the offset existed, so it carried the same +10 mm bias).
+    # Re-measuring it now with tray_opening_calib.py yields these numbers directly.
+    openings:
+      - name: main
+        polygon: [[0.3682, -0.4058], [0.1541, -0.4021], [0.1531, -0.3323], [0.3704, -0.3349]]
+
+    edge_margin_m: 0.010
