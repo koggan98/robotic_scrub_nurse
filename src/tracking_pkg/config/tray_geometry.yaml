@@ -1,0 +1,54 @@
+# Tray Geometry
+# ==============
+# Both trays are ITEM extrusion frames: a rectangle of profile bars with an OPEN
+# HOLE in the middle. Tools lie across the frame, resting on the bars and spanning
+# the hole. Over the hole the gripper may descend BELOW the tray surface and get a
+# secure grip on a thin instrument; over a bar it would crash.
+#
+# WHY THIS IS STATIC, NOT DETECTED AT RUNTIME:
+# the trays are bolted down and the camera poses are ArUco-locked once and then
+# frozen (aruco_marker_manager, publish_once: true — it even drops its camera
+# subscriptions after the lock). So each opening's pose in the world frame is a
+# constant. Detecting it every frame would solve a static problem with a fragile
+# dynamic method — and the profile edges are occluded by exactly the tools you are
+# trying to grasp. (The instrument tray camera also has enable_depth: false, so a
+# depth-based hole detection is not even possible there.)
+#
+# SAFETY: neither tray's support surface is a MoveIt collision object, so MoveIt
+# will NOT stop a descent onto a profile bar. The containment test against these
+# polygons is the ONLY safeguard. An `openings: []` entry means "hole unknown" and
+# makes every tool fall back to the shallow, current-behaviour grasp height.
+#
+# HOW TO MEASURE:
+#   python3 ros_unrelated_scripts/tray_opening_calib.py --tray instrument
+# Click the four INNER corners of the profile frame; it ray-casts them onto
+# plane_z and prints the YAML. Restart it afterwards to see the stored polygon
+# reprojected onto the live image — it must sit on the real profiles.
+# Then verify physically with tcp_probe.py before enabling any deep grasp.
+
+trays:
+
+  instrument_tray:
+    # Profile top surface. Must match fixed_tool_plane_z_m in jetson_launch.py.
+    plane_z: 0.044
+
+    # Inner edge of the profile frame, world XY, walking around the rim.
+    # EMPTY until measured — the safe default (no deep grasps).
+    openings: []
+    # openings:
+    #   - name: main
+    #     polygon: [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
+
+    # How far the grasp point AND both fingertips must stay from a polygon edge.
+    edge_margin_m: 0.008
+
+  reclaim_tray:
+    plane_z: -0.137
+
+    # This camera looks at the tray from the SIDE, so you see the profile's inner
+    # WALL, not just its top edge — click too low on the wall and the ray lands
+    # behind the true inner corner, over-estimating the hole. Click the TOP inner
+    # edge, and cross-check with tcp_probe.py before filling this in.
+    openings: []
+
+    edge_margin_m: 0.008

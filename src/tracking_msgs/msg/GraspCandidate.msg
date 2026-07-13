@@ -18,6 +18,16 @@ string handover_rule                        # e.g. "functional_end_away", "blade
 geometry_msgs/PoseStamped handover_pose     # Suggested handover pose relative to hand
 float32 grasp_confidence                    # Combined detection + geometry confidence
 
+# Grasp strategy (filled by grasp_geometry_node from tool_knowledge_base.yaml's
+# grasp_strategies block + tray_geometry.yaml). Lets you see from `ros2 topic echo`
+# WHY a tool is being grasped where and how deep it is.
+float32 grasp_z_offset                      # Class/strategy z delta vs. the tray plane.
+                                            # Negative = below the tray surface, which is
+                                            # only ever emitted when over_opening is true.
+bool over_opening                           # Grasp point AND both fingertips confirmed
+                                            # inside a measured tray opening
+string grasp_strategy                       # "fixed" | "sliding_opening" | "sliding_no_opening"
+
 # Semantic enrichment (filled by tool_semantics_node from tool_knowledge_base.yaml).
 # Upstream producers (grasp_geometry_node, world_model_builder) leave these empty/zero.
 string display_name                         # e.g. "Needle Holder"

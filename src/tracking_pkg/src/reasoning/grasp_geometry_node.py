@@ -8,16 +8,39 @@ and derives per-tool robot-relevant geometry features:
   - class-specific grasp point near the detected handle
   - functional_end_direction and handle_axis (world frame)
   - grasp rotation around world Z
+  - the grasp strategy: where along the tool to grasp, and how deep
+
+Grasp strategies come from the `grasp_strategies` block of
+tool_knowledge_base.yaml, keyed on the RAW model class (forceps_big vs
+forceps_short — the `tools:` block collapses those into one canonical entry and
+so cannot express the distinction). They are loaded HERE and not in
+tool_semantics_node, because that node runs downstream of this one and would
+arrive long after the grasp point was computed.
+
+Thin instruments (scissors, needle holders) are so flat that at the tray surface
+the jaws only catch their top 2-3 mm, and they slip out. But the trays are ITEM
+extrusion frames with an OPEN HOLE in the middle, and those tools are long enough
+to be grasped anywhere along the shaft. So for them we SLIDE the grasp point along
+the tool's long axis until it lies over the opening, and only there descend below
+the tray surface.
+
+⚠ Neither tray's surface is a MoveIt collision object. The opening test in
+tray_geometry_utils is the ONLY thing preventing a crash into a profile bar, so a
+negative z offset is emitted ONLY when the grasp point and BOTH fingertips are
+confirmed inside a measured opening.
 
 Publishes GraspCandidateArray on /tool_grasp_candidates. No semantics are
 applied here — `handover_rule` stays empty and gets filled later by
-tool_semantics_node (Phase 1 Part 3).
+tool_semantics_node.
 """
 
 import math
+import os
 
 import numpy as np
 import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Vector3
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
@@ -29,9 +52,14 @@ from tracking_msgs.msg import (
 )
 from grasp_point_utils import (
     class_specific_grasp_distance_m,
-    grasp_rule_for_class,
     handle_inner_projection,
 )
+from tray_geometry_utils import TrayOpenings, gripper_footprint
+
+# Below this pixel distance between the body and handle OBB centres, the
+# meters-per-pixel scale (and everything derived from it: the handle's inner edge,
+# the tool's length) is numerically junk. Fall back to the legacy flat offset.
+_MIN_CENTER_DELTA_PX = 1e-6
 
 
 class GraspGeometryNode(Node):
@@ -42,11 +70,28 @@ class GraspGeometryNode(Node):
         self.declare_parameter('grasp_offset_m', 0.035)
         self.declare_parameter('detections_topic', '/detected_tools_obb')
         self.declare_parameter('candidates_topic', '/tool_grasp_candidates')
+        self.declare_parameter('knowledge_base_path', '')
+        self.declare_parameter('tray_geometry_path', '')
+        # How far the fingertips sit from the grasp point, ACROSS the tool axis,
+        # while descending. The executor orients the jaws perpendicular to the
+        # tool (tool_yaw_offset_rad = pi/2), so these are the two points that
+        # would hit a profile bar. Conservative by design — verify with tcp_probe.
+        self.declare_parameter('finger_half_span_m', 0.035)
+        # Step size when searching along the tool axis for a spot over the opening.
+        self.declare_parameter('slide_step_m', 0.002)
 
         self.world_frame = self.get_parameter('world_frame').value
         self.grasp_offset_m = float(self.get_parameter('grasp_offset_m').value)
         detections_topic = self.get_parameter('detections_topic').value
         candidates_topic = self.get_parameter('candidates_topic').value
+        self.finger_half_span_m = float(
+            self.get_parameter('finger_half_span_m').value)
+        self.slide_step_m = float(self.get_parameter('slide_step_m').value)
+
+        self._strategies = self._load_strategies(
+            self.get_parameter('knowledge_base_path').value)
+        self._trays = self._load_tray_geometry(
+            self.get_parameter('tray_geometry_path').value)
 
         self.create_subscription(
             ToolDetectionArray, detections_topic, self._on_detections, 10
@@ -55,10 +100,65 @@ class GraspGeometryNode(Node):
             GraspCandidateArray, candidates_topic, 10
         )
 
+        trays_desc = ', '.join(
+            f'{name}({len(t.polygons)} opening(s))'
+            for name, t in self._trays.items()
+        ) or '<none>'
         self.get_logger().info(
             f'GraspGeometryNode ready ({detections_topic} -> {candidates_topic}, '
-            f'grasp_offset={self.grasp_offset_m:.3f} m)'
+            f'grasp_offset={self.grasp_offset_m:.3f} m, '
+            f'{len(self._strategies)} grasp strategies, trays: {trays_desc}, '
+            f'finger_half_span={self.finger_half_span_m:.3f} m)'
         )
+
+    # ── Config ──────────────────────────────────────────────────────
+
+    def _load_strategies(self, path):
+        if not path:
+            path = os.path.join(
+                get_package_share_directory('tracking_pkg'),
+                'config', 'tool_knowledge_base.yaml',
+            )
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            self.get_logger().error(
+                f'Failed to load grasp strategies from {path}: {e}. '
+                'Falling back to the legacy hard-coded grasp rules.')
+            return {}
+        strategies = data.get('grasp_strategies', {}) or {}
+        if not strategies:
+            self.get_logger().warn(
+                f'{path} has no grasp_strategies block — falling back to the '
+                'legacy hard-coded grasp rules (no per-class z, no sliding).')
+        return strategies
+
+    def _load_tray_geometry(self, path):
+        if not path:
+            path = os.path.join(
+                get_package_share_directory('tracking_pkg'),
+                'config', 'tray_geometry.yaml',
+            )
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            # No geometry = no openings = never descend below the tray surface.
+            # That is the safe direction, so warn rather than die.
+            self.get_logger().warn(
+                f'Failed to load tray geometry from {path}: {e}. '
+                'No openings known — all grasps stay at the tray surface.')
+            return {}
+        return {
+            name: TrayOpenings.from_config(cfg)
+            for name, cfg in (data.get('trays', {}) or {}).items()
+        }
+
+    def _strategy_for(self, tool_class):
+        return (self._strategies.get(tool_class)
+                or self._strategies.get('default')
+                or {})
 
     def _on_detections(self, msg):
         out = GraspCandidateArray()
@@ -96,7 +196,15 @@ class GraspGeometryNode(Node):
         functional_end_dir = delta_xy / norm
         handle_dir = -functional_end_dir
 
-        grasp_distance_m, _ = self._grasp_distance_from_handle(det, norm)
+        # Pixel scale, and everything derived from it. Hoisted out of the old
+        # _grasp_distance_from_handle, which only computed it on the non-fallback
+        # branch — so forceps/retractor/awl never had a tool length.
+        inner_edge_m, tool_length_m, scale_ok = self._pixel_derived(det, norm)
+
+        grasp_distance_m, z_offset_m, over_opening, strategy = self._plan_grasp(
+            det, handle_c, functional_end_dir, norm,
+            inner_edge_m, tool_length_m, scale_ok,
+        )
         grasp_point = handle_c + grasp_distance_m * functional_end_dir
 
         grasp_rot_z = math.atan2(functional_end_dir[1], functional_end_dir[0])
@@ -110,6 +218,9 @@ class GraspGeometryNode(Node):
         cand.location = det.location
         cand.grasp_confidence = float(det.confidence)
         cand.handover_rule = ''
+        cand.grasp_z_offset = float(z_offset_m)
+        cand.over_opening = bool(over_opening)
+        cand.grasp_strategy = strategy
 
         cand.grasp_pose.header.stamp = stamp
         cand.grasp_pose.header.frame_id = self.world_frame
@@ -138,36 +249,121 @@ class GraspGeometryNode(Node):
 
         return cand
 
-    def _grasp_distance_from_handle(self, det, center_dist_m):
-        """Class-specific distance from handle center toward tool center."""
-        if grasp_rule_for_class(det.tool_class) == 'fallback':
-            return self.grasp_offset_m, 'fallback'
+    def _pixel_derived(self, det, center_dist_m):
+        """Metric quantities recovered from the pixel-space OBBs.
 
+        Returns (inner_edge_m, tool_length_m, scale_ok). `scale_ok` is False when
+        the handle sits so close to the body centre that the pixel distance in the
+        denominator makes the scale meaningless — then neither the handle's inner
+        edge nor the tool's length can be trusted, and the caller must not slide.
+        """
         body_px = np.array(
-            [det.body_obb.center_x, det.body_obb.center_y],
-            dtype=float,
-        )
+            [det.body_obb.center_x, det.body_obb.center_y], dtype=float)
         handle_px = np.array(
-            [det.handle_obb.center_x, det.handle_obb.center_y],
-            dtype=float,
-        )
+            [det.handle_obb.center_x, det.handle_obb.center_y], dtype=float)
+
         center_delta_px = body_px - handle_px
         center_delta_px_norm = float(np.linalg.norm(center_delta_px))
-        if center_delta_px_norm < 1e-6 or center_dist_m <= 1e-9:
-            return self.grasp_offset_m, 'fallback_no_pixel_scale'
+        if (center_delta_px_norm < _MIN_CENTER_DELTA_PX
+                or center_dist_m <= 1e-9):
+            return 0.0, 0.0, False
+
+        meters_per_px = center_dist_m / center_delta_px_norm
 
         toward_center_px = center_delta_px / center_delta_px_norm
         handle_corners_px = np.array(
-            [[p.x, p.y] for p in det.handle_obb.corners],
-            dtype=float,
+            [[p.x, p.y] for p in det.handle_obb.corners], dtype=float)
+        inner_edge_m = handle_inner_projection(
+            handle_px, handle_corners_px, toward_center_px) * meters_per_px
+
+        # The body OBB's long side is the tool's length. Already on the wire,
+        # previously discarded.
+        tool_length_m = (
+            max(float(det.body_obb.width), float(det.body_obb.height))
+            * meters_per_px
         )
-        inner_edge_px = handle_inner_projection(
-            handle_px, handle_corners_px, toward_center_px,
+        return inner_edge_m, tool_length_m, True
+
+    def _nominal_distance(self, strat, inner_edge_m, scale_ok):
+        """Distance from the handle centre along the tool axis, per the strategy.
+
+        Reproduces grasp_point_utils exactly:
+          from_handle_inner_edge -> inner edge + distance_m  (old inner_plus)
+          from_handle_center     -> distance_m               (old fallback)
+        """
+        distance_m = float(strat.get('distance_m', self.grasp_offset_m))
+        rule = strat.get('distance_rule', 'from_handle_center')
+        if rule == 'from_handle_inner_edge':
+            if not scale_ok:
+                # No usable pixel scale -> no usable inner edge. Degrade the way
+                # the old code did: flat offset from the handle centre.
+                return self.grasp_offset_m
+            return inner_edge_m + distance_m
+        return distance_m
+
+    def _plan_grasp(self, det, handle_c, fed, center_dist_m,
+                    inner_edge_m, tool_length_m, scale_ok):
+        """Pick the grasp distance along the tool axis and the z offset.
+
+        Returns (distance_m, z_offset_m, over_opening, strategy_tag).
+        """
+        # No strategies loaded at all -> exactly the legacy behaviour.
+        if not self._strategies:
+            d, _ = class_specific_grasp_distance_m(
+                det.tool_class, inner_edge_m if scale_ok else 0.0,
+                self.grasp_offset_m,
+            )
+            return d, 0.0, False, 'legacy'
+
+        strat = self._strategy_for(det.tool_class)
+        nominal_d = self._nominal_distance(strat, inner_edge_m, scale_ok)
+        shallow_z = float(strat.get('z_offset_m', 0.0))
+
+        if strat.get('placement') != 'sliding':
+            return nominal_d, shallow_z, False, 'fixed'
+
+        # A sliding tool we cannot safely slide: no measured opening for this
+        # tray, or a junk pixel scale (which makes the tool length — and hence the
+        # slide bounds — meaningless). Report it as such rather than as 'fixed',
+        # so `ros2 topic echo` tells you WHY it stayed shallow.
+        tray = self._trays.get(det.location)
+        if not tray or not scale_ok:
+            return nominal_d, shallow_z, False, 'sliding_no_opening'
+
+        deep_z = float(strat.get('z_offset_over_opening_m', shallow_z))
+
+        # Search window along the axis, measured from the handle centre.
+        d_lo = float(strat.get('slide_min_m', nominal_d))
+        # The functional end sits half a tool-length beyond the body centre.
+        dist_to_tip = center_dist_m + 0.5 * tool_length_m
+        d_hi = min(
+            float(strat.get('slide_max_m', nominal_d)),
+            dist_to_tip - float(strat.get('tip_margin_m', 0.02)),
         )
-        meters_per_px = center_dist_m / center_delta_px_norm
-        inner_edge_m = inner_edge_px * meters_per_px
-        return class_specific_grasp_distance_m(
-            det.tool_class, inner_edge_m, self.grasp_offset_m,
+        if d_hi < d_lo:
+            return nominal_d, shallow_z, False, 'sliding_no_opening'
+
+        step = max(1e-4, self.slide_step_m)
+        feasible = [
+            d for d in np.arange(d_lo, d_hi + 0.5 * step, step)
+            if self._clears_profile(handle_c, fed, float(d), tray)
+        ]
+        if not feasible:
+            # Tool does not reach the opening anywhere we may grasp it. Stay at
+            # the tray surface — slipping is survivable, crashing is not.
+            return nominal_d, shallow_z, False, 'sliding_no_opening'
+
+        # Of the safe spots, take the one nearest the nominal (tuned) distance,
+        # so we deviate as little as possible from behaviour that already works.
+        d = float(min(feasible, key=lambda x: abs(x - nominal_d)))
+        return d, deep_z, True, 'sliding_opening'
+
+    def _clears_profile(self, handle_c, fed, distance_m, tray):
+        """Would the grasp point AND both fingertips land inside the opening?"""
+        grasp_xy = handle_c[:2] + distance_m * fed[:2]
+        return all(
+            tray.contains(q)
+            for q in gripper_footprint(grasp_xy, fed[:2], self.finger_half_span_m)
         )
 
 

@@ -340,6 +340,9 @@ class WorldModelNode(Node):
             'functional_end_label': c.functional_end_label,
             'grip_strategy': c.grip_strategy,
             'lift_height_m': float(c.lift_height),
+            'grasp_strategy': c.grasp_strategy,
+            'grasp_z_offset_m': float(c.grasp_z_offset),
+            'over_opening': bool(c.over_opening),
         }
 
     def _get_world_model_cb(self, request, response):

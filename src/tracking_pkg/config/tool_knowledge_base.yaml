@@ -123,3 +123,122 @@ default:
   handover_rule: "neutral"
   handover_description: "Hand over in neutral orientation."
   lift_height: 0.10
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Grasp strategies — WHERE and HOW DEEP to grasp each instrument.
+# Read by grasp_geometry_node (NOT by tool_semantics_node, which runs downstream
+# of it and would arrive too late to influence the grasp point).
+#
+# KEYED ON THE RAW YOLO CLASS, deliberately. The `tools:` block above is keyed on
+# canonical classes and collapses variants (forceps_big/mid/short all become
+# "forceps"), which cannot express the split below — forceps_big and forceps_mid
+# are TALL tools, forceps_short is a THIN one.
+#
+# The two distance rules reproduce grasp_point_utils.py exactly:
+#   from_handle_inner_edge : handle OBB's inner edge (facing the tool) + distance_m
+#                            (= the old "inner_plus" / "hammer_inner_plus")
+#   from_handle_center     : handle OBB centre + distance_m
+#                            (= the old "fallback", grasp_offset_m = 0.035)
+#
+# placement:
+#   fixed   : the grasp point is critical and must NOT move. The hammer tips out
+#             of the jaws if grasped off its centre of gravity; the awl slips.
+#   sliding : the tool is long and thin, so it may be grasped anywhere along the
+#             shaft (just not on the handle). We slide the grasp point along the
+#             tool's long axis until it lies over the tray's OPENING, and only
+#             then descend below the tray surface (z_offset_over_opening_m).
+#
+# z offsets are relative to the tray plane, on top of the executor's per-tray
+# z_offset trim. Positive = shallower.
+#
+# ⚠ Going DEEPER than the tray surface is only ever allowed when the grasp point
+# AND both fingertips are confirmed inside a measured opening (tray_geometry.yaml).
+# MoveIt does not model the tray surface and will not stop a crash into a profile.
+# ─────────────────────────────────────────────────────────────────────────────
+
+grasp_strategies:
+
+  default:
+    placement: fixed
+    distance_rule: from_handle_center
+    distance_m: 0.035
+    z_offset_m: 0.0
+
+  # ── "Tall" tools: enough body height that the jaws already get a grip at the
+  #    tray surface. 3 mm shallower keeps the fingertips off the profile.
+  #    Their grasp point is load-bearing — do not slide it.
+
+  hammer:
+    placement: fixed
+    distance_rule: from_handle_inner_edge   # was HAMMER_CENTER_OFFSET_M
+    distance_m: 0.040                       # grasp near the centre of gravity
+    z_offset_m: 0.003
+
+  awl:
+    placement: fixed
+    distance_rule: from_handle_center
+    distance_m: 0.035
+    z_offset_m: 0.003
+
+  retractor:
+    placement: fixed                        # always lies on its side
+    distance_rule: from_handle_center
+    distance_m: 0.035
+    z_offset_m: 0.003
+
+  forceps_big:
+    placement: fixed
+    distance_rule: from_handle_center
+    distance_m: 0.035
+    z_offset_m: 0.003
+
+  forceps_mid:
+    placement: fixed
+    distance_rule: from_handle_center
+    distance_m: 0.035
+    z_offset_m: 0.003
+
+  # ── "Thin" tools: so flat that the jaws only catch their top 2-3 mm at the
+  #    tray surface, and they slip out. Long enough to be grasped anywhere along
+  #    the shaft, so slide the grasp point into the opening and reach deeper.
+
+  scissors_long:
+    placement: sliding
+    distance_rule: from_handle_inner_edge   # was CLASS_OFFSET_M
+    distance_m: 0.020                       # preferred (= today's) distance
+    slide_min_m: 0.020                      # never closer to the handle than this
+    slide_max_m: 0.110
+    tip_margin_m: 0.020                     # stay back from the functional end
+    z_offset_m: 0.0                         # opening not reachable -> today's height
+    z_offset_over_opening_m: -0.003         # over the opening -> 3 mm deeper
+
+  scissors_short:
+    placement: sliding
+    distance_rule: from_handle_inner_edge
+    distance_m: 0.020
+    slide_min_m: 0.020
+    slide_max_m: 0.080
+    tip_margin_m: 0.020
+    z_offset_m: 0.0
+    z_offset_over_opening_m: -0.003
+
+  needle_holder:
+    placement: sliding
+    distance_rule: from_handle_inner_edge
+    distance_m: 0.020
+    slide_min_m: 0.020
+    slide_max_m: 0.100
+    tip_margin_m: 0.020
+    z_offset_m: 0.0
+    z_offset_over_opening_m: -0.003
+
+  forceps_short:
+    placement: sliding
+    distance_rule: from_handle_center
+    distance_m: 0.035
+    slide_min_m: 0.025
+    slide_max_m: 0.070
+    tip_margin_m: 0.015
+    z_offset_m: 0.0
+    z_offset_over_opening_m: -0.003

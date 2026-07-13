@@ -944,7 +944,15 @@ private:
         std::string &err) {
         grasp_pose_out.position.x = cand.grasp_pose.pose.position.x;
         grasp_pose_out.position.y = cand.grasp_pose.pose.position.y;
-        grasp_pose_out.position.z = cand.grasp_pose.pose.position.z + z_offset_m;
+        // Three terms, each with one job:
+        //   grasp_pose.z    the tray plane (perception)
+        //   grasp_z_offset  per-class strategy: tall tools shallower, thin tools
+        //                   deeper — but only ever negative when grasp_geometry
+        //                   confirmed the point is over a measured tray opening
+        //   z_offset_m      the global per-tray trim
+        grasp_pose_out.position.z = cand.grasp_pose.pose.position.z
+                                  + cand.grasp_z_offset
+                                  + z_offset_m;
         grasp_pose_out.orientation = topDownQuaternionFromHandleAxis(
             cand.handle_axis, tool_yaw_offset_rad_);
         approach_pose_out = grasp_pose_out;
