@@ -828,14 +828,36 @@ private:
     }
 
     void detachToolBox() {
-        // Detach from the gripper and remove from the scene. Idempotent: if no
-        // tool is attached this is a harmless no-op.
+        // Two steps, and BOTH are needed. Detaching does not delete the box:
+        // MoveIt hands it back to the world as a free-standing object, sitting
+        // where the gripper was when it let go. Idempotent: with no tool attached
+        // both steps are harmless no-ops.
         moveit_msgs::msg::AttachedCollisionObject aco;
         aco.link_name = end_effector_link_;
         aco.object.id = "held_tool";
         aco.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
-        psi_.applyAttachedCollisionObject(aco);
-        psi_.removeCollisionObjects({"held_tool"});
+        psi_.applyAttachedCollisionObject(aco);   // synchronous
+
+        // The delete must be synchronous too. removeCollisionObjects() only
+        // publishes a /planning_scene diff and returns (says so in its own doc
+        // comment), so the next plan may still be checked against a 30 cm ghost
+        // box hanging over the tray — and then every motion fails instantly with
+        // "start state in collision", holding the tool, with no obvious cause.
+        moveit_msgs::msg::CollisionObject rm;
+        rm.id = "held_tool";
+        rm.header.frame_id = reference_frame_;
+        rm.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+        psi_.applyCollisionObject(rm);            // synchronous
+
+        // One service round trip, only ever on a release. Cheap insurance: it
+        // turns "maybe there is a ghost box" into a log line.
+        for (const auto &name : psi_.getKnownObjectNames()) {
+            if (name == "held_tool") {
+                RCLCPP_ERROR(get_logger(),
+                    "held_tool is STILL in the planning scene after detaching — "
+                    "every later plan will be checked against it.");
+            }
+        }
     }
 
     // Tool was lost while we believed we were holding it: drop the planner's
@@ -1334,6 +1356,20 @@ private:
         picked_class_out = chosen.tool_class;
         if (!grasped) return false;
 
+        // Remember where this tool came from NOW, not at the end of the pick. From
+        // here on the tool is in the gripper, so every later failure leaves it
+        // there — and the only clean way out is to put it back where it was found,
+        // which is exactly what return_tool does. Recording this at the end meant a
+        // failed present rotation left the arm holding the tool while return_tool
+        // refused with "no recorded pick to return", and the only remaining option
+        // was release_tool, which drops the tool wherever the arm happens to be.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            last_pick_grasp_pose_ = grasp_pose;
+            last_pick_approach_pose_ = approach_pose;
+            have_last_pick_ = true;
+        }
+
         publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
         // From here the tool is in transit: a /tool_grasped=false stops the
         // current motion immediately (see toolGraspedCb). After each move we
@@ -1377,14 +1413,6 @@ private:
         }
 
         transporting_.store(false);
-
-        // Remember where this tool came from so return_tool can put it back.
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            last_pick_grasp_pose_ = grasp_pose;
-            last_pick_approach_pose_ = approach_pose;
-            have_last_pick_ = true;
-        }
         return true;
     }
 
