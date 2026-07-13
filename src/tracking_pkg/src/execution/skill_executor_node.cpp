@@ -41,6 +41,8 @@
 
 #include <tracking_msgs/msg/grasp_candidate.hpp>
 #include <tracking_msgs/msg/hand_state.hpp>
+#include <tracking_msgs/msg/tool_event.hpp>
+#include <tracking_msgs/srv/get_tool_home.hpp>
 #include <tracking_msgs/srv/get_world_state.hpp>
 #include <tracking_msgs/action/pick_tool.hpp>
 #include <tracking_msgs/action/grasp_tool.hpp>
@@ -48,6 +50,7 @@
 #include <tracking_msgs/action/release_tool.hpp>
 #include <tracking_msgs/action/return_home.hpp>
 #include <tracking_msgs/action/return_tool.hpp>
+#include <tracking_msgs/action/return_tool_home.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -70,6 +73,7 @@ using HandoverTool = tracking_msgs::action::HandoverTool;
 using ReleaseTool = tracking_msgs::action::ReleaseTool;
 using ReturnHome = tracking_msgs::action::ReturnHome;
 using ReturnTool = tracking_msgs::action::ReturnTool;
+using ReturnToolHome = tracking_msgs::action::ReturnToolHome;
 
 using GoalHandlePick = rclcpp_action::ServerGoalHandle<PickTool>;
 using GoalHandleGrasp = rclcpp_action::ServerGoalHandle<GraspTool>;
@@ -77,6 +81,7 @@ using GoalHandleHandover = rclcpp_action::ServerGoalHandle<HandoverTool>;
 using GoalHandleRelease = rclcpp_action::ServerGoalHandle<ReleaseTool>;
 using GoalHandleHome = rclcpp_action::ServerGoalHandle<ReturnHome>;
 using GoalHandleReturnTool = rclcpp_action::ServerGoalHandle<ReturnTool>;
+using GoalHandleReturnHome_ = rclcpp_action::ServerGoalHandle<ReturnToolHome>;
 
 // Tray names, as stamped onto every GraspCandidate by tool_detection_node's
 // `location` parameter. GraspTool defaults to the reclaim tray: picking from the
@@ -318,6 +323,15 @@ public:
         // where the async loss monitor may still be lagging).
         verify_grasp_pub_ = create_publisher<std_msgs::msg::Empty>("/verify_grasp", 10);
         state_pub_ = create_publisher<std_msgs::msg::String>("/system_state_update", 10);
+        // The transitions perception cannot see. /system_state_update is no
+        // substitute: its RELEASING state is published by three different paths,
+        // and the moment the surgeon actually takes the tool (the force-guided
+        // /gripper_done) is invisible from outside. An instrument count must not
+        // rest on that inference. See ToolEvent.msg.
+        tool_event_pub_ = create_publisher<tracking_msgs::msg::ToolEvent>(
+            "/tool_event", 10);
+        tool_home_client_ = create_client<tracking_msgs::srv::GetToolHome>(
+            "/get_tool_home");
         // Latched so a late-joining hand_tracker picks up the current value.
         // True only while a handover is actively waiting for the gesture; the
         // hand_tracker gates /hand_gesture publication on this flag.
@@ -407,6 +421,15 @@ public:
             std::bind(&SkillExecutor::homeHandleAccepted, this,
                       std::placeholders::_1));
 
+        return_home_slot_srv_ = rclcpp_action::create_server<ReturnToolHome>(
+            this, "return_tool_home",
+            std::bind(&SkillExecutor::returnHomeSlotHandleGoal, this,
+                      std::placeholders::_1, std::placeholders::_2),
+            std::bind(&SkillExecutor::returnHomeSlotHandleCancel, this,
+                      std::placeholders::_1),
+            std::bind(&SkillExecutor::returnHomeSlotHandleAccepted, this,
+                      std::placeholders::_1));
+
         return_srv_ = rclcpp_action::create_server<ReturnTool>(
             this, "return_tool",
             std::bind(&SkillExecutor::returnToolHandleGoal, this,
@@ -463,6 +486,75 @@ private:
             RCLCPP_WARN(get_logger(),
                 "Tool lost during transport — stopping motion.");
             move_group_->stop();
+        }
+    }
+
+    // ── Tool events ──────────────────────────────────────────────────
+    // What actually happened to a specific tool. The registry keeps the
+    // instrument count on these, so they must be truthful: HANDED_OVER is
+    // published only once the surgeon has physically pulled the tool out of the
+    // jaws, not when we merely intended to give it to him.
+
+    void publishToolEvent(const std::string &event,
+                          const std::string &track_id,
+                          const std::string &tool_class,
+                          const std::string &from_location,
+                          const geometry_msgs::msg::Point &handle_center,
+                          const geometry_msgs::msg::Vector3 &functional_end_dir,
+                          double grasp_distance_m) {
+        tracking_msgs::msg::ToolEvent msg;
+        msg.header.stamp = now();
+        msg.header.frame_id = reference_frame_;
+        msg.event = event;
+        msg.track_id = track_id;
+        msg.tool_class = tool_class;
+        msg.from_location = from_location;
+        msg.handle_center = handle_center;
+        msg.functional_end_dir = functional_end_dir;
+        msg.grasp_distance_m = static_cast<float>(grasp_distance_m);
+        tool_event_pub_->publish(msg);
+        RCLCPP_INFO(get_logger(), "ToolEvent %s: %s (%s)",
+                    event.c_str(), track_id.c_str(), tool_class.c_str());
+    }
+
+    // The tool currently in the gripper, remembered so an event fired later (a
+    // handover completing, a drop) can still name it. Cleared when it leaves.
+    void rememberHeldTool(const tracking_msgs::msg::GraspCandidate &cand,
+                          const geometry_msgs::msg::Pose &grasp_pose) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        held_track_id_ = cand.tool_id;
+        held_tool_class_ = cand.tool_class;
+        held_from_location_ = cand.location;
+        held_handle_center_ = cand.handle_center;
+        held_end_dir_ = cand.functional_end_dir;
+        // Where along the tool the jaws hold it. This — not the grasp pose — is
+        // what lets the tool be put back at the right spot, because the grasp
+        // distance differs per tray (the sliding strategy uses that tray's hole).
+        held_grasp_distance_m_ = std::hypot(
+            grasp_pose.position.x - cand.handle_center.x,
+            grasp_pose.position.y - cand.handle_center.y);
+        have_held_tool_ = true;
+    }
+
+    void publishHeldToolEvent(const std::string &event) {
+        std::string track, cls, loc;
+        geometry_msgs::msg::Point hc;
+        geometry_msgs::msg::Vector3 dir;
+        double d = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            if (!have_held_tool_) return;
+            track = held_track_id_;
+            cls = held_tool_class_;
+            loc = held_from_location_;
+            hc = held_handle_center_;
+            dir = held_end_dir_;
+            d = held_grasp_distance_m_;
+        }
+        publishToolEvent(event, track, cls, loc, hc, dir, d);
+        if (event != "PICKED") {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_held_tool_ = false;   // it is out of the gripper now
         }
     }
 
@@ -755,6 +847,10 @@ private:
             reason.c_str());
         detachToolBox();
         publishGripper(true);   // open
+        // The tool fell somewhere we did not intend. The registry must not keep
+        // believing the robot holds it — mark it unknown and let perception find
+        // it again if it landed on a tray.
+        publishHeldToolEvent("DROPPED");
         std::string home_err;
         doReturnHomeInternal(home_err);
         err = "tool_lost: " + reason;
@@ -1204,6 +1300,9 @@ private:
         // onward motion (present rotation, handover, place-back) avoids the
         // tray-camera stand and accounts for the tool's reach beyond the box.
         attachToolBox();
+
+        rememberHeldTool(chosen, grasp_pose);
+        publishHeldToolEvent("PICKED");
         return true;
     }
 
@@ -1215,11 +1314,26 @@ private:
                 std::string &err) {
         tracking_msgs::msg::GraspCandidate chosen;
         geometry_msgs::msg::Pose grasp_pose, approach_pose;
-        // NaN = no clear-out lift: the instrument tray's approach pose is
-        // already in free space, so the tool box can be attached right there.
+
+        // A named tool may be picked from EITHER tray. The reclaim tray is also a
+        // parking spot: the surgeon puts a tool down there meaning to use it again
+        // in a moment, and when he asks for it back it must come from there — there
+        // is no second one on the instrument tray. Track ids are unique across trays
+        // (tool_N vs reclaim_N), so an empty filter is unambiguous.
+        // With no tool named, stay on the instrument tray: "just give me something"
+        // must not hand over a used instrument.
+        const std::string location =
+            tool_id_arg.empty() ? kInstrumentLocation : std::string();
+
+        // The reclaim tray sits down inside its bracket, so a tool lifted from there
+        // needs the clear-out rise before the tool box is attached.
+        const double clearout =
+            (tool_id_arg.rfind("reclaim", 0) == 0)
+                ? reclaim_hold_z_m_
+                : std::numeric_limits<double>::quiet_NaN();
+
         const bool grasped = graspToolCore(
-            tool_id_arg, kInstrumentLocation,
-            std::numeric_limits<double>::quiet_NaN(),
+            tool_id_arg, location, clearout,
             chosen, grasp_pose, approach_pose, err);
         // chosen is filled the moment pre-flight commits, so the tool can still
         // be named when a later motion phase fails — the LLM keys its retry on
@@ -1446,6 +1560,11 @@ private:
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, post_open_pause_seconds_))));
 
+        // The surgeon has physically pulled the tool out of the jaws (/gripper_done
+        // fired on the force-guided release). ONLY now is it his — and from here it
+        // is invisible to every camera, which is entirely normal.
+        publishHeldToolEvent("HANDED_OVER");
+
         // Tool delivered — drop the attached collision box and forget the pick.
         detachToolBox();
         {
@@ -1477,6 +1596,7 @@ private:
         publishGripper(true);  // open
         sleepForGripper();
         detachToolBox();
+        publishHeldToolEvent("RELEASED");
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             have_last_pick_ = false;
@@ -1493,6 +1613,41 @@ private:
             return false;
         }
         return moveToJointPositions(home_joints_, err);
+    }
+
+    // ── Place primitive (shared by ReturnTool and ReturnToolHome) ────
+
+    // Put the held tool down at release_pose and let go. Plans all three legs
+    // before moving, exactly as ReturnTool always has.
+    bool placeToolAt(const geometry_msgs::msg::Pose &approach_pose,
+                     const geometry_msgs::msg::Pose &release_pose,
+                     std::string &err) {
+        moveit::planning_interface::MoveGroupInterface::Plan approach_plan,
+            descend_plan, lift_plan;
+        move_group_->setStartStateToCurrentState();
+        if (!planPoseTarget(approach_pose, approach_plan, err)) {
+            err = "place approach plan: " + err; return false;
+        }
+        move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
+        if (!planLinearPose(release_pose, descend_plan, err)) {
+            err = "place descend plan: " + err; return false;
+        }
+        move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
+        if (!planLinearPose(approach_pose, lift_plan, err)) {
+            err = "place lift plan: " + err; return false;
+        }
+
+        RCLCPP_INFO(get_logger(), "Placing at (%.3f, %.3f, %.3f).",
+            release_pose.position.x, release_pose.position.y,
+            release_pose.position.z);
+
+        if (!executePlan(approach_plan, err)) { err = "place approach exec: " + err; return false; }
+        if (!executePlan(descend_plan, err))  { err = "place descend exec: "  + err; return false; }
+        publishGripper(true);  // open — release the tool
+        sleepForGripper();
+        detachToolBox();
+        if (!executePlan(lift_plan, err))     { err = "place lift exec: "     + err; return false; }
+        return true;
     }
 
     // ── Skill: ReturnTool ────────────────────────────────────────────
@@ -1519,33 +1674,10 @@ private:
         geometry_msgs::msg::Pose release_pose = grasp_pose;
         release_pose.position.z += return_release_height_m_;
 
-        // Pre-flight: plan approach + descend + lift before any motion.
-        moveit::planning_interface::MoveGroupInterface::Plan approach_plan,
-            descend_plan, lift_plan;
-        move_group_->setStartStateToCurrentState();
-        if (!planPoseTarget(approach_pose, approach_plan, err)) {
-            err = "return approach plan: " + err; return false;
-        }
-        move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
-        if (!planLinearPose(release_pose, descend_plan, err)) {
-            err = "return descend plan: " + err; return false;
-        }
-        move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
-        if (!planLinearPose(approach_pose, lift_plan, err)) {
-            err = "return lift plan: " + err; return false;
-        }
+        if (!placeToolAt(approach_pose, release_pose, err)) return false;
 
-        RCLCPP_INFO(get_logger(),
-            "ReturnTool: putting %s back at (%.3f, %.3f, %.3f).",
-            tool_id_snapshot.c_str(), release_pose.position.x,
-            release_pose.position.y, release_pose.position.z);
-
-        if (!executePlan(approach_plan, err)) { err = "return approach exec: " + err; return false; }
-        if (!executePlan(descend_plan, err))  { err = "return descend exec: "  + err; return false; }
-        publishGripper(true);  // open — release the tool
-        sleepForGripper();
-        detachToolBox();
-        if (!executePlan(lift_plan, err))     { err = "return lift exec: "     + err; return false; }
+        // Back where it was picked from — for the instrument tray, that is its home.
+        publishHeldToolEvent("PLACED_HOME");
 
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
@@ -1555,6 +1687,176 @@ private:
         std::string home_err;
         if (!doReturnHomeInternal(home_err)) {
             err = "return-home after return-tool failed: " + home_err;
+            return false;
+        }
+        return true;
+    }
+
+    // ── Skill: ReturnToolHome ────────────────────────────────────────
+    // Take a tool the surgeon parked on the reclaim tray and put it back on its
+    // home slot on the instrument tray.
+
+    // Ask the registry where a tool of this class belongs.
+    bool fetchToolHome(const std::string &tool_class,
+                       const std::string &track_id,
+                       tracking_msgs::srv::GetToolHome::Response &out,
+                       std::string &err) {
+        if (!tool_home_client_->wait_for_service(std::chrono::seconds(2))) {
+            err = "/get_tool_home service not available";
+            return false;
+        }
+        auto req = std::make_shared<tracking_msgs::srv::GetToolHome::Request>();
+        req->tool_class = tool_class;
+        req->track_id = track_id;
+        auto future = tool_home_client_->async_send_request(req);
+        if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+            err = "/get_tool_home timed out";
+            return false;
+        }
+        auto resp = future.get();
+        if (!resp->success) {
+            err = resp->message;
+            return false;
+        }
+        out = *resp;
+        return true;
+    }
+
+    // THE geometry of putting a tool back. Read this before changing it.
+    //
+    // The grasp point is handle_center + d * functional_end_dir, and d is NOT the
+    // same on both trays: the sliding-into-the-opening strategy picks a different
+    // spot along the shaft depending on that tray's hole. So the gripper is holding
+    // this tool at a different point than it did when the tool sat at home.
+    //
+    // Placing the gripper at the home GRASP pose would therefore leave the tool
+    // displaced along its own axis by (d_reclaim - d_home) — centimetres, for a
+    // pair of scissors. What has to be reproduced is the TOOL pose, not the grasp:
+    //
+    //   TCP -> home_handle_center + d_now * home_functional_end_dir
+    //
+    // which lands the tool's handle exactly back on its home handle position.
+    void computePlacePose(const tracking_msgs::srv::GetToolHome::Response &home,
+                          double grasp_distance_m,
+                          geometry_msgs::msg::Pose &release_out,
+                          geometry_msgs::msg::Pose &approach_out) {
+        const double nx = home.home_functional_end_dir.x;
+        const double ny = home.home_functional_end_dir.y;
+        const double n = std::hypot(nx, ny);
+        const double ux = (n > 1e-9) ? nx / n : 1.0;
+        const double uy = (n > 1e-9) ? ny / n : 0.0;
+
+        release_out.position.x = home.home_handle_center.x + grasp_distance_m * ux;
+        release_out.position.y = home.home_handle_center.y + grasp_distance_m * uy;
+        release_out.position.z = home.home_plane_z + return_release_height_m_;
+
+        // The tool must also end up along its home axis. handle_axis points from the
+        // functional end back toward the handle, i.e. the negated end direction.
+        geometry_msgs::msg::Vector3 handle_axis;
+        handle_axis.x = -ux;
+        handle_axis.y = -uy;
+        handle_axis.z = 0.0;
+        release_out.orientation =
+            topDownQuaternionFromHandleAxis(handle_axis, tool_yaw_offset_rad_);
+
+        approach_out = release_out;
+        approach_out.position.z = release_out.position.z + approach_height_m_;
+    }
+
+    bool doReturnToolHome(const std::string &tool_id_arg,
+                          std::vector<std::string> &returned_out,
+                          std::vector<std::string> &skipped_ids_out,
+                          std::vector<std::string> &skipped_reasons_out,
+                          std::string &err) {
+        // Which reclaim-tray tools are we dealing with?
+        std::vector<tracking_msgs::msg::GraspCandidate> candidates;
+        if (!collectCandidates(candidates, kReclaimLocation, err)) return false;
+        if (!tool_id_arg.empty()) {
+            candidates.erase(
+                std::remove_if(candidates.begin(), candidates.end(),
+                    [&](const auto &c) { return c.tool_id != tool_id_arg; }),
+                candidates.end());
+            if (candidates.empty()) {
+                err = "tool_id '" + tool_id_arg + "' not on the reclaim tray";
+                return false;
+            }
+        }
+
+        for (const auto &cand : candidates) {
+            // Ask where it belongs BEFORE touching it. A tool with no known home is
+            // left exactly where it is — better a tool still on the reclaim tray
+            // than one put down at a guessed spot.
+            tracking_msgs::srv::GetToolHome::Response home;
+            std::string home_err;
+            if (!fetchToolHome(cand.tool_class, cand.tool_id, home, home_err)) {
+                RCLCPP_WARN(get_logger(), "No home for %s (%s): %s — leaving it.",
+                            cand.tool_id.c_str(), cand.tool_class.c_str(),
+                            home_err.c_str());
+                skipped_ids_out.push_back(cand.tool_id);
+                skipped_reasons_out.push_back(home_err);
+                continue;
+            }
+
+            tracking_msgs::msg::GraspCandidate chosen;
+            geometry_msgs::msg::Pose grasp_pose, approach_pose;
+            std::string grasp_err;
+            if (!graspToolCore(cand.tool_id, kReclaimLocation, reclaim_hold_z_m_,
+                               chosen, grasp_pose, approach_pose, grasp_err)) {
+                RCLCPP_WARN(get_logger(), "Could not grasp %s: %s",
+                            cand.tool_id.c_str(), grasp_err.c_str());
+                skipped_ids_out.push_back(cand.tool_id);
+                skipped_reasons_out.push_back(grasp_err);
+                std::string home_ret;
+                doReturnHomeInternal(home_ret);
+                continue;
+            }
+
+            // Where along the tool are we holding it? THIS is what the place pose
+            // has to be built from — not the pose we grasped at.
+            const double d = std::hypot(
+                grasp_pose.position.x - chosen.handle_center.x,
+                grasp_pose.position.y - chosen.handle_center.y);
+
+            geometry_msgs::msg::Pose release_pose, place_approach;
+            computePlacePose(home, d, release_pose, place_approach);
+
+            publishState("RETURNING", chosen.tool_id, chosen.tool_class);
+            RCLCPP_INFO(get_logger(),
+                "ReturnToolHome: %s (%s) -> slot %s. Holding it %.1f mm along its "
+                "shaft, so releasing at (%.3f, %.3f, %.3f).",
+                chosen.tool_id.c_str(), chosen.tool_class.c_str(),
+                home.slot_id.c_str(), d * 1000.0,
+                release_pose.position.x, release_pose.position.y,
+                release_pose.position.z);
+
+            std::string place_err;
+            if (!placeToolAt(place_approach, release_pose, place_err)) {
+                // Still holding it. Do NOT drop it here — put it back on the reclaim
+                // tray, where it at least stays findable.
+                std::string back_err;
+                if (!placeToolAt(approach_pose, grasp_pose, back_err)) {
+                    err = "could not place " + chosen.tool_id + " at its home ("
+                          + place_err + ") and could not put it back either ("
+                          + back_err + ") — the tool is still in the gripper";
+                    return false;
+                }
+                skipped_ids_out.push_back(cand.tool_id);
+                skipped_reasons_out.push_back("home unreachable: " + place_err);
+                std::string home_ret;
+                doReturnHomeInternal(home_ret);
+                continue;
+            }
+
+            publishHeldToolEvent("PLACED_HOME");
+            returned_out.push_back(home.slot_id);
+
+            std::string home_ret;
+            doReturnHomeInternal(home_ret);
+        }
+
+        if (returned_out.empty() && !skipped_ids_out.empty()) {
+            err = "nothing returned; " + std::to_string(skipped_ids_out.size())
+                  + " skipped";
             return false;
         }
         return true;
@@ -1664,6 +1966,55 @@ private:
         } else {
             result->message = err;
             publishState("IDLE", "", "");
+            goal_handle->abort(result);
+        }
+    }
+
+    // ── Action: ReturnToolHome ───────────────────────────────────────
+
+    rclcpp_action::GoalResponse returnHomeSlotHandleGoal(
+        const rclcpp_action::GoalUUID &,
+        std::shared_ptr<const ReturnToolHome::Goal> goal) {
+        RCLCPP_INFO(get_logger(), "ReturnToolHome goal: tool_id='%s'%s",
+                    goal->tool_id.c_str(),
+                    goal->tool_id.empty() ? " (all reclaim tools)" : "");
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }
+    rclcpp_action::CancelResponse returnHomeSlotHandleCancel(
+        const std::shared_ptr<GoalHandleReturnHome_>) {
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+    void returnHomeSlotHandleAccepted(
+        const std::shared_ptr<GoalHandleReturnHome_> goal_handle) {
+        std::thread([this, goal_handle] {
+            this->returnHomeSlotExecute(goal_handle);
+        }).detach();
+    }
+    void returnHomeSlotExecute(
+        const std::shared_ptr<GoalHandleReturnHome_> goal_handle) {
+        std::unique_lock<std::mutex> lock(execution_mutex_, std::try_to_lock);
+        auto result = std::make_shared<ReturnToolHome::Result>();
+        if (!lock.owns_lock()) {
+            result->success = false;
+            result->message = "another skill is currently executing";
+            goal_handle->abort(result);
+            return;
+        }
+        const auto goal = goal_handle->get_goal();
+        std::vector<std::string> returned, skipped, reasons;
+        std::string err;
+        const bool ok = doReturnToolHome(
+            goal->tool_id, returned, skipped, reasons, err);
+
+        result->success = ok;
+        result->returned_slot_ids = returned;
+        result->skipped_tool_ids = skipped;
+        result->skipped_reasons = reasons;
+        result->message = ok ? ("returned " + std::to_string(returned.size())) : err;
+        publishState("IDLE", "", "");
+        if (ok) {
+            goal_handle->succeed(result);
+        } else {
             goal_handle->abort(result);
         }
     }
@@ -1865,6 +2216,9 @@ private:
     rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr verify_grasp_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr handover_waiting_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+    rclcpp::Publisher<tracking_msgs::msg::ToolEvent>::SharedPtr tool_event_pub_;
+    rclcpp::Client<tracking_msgs::srv::GetToolHome>::SharedPtr tool_home_client_;
+    rclcpp_action::Server<ReturnToolHome>::SharedPtr return_home_slot_srv_;
     rclcpp::Subscription<tracking_msgs::msg::HandState>::SharedPtr hand_state_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_done_sub_;
@@ -1910,6 +2264,16 @@ private:
     geometry_msgs::msg::Pose last_pick_grasp_pose_;
     geometry_msgs::msg::Pose last_pick_approach_pose_;
     bool have_last_pick_ = false;
+
+    // Identity + tool pose of whatever is in the gripper, so a later event (the
+    // handover completing, a drop) can still say WHICH tool it was.
+    std::string held_track_id_;
+    std::string held_tool_class_;
+    std::string held_from_location_;
+    geometry_msgs::msg::Point held_handle_center_;
+    geometry_msgs::msg::Vector3 held_end_dir_;
+    double held_grasp_distance_m_ = 0.0;
+    bool have_held_tool_ = false;
 };
 
 

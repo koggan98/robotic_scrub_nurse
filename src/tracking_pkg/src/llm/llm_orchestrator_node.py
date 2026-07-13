@@ -40,11 +40,20 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from tracking_msgs.action import (
-    HandoverTool, PickTool, ReleaseTool, ReturnHome, ReturnTool)
-from tracking_msgs.srv import GetWorldModel
+    HandoverTool,
+    ReturnToolHome, PickTool, ReleaseTool, ReturnHome, ReturnTool)
+from std_srvs.srv import Trigger
+from tracking_msgs.srv import CountInstruments, GetWorldModel
 
 
 # ── Pydantic tool-argument models ──────────────────────────────────
+
+class PutToolBackArgs(BaseModel):
+    tool_id: str = Field(
+        default='',
+        description="Reclaim-tray tool id to put back on its own place on the "
+                    "instrument tray. Empty = all of them, one by one.")
+
 
 class PickAndHandoverArgs(BaseModel):
     tool_id: str = Field(
@@ -84,6 +93,13 @@ class LLMOrchestratorNode(Node):
                 get_package_share_directory('tracking_pkg'),
                 'config', 'tool_knowledge_base.yaml')
         self.knowledge_base = self._load_knowledge_base(kb_path)
+        # The instrument list the LLM is told about. NOT the knowledge base's
+        # `tools:` block: that one is keyed on canonical classes and folds the
+        # variants into them, so the model was being told about three different
+        # tools all called "Forceps" and had no way to resolve "the small forceps".
+        self.catalog = self._load_catalog(
+            os.path.join(get_package_share_directory('tracking_pkg'),
+                         'config', 'tool_catalog.yaml'))
 
         self._client = None  # lazy OpenAI client
         self._busy = threading.Lock()
@@ -115,6 +131,12 @@ class LLMOrchestratorNode(Node):
             self, ReturnHome, 'return_home', callback_group=cb)
         self.return_client = ActionClient(
             self, ReturnTool, 'return_tool', callback_group=cb)
+        self.put_back_client = ActionClient(
+            self, ReturnToolHome, 'return_tool_home', callback_group=cb)
+        self.register_client = self.create_client(
+            Trigger, '/register_inventory', callback_group=cb)
+        self.count_client = self.create_client(
+            CountInstruments, '/count_instruments', callback_group=cb)
 
         self.create_subscription(
             String, '/user_speech', self._speech_cb, 10, callback_group=cb)
@@ -136,6 +158,14 @@ class LLMOrchestratorNode(Node):
             self.get_logger().warn(f'Could not load knowledge base: {e}')
             return {}
 
+    def _load_catalog(self, path):
+        try:
+            with open(path, 'r') as f:
+                return (yaml.safe_load(f) or {}).get('catalog', {}) or {}
+        except Exception as e:
+            self.get_logger().warn(f'Could not load tool catalog: {e}')
+            return {}
+
     def _get_openai_client(self):
         if self._client is None:
             try:
@@ -152,8 +182,12 @@ class LLMOrchestratorNode(Node):
     # ── Prompt + tool definitions ───────────────────────────────────
 
     def _build_system_prompt(self):
+        # From the CATALOG, keyed on the raw model classes. The knowledge base's
+        # `tools:` block folds scissors_long/scissors_short into one "Scissors" and
+        # all three forceps sizes into one "Forceps" — the surgeon could then not
+        # ask for the small forceps at all.
         tools_desc = ''
-        for cls_name, info in self.knowledge_base.get('tools', {}).items():
+        for cls_name, info in self.catalog.items():
             synonyms = ', '.join(info.get('synonyms', []))
             tools_desc += (
                 f"- {info.get('display_name', cls_name)} "
@@ -175,6 +209,18 @@ Functions:
 - release_tool(): open the gripper now.
 - return_home(): move the arm to its home pose.
 - abort(): cancel the running robot action.
+- register_inventory(): start the operation. Freezes whatever is on the
+  instrument tray as this operation's set of instruments, and reports back what
+  it found. Call this when the surgeon says the setup is ready / to start.
+- put_tool_back(tool_id): take ONE tool the surgeon left on the reclaim tray and
+  return it to its own place on the instrument tray.
+- count_instruments(): the instrument count. Compares the instruments registered
+  at the start against what can be accounted for now.
+
+The world model has an `inventory` block: every registered instrument, with a
+state. AT_HOME = on the instrument tray, ready. IN_GRIPPER = the robot holds it.
+ON_RECLAIM = lying on the reclaim tray. IN_USE = handed to the surgeon and
+nowhere visible. UNKNOWN = we lost track of it.
 
 Rules:
 1. Call get_world_model() first to see the tray.
@@ -184,6 +230,21 @@ Rules:
 3. If the surgeon says the tool is wrong / "not that one" / "put it back",
    call return_tool().
 4. If several tools match and you truly cannot choose, ask one short question.
+   Note the instruments above are distinct: long vs short scissors, and large vs
+   medium vs small forceps. Use the surgeon's words to pick the right one.
+10. The RECLAIM tray is where the surgeon puts a tool down. It may be one he
+   wants back in a moment, or one that is finished — only he knows.
+   - Asks for a tool that is ON_RECLAIM? pick_and_handover(its id) works from
+     there. Hand him THAT one; there is no second one on the instrument tray.
+   - Says "scissors back" / "put that away" / "done with it"? Then
+     put_tool_back(tool_id) for that tool. Never do this on your own.
+11. "Count the instruments" / "we're done" / "end of operation" ->
+   count_instruments(). Report briefly what is NOT back home. The ones in `in_use`
+   matter most: those are nowhere visible — possibly still inside the patient.
+   Say the number and the names, e.g. "Two missing. Long scissors, awl."
+12. "Setup ready" / "start the operation" -> register_inventory(), then read back
+   what it found, e.g. "Registered 11. Two retractors, two needle holders."
+   If it refuses because two identical tools are too close together, say so.
 5. If pick_and_handover returns success:false with a grasp_failed or tool_lost
    message, the robot missed the tool or it fell out, and the arm has already
    returned home. Call get_world_model() again and retry the pick once or twice.
@@ -236,6 +297,25 @@ Rules:
             {"type": "function", "function": {
                 "name": "abort",
                 "description": "Cancel the currently running robot action.",
+                "parameters": _EMPTY_SCHEMA}},
+            {"type": "function", "function": {
+                "name": "register_inventory",
+                "description": "Start the operation: freeze whatever is on the "
+                               "instrument tray as this operation's set of "
+                               "instruments. Reports back what it found.",
+                "parameters": _EMPTY_SCHEMA}},
+            {"type": "function", "function": {
+                "name": "put_tool_back",
+                "description": "Take a tool the surgeon left on the reclaim tray "
+                               "and return it to its own place on the instrument "
+                               "tray. Only on his explicit say-so — a tool on the "
+                               "reclaim tray may be one he wants back in a moment.",
+                "parameters": PutToolBackArgs.model_json_schema()}},
+            {"type": "function", "function": {
+                "name": "count_instruments",
+                "description": "The instrument count: what was registered at the "
+                               "start against what can be accounted for now. Tools "
+                               "reported as in_use are nowhere visible.",
                 "parameters": _EMPTY_SCHEMA}},
         ]
 
@@ -353,6 +433,12 @@ Rules:
                 self.home_client, ReturnHome.Goal(), 'return_home')
         if name == 'abort':
             return self._tool_abort()
+        if name == 'register_inventory':
+            return self._tool_register_inventory()
+        if name == 'put_tool_back':
+            return self._tool_put_tool_back(args)
+        if name == 'count_instruments':
+            return self._tool_count_instruments()
         return json.dumps({"success": False,
                            "message": f"unknown tool '{name}'"})
 
@@ -467,6 +553,84 @@ Rules:
             return json.dumps({"success": False, "message": err})
         return json.dumps({"success": bool(result.success),
                            "message": result.message})
+
+    def _tool_register_inventory(self):
+        if not self.register_client.wait_for_service(timeout_sec=5.0):
+            return json.dumps({"success": False,
+                               "message": "/register_inventory unavailable"})
+        fut = self.register_client.call_async(Trigger.Request())
+        resp = self._wait_for_future(fut, 10.0)
+        if resp is None:
+            return json.dumps({"success": False,
+                               "message": "register_inventory timed out"})
+        if not resp.success:
+            return json.dumps({"success": False, "message": resp.message})
+        try:
+            payload = json.loads(resp.message)
+        except Exception:
+            payload = {"message": resp.message}
+        payload["success"] = True
+        return json.dumps(payload)
+
+    def _tool_count_instruments(self):
+        if not self.count_client.wait_for_service(timeout_sec=5.0):
+            return json.dumps({"success": False,
+                               "message": "/count_instruments unavailable"})
+        fut = self.count_client.call_async(CountInstruments.Request())
+        resp = self._wait_for_future(fut, 10.0)
+        if resp is None:
+            return json.dumps({"success": False,
+                               "message": "count_instruments timed out"})
+        if not resp.registered:
+            return json.dumps({
+                "success": False,
+                "message": "no operation started — call register_inventory first"})
+        return json.dumps({
+            "success": True,
+            "all_accounted_for": bool(resp.all_accounted_for),
+            "expected": int(resp.expected),
+            "at_home": int(resp.at_home),
+            "in_gripper": list(resp.in_gripper),
+            "on_reclaim": list(resp.on_reclaim),
+            # These are the ones that matter: nowhere visible.
+            "in_use": list(resp.in_use),
+            "unknown": list(resp.unknown),
+        })
+
+    def _tool_put_tool_back(self, args):
+        try:
+            parsed = PutToolBackArgs.model_validate(args or {})
+        except ValidationError as e:
+            return json.dumps({"success": False, "message": f"bad args: {e}"})
+
+        goal = ReturnToolHome.Goal()
+        goal.tool_id = parsed.tool_id
+
+        # Started asynchronously, like the handover — and for the same reason.
+        # self._busy is a single lock around the whole conversation, so blocking
+        # here would drop every utterance for the duration, INCLUDING "abort".
+        # The surgeon must be able to stop a moving arm by voice.
+        gh, err = self._start_action(
+            self.put_back_client, goal, 'return_tool_home')
+        if gh is None:
+            return json.dumps({"success": False, "message": err})
+        gh.get_result_async().add_done_callback(self._on_put_back_done)
+        return json.dumps({"success": True, "stage": "putting_back"})
+
+    def _on_put_back_done(self, future):
+        try:
+            wrapped = future.result()
+        except Exception as e:
+            self.get_logger().warn(f'put_tool_back result error: {e}')
+            return
+        res = wrapped.result
+        if getattr(res, 'success', False):
+            n = len(res.returned_slot_ids)
+            self._publish_response(f'{n} back' if n != 1 else 'back')
+        else:
+            skipped = list(getattr(res, 'skipped_reasons', []) or [])
+            reason = skipped[0] if skipped else getattr(res, 'message', 'failed')
+            self._publish_response(f'Cannot put back. {reason}')
 
     def _tool_abort(self):
         with self._pending_lock:

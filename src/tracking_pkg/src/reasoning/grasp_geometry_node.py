@@ -41,7 +41,7 @@ import numpy as np
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Point, Vector3
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 
@@ -232,6 +232,15 @@ class GraspGeometryNode(Node):
         cand.grasp_pose.pose.orientation.y = float(quat[1])
         cand.grasp_pose.pose.orientation.z = float(quat[2])
         cand.grasp_pose.pose.orientation.w = float(quat[3])
+
+        # The TOOL's pose, not the grasp pose. grasp_point sits at
+        # handle_center + grasp_distance_m * functional_end_dir, and that distance
+        # differs per tray (the sliding search uses that tray's opening). Anything
+        # that wants to put the tool back where it belongs has to reconstruct the
+        # tool pose from these two — replaying the grasp pose would leave it
+        # displaced along its own axis. See GraspCandidate.handle_center.
+        cand.handle_center = Point(
+            x=float(handle_c[0]), y=float(handle_c[1]), z=float(handle_c[2]))
 
         cand.approach_direction = Vector3(x=0.0, y=0.0, z=-1.0)
         cand.functional_end_dir = Vector3(

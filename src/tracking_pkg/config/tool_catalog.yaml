@@ -1,0 +1,126 @@
+# Tool Catalog
+# ============
+# Display names and synonyms, keyed on the RAW YOLO class. The LLM's system prompt
+# is built from this.
+#
+# WHY THIS EXISTS SEPARATELY FROM tool_knowledge_base.yaml:
+# the KB's `tools:` block is keyed on CANONICAL classes and folds the variants into
+# them — `scissors_long` and `scissors_short` both become "Scissors", and
+# `forceps_big` / `forceps_mid` / `forceps_short` all become "Forceps". So the LLM
+# was being told about three tools called "Forceps" and had no way to resolve
+# "give me the small forceps". This file gives every raw class its own name.
+#
+# THIS IS A CATALOGUE, NOT AN INVENTORY. It says what a tool is called, not how
+# many you own. The inventory of an operation is whatever is actually lying on the
+# instrument tray when register_inventory runs — four tools is as valid a
+# simulated operation as eleven.
+
+catalog:
+
+  scissors_long:
+    display_name: "Long Scissors"
+    synonyms:
+      - "lange schere"
+      - "long scissors"
+      - "big scissors"
+      - "mayo"
+      - "mayo scissors"
+      - "ciseaux longs"
+      - "grands ciseaux"
+      - "ciseaux de mayo"
+      - "ciseaux mayo"
+
+  scissors_short:
+    display_name: "Short Scissors"
+    synonyms:
+      - "kurze schere"
+      - "short scissors"
+      - "small scissors"
+      - "metzenbaum"
+      - "ciseaux courts"
+      - "petits ciseaux"
+      - "ciseaux de metzenbaum"
+      - "ciseaux metzenbaum"
+
+  forceps_big:
+    display_name: "Large Forceps"
+    synonyms:
+      - "grosse pinzette"
+      - "large forceps"
+      - "big forceps"
+      - "big tweezers"
+      - "grande pince"
+      - "grosses pinces"
+      - "grande pince à disséquer"
+      - "grande pincette"
+
+  forceps_mid:
+    display_name: "Medium Forceps"
+    synonyms:
+      - "mittlere pinzette"
+      - "medium forceps"
+      - "mid forceps"
+      - "pince moyenne"
+      - "pinces moyennes"
+      - "pince à disséquer moyenne"
+      - "pincette moyenne"
+
+  forceps_short:
+    display_name: "Small Forceps"
+    synonyms:
+      - "kleine pinzette"
+      - "small forceps"
+      - "short forceps"
+      - "small tweezers"
+      - "petite pince"
+      - "petites pinces"
+      - "petite pince à disséquer"
+      - "petite pincette"
+      - "pince courte"
+
+  needle_holder:
+    display_name: "Needle Holder"
+    synonyms:
+      - "nadelhalter"
+      - "needle driver"
+      - "needle holder"
+      - "porte-aiguille"
+      - "porte-aiguilles"
+      - "pince porte-aiguille"
+      - "pince porte-aiguilles"
+
+  retractor:
+    display_name: "Retractor"
+    synonyms:
+      - "wundhaken"
+      - "haken"
+      - "retractor"
+      - "langenbeck"
+      - "écarteur"
+      - "écarteur chirurgical"
+      - "crochet"
+      - "crochet chirurgical"
+      - "écarteur de langenbeck"
+      - "langenbeck"
+
+  awl:
+    display_name: "Awl"
+    synonyms:
+      - "ahle"
+      - "awl"
+      - "stechbeitel"
+      - "alêne"
+      - "alêne chirurgicale"
+      - "poinçon"
+      - "poinçon chirurgical"
+
+  hammer:
+    display_name: "Hammer"
+    synonyms:
+      - "hammer"
+      - "mallet"
+      - "surgical hammer"
+      - "marteau"
+      - "maillet"
+      - "marteau chirurgical"
+      - "maillet chirurgical"

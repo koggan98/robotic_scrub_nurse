@@ -1,0 +1,21 @@
+# Goal: take a tool from the RECLAIM tray and put it back on its home slot on the
+# instrument tray.
+#
+# This is not the same as return_tool: that one puts a WRONG tool, still in the
+# gripper, back where it was just picked from. This one fetches a used tool the
+# surgeon parked on the reclaim tray and returns it to where it belongs.
+#
+# The reclaim tray is also a PARKING spot — a tool lying there may be one the
+# surgeon wants back in a moment. Only he knows. So this never runs on its own.
+string tool_id                      # reclaim-tray track id; empty = all of them, one by one
+---
+bool success
+string message
+string[] returned_slot_ids
+string[] skipped_tool_ids
+string[] skipped_reasons            # parallel to skipped_tool_ids
+---
+string phase                        # GRASPING | MOVING_TO_HOME | PLACING | RETREATING | DONE
+string current_tool_id
+string current_tool_class
+int32 remaining

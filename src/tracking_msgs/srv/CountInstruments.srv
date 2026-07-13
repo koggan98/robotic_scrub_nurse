@@ -1,0 +1,17 @@
+# The instrument count: the inventory registered at the start of the operation,
+# against what the system can account for now.
+#
+# `in_use` and `unknown` are the ones that matter — those tools are nowhere
+# visible. That is entirely normal while the surgeon is holding one, which is
+# exactly why this is a REPORT and not an alarm: the system states the facts, a
+# human passes the verdict.
+---
+bool registered                     # false = no operation has been started
+bool all_accounted_for
+int32 expected                      # how many were registered at the start
+int32 at_home
+string[] in_gripper
+string[] on_reclaim
+string[] in_use                     # handed over — with the surgeon, or in the patient
+string[] unknown
+string report_json

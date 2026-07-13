@@ -17,17 +17,21 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandState.msg"
   "msg/SystemState.msg"
   "msg/ExecutionPlan.msg"
+  "msg/ToolEvent.msg"
   "srv/GetGraspApproachPose.srv"
   "srv/GetWorldState.srv"
   "srv/GetToolCandidates.srv"
   "srv/BuildWorldModel.srv"
   "srv/GetWorldModel.srv"
+  "srv/GetToolHome.srv"
+  "srv/CountInstruments.srv"
   "action/PickTool.action"
   "action/GraspTool.action"
   "action/HandoverTool.action"
   "action/ReleaseTool.action"
   "action/ReturnHome.action"
   "action/ReturnTool.action"
+  "action/ReturnToolHome.action"
   DEPENDENCIES geometry_msgs std_msgs action_msgs moveit_msgs
 )
 

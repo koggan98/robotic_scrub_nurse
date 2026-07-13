@@ -13,6 +13,15 @@ geometry_msgs/Vector3 approach_direction     # Direction to approach from (typic
 geometry_msgs/Vector3 functional_end_dir    # Points from handle toward functional end
 geometry_msgs/Vector3 handle_axis           # Long axis of the handle
 
+# The TOOL's pose, as opposed to the GRASP pose. These differ, and the difference
+# matters: grasp_pose = handle_center + d * functional_end_dir, and d depends on
+# the tray (the sliding-into-the-opening strategy uses that tray's hole). So a tool
+# grasped on the reclaim tray is held at a DIFFERENT point along its shaft than the
+# same tool was on the instrument tray. To put it back where it belongs you must
+# reconstruct the tool pose, not replay the grasp pose — otherwise it lands
+# displaced along its own axis by (d_reclaim - d_home).
+geometry_msgs/Point handle_center           # Handle centroid in world frame
+
 # Handover semantics (derived from tool knowledge base)
 string handover_rule                        # e.g. "functional_end_away", "blade_away", "neutral"
 geometry_msgs/PoseStamped handover_pose     # Suggested handover pose relative to hand

@@ -1,0 +1,16 @@
+# Where does a tool of this class belong on the instrument tray?
+#
+# Returns the tool's HOME POSE (handle centroid + long axis), NOT a grasp pose.
+# The caller reconstructs the place pose from it plus its own grasp distance:
+#   place_xy = home_handle_center.xy + d * home_functional_end_dir.xy
+# See GraspCandidate.handle_center for why replaying a stored grasp pose is wrong.
+
+string tool_class
+string track_id                     # optional; disambiguates duplicate instances
+---
+bool success
+string message                      # e.g. "no_home_for_class: scissors_long"
+string slot_id                      # e.g. "retractor_2"
+geometry_msgs/Point home_handle_center
+geometry_msgs/Vector3 home_functional_end_dir
+float32 home_plane_z

@@ -15,9 +15,22 @@ Maintains persistent tool ids across frames via greedy XY position matching
   /get_world_state     (GetWorldState)   -> SystemState struct (typed ROS)
   /get_world_model     (GetWorldModel)   -> JSON snapshot string (for LLM)
   /get_tool_candidates (GetToolCandidates) -> filtered candidate list
+
+It also OWNS THE TOOL REGISTRY — the inventory of the operation. It belongs here
+because this node already sees both trays, the gripper state and the executor's
+events, and it already builds the JSON the LLM reads.
+
+  /register_inventory  (std_srvs/Trigger)   -> freeze the tray as this OP's inventory
+  /get_tool_home       (GetToolHome)        -> where a tool belongs (for the executor)
+  /count_instruments   (CountInstruments)   -> the instrument count
+
+Note the tracker ids (tool_3, reclaim_1) are NOT the registry's identity: they are
+evicted after a few seconds of occlusion and re-minted fresh. The registry keys on
+its own slots and re-binds track ids on every observation. See tool_registry.py.
 """
 
 import json
+import os
 from threading import Lock
 from typing import Optional
 
@@ -27,16 +40,25 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger
 
 from tracking_msgs.msg import (
     GraspCandidateArray,
     HandState,
     SystemState,
+    ToolEvent,
 )
 from tracking_msgs.srv import (
+    CountInstruments,
     GetToolCandidates,
+    GetToolHome,
     GetWorldModel,
     GetWorldState,
+)
+from tool_registry import (
+    INSTRUMENT_TRAY,
+    RECLAIM_TRAY,
+    ToolRegistry,
 )
 
 
@@ -115,6 +137,18 @@ class WorldModelNode(Node):
         self.declare_parameter('hand_state_topic', '/hand_state')
         self.declare_parameter('world_frame', 'world')
         self.declare_parameter('hand_confidence_threshold', 0.3)
+        # ── Registry ──
+        # The share dir is read-only after install, so the operation's inventory
+        # lives under the user's home. Without persistence, a crash of this node
+        # mid-operation would take the whole instrument count with it.
+        self.declare_parameter(
+            'registry_path',
+            os.path.join(os.path.expanduser('~'), '.ros', 'rsn_tool_registry.json'))
+        # Two same-class tools closer than this cannot be told apart: the tracker
+        # (5 cm threshold, greedy) can swap their ids between frames. Registration
+        # refuses rather than bind slots that will silently jump.
+        self.declare_parameter('min_same_class_gap_m', 0.08)
+        self.declare_parameter('home_match_radius_m', 0.12)
 
         threshold = float(self.get_parameter('track_distance_threshold_m').value)
         max_age = float(self.get_parameter('track_max_age_sec').value)
@@ -132,6 +166,15 @@ class WorldModelNode(Node):
             threshold, reclaim_max_age, id_prefix='reclaim'
         )
         self._lock = Lock()
+
+        self._registry_path = self.get_parameter('registry_path').value
+        self._registry = ToolRegistry(
+            min_same_class_gap_m=float(
+                self.get_parameter('min_same_class_gap_m').value),
+            home_match_radius_m=float(
+                self.get_parameter('home_match_radius_m').value),
+        )
+        self._restore_registry()
 
         self._latest_candidates = []
         self._latest_reclaim_candidates = []
@@ -172,6 +215,11 @@ class WorldModelNode(Node):
         self.create_subscription(
             Bool, '/tool_grasped', self._tool_grasped_cb, 10
         )
+        # The transitions perception cannot see (the surgeon taking the tool out of
+        # the jaws, above all). See ToolEvent.msg.
+        self.create_subscription(
+            ToolEvent, '/tool_event', self._tool_event_cb, 10
+        )
 
         self.create_service(
             GetWorldState, '/get_world_state', self._get_world_state_cb
@@ -181,6 +229,15 @@ class WorldModelNode(Node):
         )
         self.create_service(
             GetWorldModel, '/get_world_model', self._get_world_model_cb
+        )
+        self.create_service(
+            Trigger, '/register_inventory', self._register_inventory_cb
+        )
+        self.create_service(
+            GetToolHome, '/get_tool_home', self._get_tool_home_cb
+        )
+        self.create_service(
+            CountInstruments, '/count_instruments', self._count_instruments_cb
         )
 
         self.get_logger().info(
@@ -199,6 +256,8 @@ class WorldModelNode(Node):
         cands = self._tracker.update(cands, now_s)
         with self._lock:
             self._latest_candidates = cands
+            self._registry.observe(
+                INSTRUMENT_TRAY, self._to_observations(cands), now_s)
 
     def _reclaim_cand_cb(self, msg):
         now_s = self.get_clock().now().nanoseconds * 1e-9
@@ -206,6 +265,37 @@ class WorldModelNode(Node):
         cands = self._reclaim_tracker.update(cands, now_s)
         with self._lock:
             self._latest_reclaim_candidates = cands
+            self._registry.observe(
+                RECLAIM_TRAY, self._to_observations(cands), now_s)
+
+    @staticmethod
+    def _to_observations(candidates):
+        """GraspCandidates -> the plain dicts the registry speaks.
+
+        Note it is the TOOL pose that goes in (handle centre + long axis), not the
+        grasp pose — those differ per tray, and only the tool pose is invariant.
+        """
+        return [
+            {
+                'tool_class': c.tool_class,
+                'track_id': c.tool_id,
+                'handle_xy': (c.handle_center.x, c.handle_center.y),
+                'end_dir': (c.functional_end_dir.x, c.functional_end_dir.y),
+                'plane_z': c.grasp_pose.pose.position.z,
+            }
+            for c in candidates
+        ]
+
+    def _tool_event_cb(self, msg):
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        with self._lock:
+            slot = self._registry.on_event(
+                msg.event, msg.track_id, msg.tool_class, msg.from_location, now_s)
+        if slot is None:
+            return
+        self.get_logger().info(
+            f'ToolEvent {msg.event}: {slot.slot_id} -> {slot.state}')
+        self._persist_registry()
 
     def _hand_cb(self, msg):
         with self._lock:
@@ -385,6 +475,9 @@ class WorldModelNode(Node):
             'fresh': gesture_age is not None and gesture_age < 3.0,
         }
 
+        with self._lock:
+            inventory = self._registry.snapshot()
+
         snapshot = {
             'timestamp_sec': now_s,
             'world_frame': self.world_frame,
@@ -396,6 +489,9 @@ class WorldModelNode(Node):
             'joint_positions': joints,
             'available_tools': available_tools,
             'reclaim_tools': reclaim_tools,
+            # The operation's inventory: every registered instrument and its state,
+            # including the ones that are nowhere visible right now.
+            'inventory': inventory,
             'receiver_hand': receiver_hand,
             'last_gesture': gesture_block,
         }
@@ -407,6 +503,106 @@ class WorldModelNode(Node):
         )
         response.world_model_json = json.dumps(snapshot, indent=2)
         return response
+
+    # ── Registry services ──────────────────────────────────────────
+
+    def _register_inventory_cb(self, request, response):
+        """Freeze whatever is on the instrument tray as this operation's inventory.
+
+        Deliberately does NOT check against an expected list — four tools is as
+        valid a simulated operation as eleven. It DOES report back exactly what it
+        found, so the LLM can read it out and a human notices a tool that was
+        occluded. That read-back is the only safeguard, and it is precisely how the
+        count is done in a real operating room.
+        """
+        del request
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        with self._lock:
+            cands = list(self._latest_candidates)
+            ok, found, message = self._registry.register(
+                self._to_observations(cands), now_s)
+
+        if not ok:
+            self.get_logger().warn(f'register_inventory refused: {message}')
+            response.success = False
+            response.message = message
+            return response
+
+        self._persist_registry()
+        detail = ', '.join(f'{n}x {cls}' for cls, n in sorted(found.items()))
+        self.get_logger().info(f'Inventory registered: {detail}')
+        response.success = True
+        response.message = json.dumps({
+            'total': sum(found.values()),
+            'found': found,
+            'message': message,
+        })
+        return response
+
+    def _get_tool_home_cb(self, request, response):
+        with self._lock:
+            slot = self._registry.home_of(request.tool_class, request.track_id)
+        if slot is None:
+            response.success = False
+            response.message = (
+                f'no_home_for_class: {request.tool_class}'
+                if self._registry.is_registered
+                else 'no inventory registered — run register_inventory first')
+            return response
+
+        response.success = True
+        response.message = 'ok'
+        response.slot_id = slot.slot_id
+        response.home_handle_center.x = float(slot.home_xy[0])
+        response.home_handle_center.y = float(slot.home_xy[1])
+        response.home_handle_center.z = float(slot.home_plane_z)
+        response.home_functional_end_dir.x = float(slot.home_dir[0])
+        response.home_functional_end_dir.y = float(slot.home_dir[1])
+        response.home_functional_end_dir.z = 0.0
+        response.home_plane_z = float(slot.home_plane_z)
+        return response
+
+    def _count_instruments_cb(self, request, response):
+        del request
+        with self._lock:
+            c = self._registry.count()
+        response.registered = c['registered']
+        response.all_accounted_for = c['all_accounted_for']
+        response.expected = c['expected']
+        response.at_home = c['at_home']
+        response.in_gripper = c['in_gripper']
+        response.on_reclaim = c['on_reclaim']
+        response.in_use = c['in_use']
+        response.unknown = c['unknown']
+        response.report_json = json.dumps(c)
+        if c['unaccounted_for']:
+            self.get_logger().warn(
+                f'Instrument count: {c["at_home"]}/{c["expected"]} at home. '
+                f'NOT ACCOUNTED FOR: {c["unaccounted_for"]}')
+        return response
+
+    # ── Registry persistence ───────────────────────────────────────
+
+    def _restore_registry(self):
+        if not os.path.exists(self._registry_path):
+            return
+        try:
+            n = self._registry.load(self._registry_path)
+            self.get_logger().info(
+                f'Restored an inventory of {n} instruments from '
+                f'{self._registry_path}. Run register_inventory to start a new '
+                f'operation.')
+        except Exception as e:
+            self.get_logger().warn(
+                f'Could not restore the registry from {self._registry_path}: {e}')
+
+    def _persist_registry(self):
+        try:
+            self._registry.save(self._registry_path)
+        except Exception as e:
+            # Never let a failing disk take the running system down — but say so,
+            # because the inventory would not survive a restart.
+            self.get_logger().warn(f'Could not persist the registry: {e}')
 
 
 def main(args=None):
