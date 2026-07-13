@@ -1315,25 +1315,17 @@ private:
         tracking_msgs::msg::GraspCandidate chosen;
         geometry_msgs::msg::Pose grasp_pose, approach_pose;
 
-        // A named tool may be picked from EITHER tray. The reclaim tray is also a
-        // parking spot: the surgeon puts a tool down there meaning to use it again
-        // in a moment, and when he asks for it back it must come from there — there
-        // is no second one on the instrument tray. Track ids are unique across trays
-        // (tool_N vs reclaim_N), so an empty filter is unambiguous.
-        // With no tool named, stay on the instrument tray: "just give me something"
-        // must not hand over a used instrument.
-        const std::string location =
-            tool_id_arg.empty() ? kInstrumentLocation : std::string();
-
-        // The reclaim tray sits down inside its bracket, so a tool lifted from there
-        // needs the clear-out rise before the tool box is attached.
-        const double clearout =
-            (tool_id_arg.rfind("reclaim", 0) == 0)
-                ? reclaim_hold_z_m_
-                : std::numeric_limits<double>::quiet_NaN();
-
+        // A tool on the reclaim tray is a USED tool. Exactly one thing may happen to
+        // it: go back to the instrument tray (return_tool_home). It is never handed
+        // to the surgeon. So a pick that leads to a handover only ever sources from
+        // the instrument tray — asking for a reclaim id here fails with
+        // "tool_id 'reclaim_N' not in candidates", which is the right answer.
+        //
+        // NaN = no clear-out lift: the instrument tray's approach pose is already in
+        // free space, so the tool box can be attached right there.
         const bool grasped = graspToolCore(
-            tool_id_arg, location, clearout,
+            tool_id_arg, kInstrumentLocation,
+            std::numeric_limits<double>::quiet_NaN(),
             chosen, grasp_pose, approach_pose, err);
         // chosen is filled the moment pre-flight commits, so the tool can still
         // be named when a later motion phase fails — the LLM keys its retry on

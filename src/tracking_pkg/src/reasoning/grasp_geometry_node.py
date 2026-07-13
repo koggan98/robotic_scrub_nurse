@@ -332,13 +332,19 @@ class GraspGeometryNode(Node):
         if strat.get('placement') != 'sliding':
             return nominal_d, shallow_z, False, 'fixed'
 
-        # A sliding tool we cannot safely slide: no measured opening for this
-        # tray, or a junk pixel scale (which makes the tool length — and hence the
-        # slide bounds — meaningless). Report it as such rather than as 'fixed',
-        # so `ros2 topic echo` tells you WHY it stayed shallow.
+        # ── A sliding tool we cannot safely slide ────────────────────
+        # It stays at the tray surface, which is safe but grips poorly. Say WHY,
+        # because each reason has a different fix and the tag alone
+        # ('sliding_no_opening') does not tell them apart.
         tray = self._trays.get(det.location)
-        if not tray or not scale_ok:
-            return nominal_d, shallow_z, False, 'sliding_no_opening'
+        if not tray:
+            return self._no_slide(
+                det, nominal_d, shallow_z,
+                f'no measured opening for {det.location} — run tray_opening_calib.py')
+        if not scale_ok:
+            return self._no_slide(
+                det, nominal_d, shallow_z,
+                'pixel scale unusable (handle too close to the body centre)')
 
         deep_z = float(strat.get('z_offset_over_opening_m', shallow_z))
 
@@ -346,27 +352,49 @@ class GraspGeometryNode(Node):
         d_lo = float(strat.get('slide_min_m', nominal_d))
         # The functional end sits half a tool-length beyond the body centre.
         dist_to_tip = center_dist_m + 0.5 * tool_length_m
-        d_hi = min(
-            float(strat.get('slide_max_m', nominal_d)),
-            dist_to_tip - float(strat.get('tip_margin_m', 0.02)),
-        )
+        slide_max = float(strat.get('slide_max_m', nominal_d))
+        tip_margin = float(strat.get('tip_margin_m', 0.02))
+        d_hi = min(slide_max, dist_to_tip - tip_margin)
         if d_hi < d_lo:
-            return nominal_d, shallow_z, False, 'sliding_no_opening'
+            return self._no_slide(
+                det, nominal_d, shallow_z,
+                f'slide window empty ({d_lo * 1000:.0f}..{d_hi * 1000:.0f} mm) — '
+                f'raise slide_max_m or lower tip_margin_m for {det.tool_class}')
 
         step = max(1e-4, self.slide_step_m)
         feasible = [
-            d for d in np.arange(d_lo, d_hi + 0.5 * step, step)
+            float(d) for d in np.arange(d_lo, d_hi + 0.5 * step, step)
             if self._clears_profile(handle_c, fed, float(d), tray)
         ]
         if not feasible:
-            # Tool does not reach the opening anywhere we may grasp it. Stay at
-            # the tray surface — slipping is survivable, crashing is not.
-            return nominal_d, shallow_z, False, 'sliding_no_opening'
+            return self._no_slide(
+                det, nominal_d, shallow_z,
+                f'no spot in {d_lo * 1000:.0f}..{d_hi * 1000:.0f} mm reaches the '
+                f'opening — usually slide_max_m is too small for {det.tool_class}')
 
-        # Of the safe spots, take the one nearest the nominal (tuned) distance,
-        # so we deviate as little as possible from behaviour that already works.
-        d = float(min(feasible, key=lambda x: abs(x - nominal_d)))
+        # Of the safe spots, take the one that sits DEEPEST inside the opening.
+        #
+        # The tools always lie ACROSS the slot, and the slot is long and narrow, so
+        # "deepest inside" is the same thing as "on the slot's centre line, along
+        # its short axis" — which is where a flat instrument grips best, and where
+        # the fingers are furthest from the profile on both sides.
+        #
+        # This used to pick the feasible spot NEAREST THE NOMINAL distance, which
+        # pulled the grasp toward the handle and therefore toward the NEAR EDGE of
+        # the slot. Nominal now only breaks ties, so the choice stays deterministic
+        # on a plateau.
+        d = max(feasible, key=lambda x: (
+            round(tray.clearance(handle_c[:2] + x * fed[:2]), 4),  # 0.1 mm grid vs. float noise
+            -abs(x - nominal_d),
+        ))
         return d, deep_z, True, 'sliding_opening'
+
+    def _no_slide(self, det, nominal_d, shallow_z, reason):
+        """Fall back to the shallow grasp, and say why — throttled, this runs at 4 Hz."""
+        self.get_logger().warn(
+            f'{det.tool_class} on {det.location}: grasping shallow — {reason}',
+            throttle_duration_sec=10.0)
+        return nominal_d, shallow_z, False, 'sliding_no_opening'
 
     def _clears_profile(self, handle_c, fed, distance_m, tray):
         """Would the grasp point AND both fingertips land inside the opening?"""

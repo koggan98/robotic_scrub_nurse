@@ -50,6 +50,23 @@ class TrayOpenings:
                 return True
         return False
 
+    def clearance(self, point_xy):
+        """How deep inside an opening the point sits. 0.0 if it is in none of them.
+
+        This is what "grasp as centrally as possible" reduces to. The openings are
+        long NARROW slots and the tools always lie ACROSS them, so the distance to
+        the boundary is dominated by the two long edges — maximising it puts the
+        point on the slot's centre line, along its short axis. Exactly where a flat
+        instrument should be grasped. The largest possible clearance from the
+        profile comes along for free.
+        """
+        p = np.asarray(point_xy, dtype=float)[:2]
+        best = 0.0
+        for poly in self.polygons:
+            if _point_in_polygon(p, poly):
+                best = max(best, _distance_to_boundary(p, poly))
+        return best
+
     @classmethod
     def from_config(cls, tray_cfg):
         """Build from one tray's block of config/tray_geometry.yaml."""
