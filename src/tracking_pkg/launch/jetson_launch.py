@@ -215,6 +215,13 @@ def generate_launch_description():
                 'grasp_offset_m': 0.035,
                 'detections_topic': '/detected_tools_obb',
                 'candidates_topic': '/tool_grasp_candidates',
+                # Half the gripper's OUTER width across the tool axis (measured:
+                # 65 mm outer edge to outer edge). These two points, not just the
+                # grasp point, are what would hit a profile bar during the descent.
+                'finger_half_span_m': 0.0325,
+                # Step size when searching along the tool axis for a spot over the
+                # tray opening.
+                'slide_step_m':      0.002,
             }],
         ),
 
@@ -288,6 +295,13 @@ def generate_launch_description():
                 'grasp_offset_m':   0.035,
                 'detections_topic': '/reclaim_tools_obb',
                 'candidates_topic': '/reclaim_grasp_candidates',
+                # Half the gripper's OUTER width across the tool axis (measured:
+                # 65 mm outer edge to outer edge). These two points, not just the
+                # grasp point, are what would hit a profile bar during the descent.
+                'finger_half_span_m': 0.0325,
+                # Step size when searching along the tool axis for a spot over the
+                # tray opening.
+                'slide_step_m':      0.002,
             }],
         ),
         Node(

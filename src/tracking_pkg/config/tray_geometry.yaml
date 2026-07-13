@@ -50,8 +50,9 @@ trays:
         polygon: [[0.3170, 0.3987], [0.3167, 0.3375], [-0.3481, 0.3334], [-0.3437, 0.3973]]
 
     # How far the grasp point AND both fingertips must stay from a polygon edge.
-    # The profiles are stepped down a little at some edges, so 10 mm is enough.
-    edge_margin_m: 0.010
+    # The profiles are stepped down a little at some edges, so the collision risk
+    # is low and 5 mm is enough. Raise this if a fingertip ever grazes a profile.
+    edge_margin_m: 0.005
 
   reclaim_tray:
     plane_z: -0.137
@@ -76,4 +77,4 @@ trays:
       - name: main
         polygon: [[0.3682, -0.4058], [0.1541, -0.4021], [0.1531, -0.3323], [0.3704, -0.3349]]
 
-    edge_margin_m: 0.010
+    edge_margin_m: 0.005

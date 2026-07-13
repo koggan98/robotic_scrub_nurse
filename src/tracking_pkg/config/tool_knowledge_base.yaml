@@ -166,42 +166,39 @@ grasp_strategies:
     z_offset_m: 0.0
 
   # ── "Tall" tools: enough body height that the jaws already get a grip at the
-  #    tray surface. 3 mm shallower keeps the fingertips off the profile.
-  #    Their grasp point is load-bearing — do not slide it.
+  #    tray surface. 4 mm shallower keeps the fingertips off the profile.
+  #    Their grasp point is load-bearing — do not slide it. The hammer tips out
+  #    of the jaws if grasped off its centre of gravity.
 
   hammer:
     placement: fixed
     distance_rule: from_handle_inner_edge   # was HAMMER_CENTER_OFFSET_M
     distance_m: 0.040                       # grasp near the centre of gravity
-    z_offset_m: 0.003
-
-  awl:
-    placement: fixed
-    distance_rule: from_handle_center
-    distance_m: 0.035
-    z_offset_m: 0.003
+    z_offset_m: 0.004
 
   retractor:
     placement: fixed                        # always lies on its side
     distance_rule: from_handle_center
     distance_m: 0.035
-    z_offset_m: 0.003
+    z_offset_m: 0.004
 
   forceps_big:
     placement: fixed
     distance_rule: from_handle_center
     distance_m: 0.035
-    z_offset_m: 0.003
+    z_offset_m: 0.004
 
   forceps_mid:
     placement: fixed
     distance_rule: from_handle_center
     distance_m: 0.035
-    z_offset_m: 0.003
+    z_offset_m: 0.004
 
-  # ── "Thin" tools: so flat that the jaws only catch their top 2-3 mm at the
+  # ── "Flat" tools: so thin that the jaws only catch their top 2-3 mm at the
   #    tray surface, and they slip out. Long enough to be grasped anywhere along
-  #    the shaft, so slide the grasp point into the opening and reach deeper.
+  #    the shaft, so slide the grasp point into the opening and reach 4 mm deeper.
+  #    z_offset_m (the fallback when the opening cannot be reached) stays at 0.0 —
+  #    i.e. today's height, which is known to work.
 
   scissors_long:
     placement: sliding
@@ -211,7 +208,7 @@ grasp_strategies:
     slide_max_m: 0.110
     tip_margin_m: 0.020                     # stay back from the functional end
     z_offset_m: 0.0                         # opening not reachable -> today's height
-    z_offset_over_opening_m: -0.003         # over the opening -> 3 mm deeper
+    z_offset_over_opening_m: -0.004         # over the opening -> 4 mm deeper
 
   scissors_short:
     placement: sliding
@@ -221,7 +218,7 @@ grasp_strategies:
     slide_max_m: 0.080
     tip_margin_m: 0.020
     z_offset_m: 0.0
-    z_offset_over_opening_m: -0.003
+    z_offset_over_opening_m: -0.004
 
   needle_holder:
     placement: sliding
@@ -231,7 +228,17 @@ grasp_strategies:
     slide_max_m: 0.100
     tip_margin_m: 0.020
     z_offset_m: 0.0
-    z_offset_over_opening_m: -0.003
+    z_offset_over_opening_m: -0.004
+
+  awl:
+    placement: sliding
+    distance_rule: from_handle_center       # nominal = the old fixed grasp point,
+    distance_m: 0.035                       # so nothing moves when it cannot slide
+    slide_min_m: 0.025
+    slide_max_m: 0.090
+    tip_margin_m: 0.025                     # it is pointed — stay well off the tip
+    z_offset_m: 0.0
+    z_offset_over_opening_m: -0.004
 
   forceps_short:
     placement: sliding
@@ -241,4 +248,4 @@ grasp_strategies:
     slide_max_m: 0.070
     tip_margin_m: 0.015
     z_offset_m: 0.0
-    z_offset_over_opening_m: -0.003
+    z_offset_over_opening_m: -0.004
