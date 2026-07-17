@@ -429,15 +429,20 @@ def generate_launch_description():
                         'z_offset': 0.004,
                         'approach_height_m': 0.04,
                         'tool_yaw_offset_rad': 1.57079632679,
-                        'velocity_scale': 0.6,
-                        'acceleration_scale': 0.6,
-                        'gripper_pause_seconds': 1.0,
+                        # Speed tuning 2026-07: 0.6 -> 0.8 (~25% faster
+                        # motions). Handover scales stay 0.6 on purpose —
+                        # that leg moves toward the surgeon's hand.
+                        'velocity_scale': 0.8,
+                        'acceleration_scale': 0.8,
+                        # Robotiq finishes open/close in ~0.5-0.7 s; the old
+                        # 1.0 s slept ~1-1.5 s extra per pick sequence.
+                        'gripper_pause_seconds': 0.6,
                         'handover_planning_time': 1.0,
                         'handover_velocity_scale': 0.6,
                         'handover_acceleration_scale': 0.6,
-                        'pre_release_dwell_seconds': 0.3,
+                        'pre_release_dwell_seconds': 0.15,
                         'post_zeroer_settle_seconds': 0.0,
-                        'post_open_pause_seconds': 1.0,
+                        'post_open_pause_seconds': 0.6,
                         'return_home_after_handover': True,
                         'gripper_done_timeout_seconds': 30.0,
                         # Pre-flight cartesian path tolerance (was 0.99,
@@ -529,9 +534,14 @@ def generate_launch_description():
                     name='asr_node',
                     output='screen',
                     parameters=[{
-                        'whisper_model': 'base.en',
+                        # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU.
+                        # The deterministic NLU (fuzzy verbs/tools) plus the
+                        # initial_prompt vocabulary bias absorb its rougher
+                        # raw accuracy. Revert to 'base.en' if mishearings
+                        # get worse in practice.
+                        'whisper_model': 'tiny.en',
                         'language': 'en',
-                        'silence_threshold_seconds': 0.5,
+                        'silence_threshold_seconds': 0.35,
                         # Only utterances addressed to the robot pass; the wake
                         # word is stripped before /user_speech. Direct topic
                         # injection bypasses the gate (no mic involved).

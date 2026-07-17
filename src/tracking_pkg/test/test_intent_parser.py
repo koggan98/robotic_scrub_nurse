@@ -95,8 +95,11 @@ def test_garbled_synonym_never_resolves_to_wrong_class(parser):
     ('count the instruments', Action.COUNT),
     ("we're done", Action.COUNT),
     ('end of operation', Action.COUNT),
+    ('end surgery', Action.COUNT),
+    ('finish surgery', Action.COUNT),
     ('setup ready', Action.REGISTER),
     ('start the operation', Action.REGISTER),
+    ('start surgery', Action.REGISTER),
     ('release', Action.RELEASE),
     ('open the gripper', Action.RELEASE),
     ('let go', Action.RELEASE),
@@ -104,6 +107,25 @@ def test_garbled_synonym_never_resolves_to_wrong_class(parser):
 ])
 def test_verbs(parser, text, action):
     assert parser.parse(text).action == action
+
+
+# ── ASR-damaged verbs: the fuzzy pass must catch these ──────────────
+
+@pytest.mark.parametrize('text,action', [
+    ('and surgery.', Action.COUNT),        # Whisper heard "end surgery"
+    ('Finnish surgery', Action.COUNT),     # Whisper heard "finish surgery"
+    ('Stark surgery', Action.REGISTER),    # Whisper heard "start surgery"
+])
+def test_fuzzy_verbs(parser, text, action):
+    assert parser.parse(text).action == action
+
+
+@pytest.mark.parametrize('text', [
+    'needle holder please',   # "please" must NOT fuzzy-become "release"
+    'shop is open',           # "shop" must NOT abort (short words stay exact)
+])
+def test_fuzzy_verbs_no_false_positives(parser, text):
+    assert parser.parse(text).action not in (Action.RELEASE, Action.ABORT)
 
 
 @pytest.mark.parametrize('text,expected_class', [

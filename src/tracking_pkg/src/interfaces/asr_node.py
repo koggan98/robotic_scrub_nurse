@@ -73,6 +73,15 @@ class ASRNode(Node):
             'robot', 'robo', 'rob', 'robi', 'robbie', 'robert'])
         # Fuzzy acceptance for Whisper re-spellings ("Roby", "Robots").
         self.declare_parameter('wake_word_fuzzy', 0.75)
+        # Domain bias for Whisper's decoder: fed as initial_prompt, it pulls
+        # the transcription toward this vocabulary — "end surgery" instead of
+        # "and surgery", "finish" instead of "Finnish". Practically free
+        # compared to a bigger model. Empty string disables.
+        self.declare_parameter('initial_prompt', (
+            'Robot commands in an operating room: robot, end surgery, '
+            'finish surgery, start surgery, count the instruments, '
+            'needle holder, forceps, tweezers, scissors, retractor, awl, '
+            'hammer, put it back, wrong tool, release, stop.'))
 
         self.whisper_model_size = self.get_parameter('whisper_model').value
         self.language = self.get_parameter('language').value or None
@@ -92,6 +101,7 @@ class ASRNode(Node):
             'float16' if str(self.asr_device).startswith('cuda') else 'int8')
         self.wake_words = list(self.get_parameter('wake_words').value or [])
         self.wake_word_fuzzy = float(self.get_parameter('wake_word_fuzzy').value)
+        self.initial_prompt = self.get_parameter('initial_prompt').value or None
 
         # Publisher
         self.publisher = self.create_publisher(String, 'user_speech', 10)
@@ -311,6 +321,8 @@ class ASRNode(Node):
                 language=self.language,
                 beam_size=1,
                 vad_filter=False,
+                # Vocabulary bias toward our command set — see the parameter.
+                initial_prompt=self.initial_prompt,
             )
 
             full_text = ' '.join(seg.text.strip() for seg in segments).strip()

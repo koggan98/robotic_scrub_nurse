@@ -369,9 +369,14 @@ def generate_launch_description():
                     name='asr_node',
                     output='screen',
                     parameters=[{
-                        'whisper_model':               'base.en',
+                        # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU.
+                        # The deterministic NLU (fuzzy verbs/tools) plus the
+                        # initial_prompt vocabulary bias absorb its rougher
+                        # raw accuracy. Revert to 'base.en' if mishearings
+                        # get worse in practice.
+                        'whisper_model':               'tiny.en',
                         'language':                    'en',
-                        'silence_threshold_seconds':   0.5,
+                        'silence_threshold_seconds':   0.35,
                         'cpu_threads':                 3,
                         # Samson Q2U USB mic via direct ALSA (PulseAudio exposes no
                         # capture source for it, so the default device is silent).

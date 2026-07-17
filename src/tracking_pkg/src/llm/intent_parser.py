@@ -84,10 +84,16 @@ class IntentParser:
     def __init__(self, catalog: Dict, lexicon: Dict,
                  fuzzy_threshold: float = 0.8,
                  fuzzy_floor: float = 0.6,
-                 near_tie_delta: float = 0.1):
+                 near_tie_delta: float = 0.1,
+                 verb_fuzzy_threshold: float = 0.82):
         self.fuzzy_threshold = float(fuzzy_threshold)
         self.fuzzy_floor = float(fuzzy_floor)
         self.near_tie_delta = float(near_tie_delta)
+        # Verb phrases get a fuzzy pass too — Whisper turns "end surgery" into
+        # "and surgery" and "finish" into "Finnish". Higher bar than the tools
+        # (0.82 keeps "please" from becoming "release"), and phrases shorter
+        # than 5 characters stay exact-only so "shop" can never abort the arm.
+        self.verb_fuzzy_threshold = float(verb_fuzzy_threshold)
 
         # class -> normalized synonym strings. The class name itself and the
         # display name count as synonyms too ("needle_holder" is spoken
@@ -159,10 +165,30 @@ class IntentParser:
     # ── Verb matching ───────────────────────────────────────────────
 
     def _match_verb(self, norm: str):
+        # Exact pass first, in priority order — cheap and unambiguous.
         for group in _VERB_PRIORITY:
             for phrase, rx in self._verbs.get(group, []):
                 if rx.search(norm):
                     return group, phrase
+        # Fuzzy pass: ASR-damaged verbs ("Finnish surgery", "and surgery").
+        # Only phrases of >= 5 characters take part; ties go to the higher-
+        # priority group because iteration is in priority order and only a
+        # strictly better score displaces the incumbent.
+        tokens = norm.split()
+        best_score, best_group, best_phrase = 0.0, None, ''
+        for group in _VERB_PRIORITY:
+            for phrase, _rx in self._verbs.get(group, []):
+                if len(phrase) < 5:
+                    continue
+                n = len(phrase.split())
+                for w in range(max(1, n - 1), n + 2):
+                    for i in range(max(1, len(tokens) - w + 1)):
+                        window = ' '.join(tokens[i:i + w])
+                        s = SequenceMatcher(None, window, phrase).ratio()
+                        if s > best_score:
+                            best_score, best_group, best_phrase = s, group, phrase
+        if best_score >= self.verb_fuzzy_threshold:
+            return best_group, best_phrase
         return None, ''
 
     # ── Tool matching ───────────────────────────────────────────────
