@@ -37,7 +37,11 @@ trays:
     # Applied by tool_detection_node AND by tray_opening_calib.py, so the polygon
     # below and the tool grasp points always live in the same, corrected frame —
     # the robot's.
-    world_offset_xy: [0.0, 0.0]
+    # Measured 2026-07-17 on the FIXED camera pose (7 tool positions across the
+    # whole tray, physical FK vs perceived body_center_3d.x): a residual +26.5 mm
+    # x bias remains after the pose calibration. This offset + the xy_scale below
+    # (linear fit phys = 0.9884*perc + 0.0262) bring all 7 to <=10.5 mm (RMS 7.4).
+    world_offset_xy: [0.0265, 0.0]
 
     # Lateral SCALE correction about xy_pivot, applied AFTER world_offset_xy.
     # The camera is mounted close and oblique; its ArUco-locked pose carries a
@@ -48,13 +52,16 @@ trays:
     # one frame. Measure scale from physical(read_stage_pose) vs perceived
     # (body_center_3d) pairs across the tray; pivot = the tray centre where grasps
     # are already perfect. scale = physical/perceived (right pair: 0.342/0.288).
-    # DISABLED (1.0): superseded by the FIXED camera pose (aruco_markers.yaml,
-    # marker 110, hardcoded_world_pose). The lateral scale here was a band-aid for
-    # the drifting ArUco lock — it could never hold because the underlying pose
-    # kept moving. With the pose measured once and hardcoded, the projection is
-    # accurate directly. Only re-introduce a scale if, AFTER the pose calibration,
-    # a residual is still measured across the tray.
-    xy_scale: [1.0, 1.0]
+    # RE-ENABLED 2026-07-17: with the pose now FIXED (not drifting), a residual
+    # ~1.2% x-scale WAS measured across the tray (7 tool positions) — exactly the
+    # "re-introduce only if a residual remains after the pose calibration" case.
+    # This is stable now because the pose no longer moves. Fit: phys = 0.9884*perc
+    # about xy_pivot=0, applied AFTER world_offset_xy above. y left at 1.0 (all
+    # tools sit in the narrow slot, so a y-scale is unmeasurable and unneeded).
+    # The residual bow (~1 cm) is worst at the extreme +x/-x edges; to tighten it
+    # further, re-calibrate the pose with height-varied points (breaks the
+    # coplanar degeneracy that leaves the current pose slightly curved).
+    xy_scale: [0.9884, 1.0]
     xy_pivot: [0.0, 0.0]
 
     # Inner edge of the profile frame, world XY, walking around the rim.
@@ -65,7 +72,7 @@ trays:
     # shallow, which is correct.
     openings:
       - name: main
-        polygon: [[0.3951, 0.3253], [-0.4013, 0.3227], [-0.3995, 0.3878], [0.3978, 0.3873]]
+        polygon: [[0.4274, 0.3100], [-0.3634, 0.3229], [-0.3618, 0.3929], [0.4230, 0.3891]]
 
     # How far the grasp point AND both fingertips must stay from a polygon edge.
     # The profiles are stepped down a little at some edges, so the collision risk
