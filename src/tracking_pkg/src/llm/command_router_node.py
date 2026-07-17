@@ -28,7 +28,7 @@ Parameters:
   fuzzy_floor (float)         below this a match is no evidence, default 0.6
   llm_fallback_enabled (bool) allow the stateless LLM intent fallback
   openai_api_key (str)        key for the fallback (or OPENAI_API_KEY env)
-  model_name (str)            fallback model, default gpt-4o-mini
+  model_name (str)            fallback model, default gpt-5-mini
   action_timeout_sec (float)  per-action wait cap, default 120
 """
 
@@ -74,7 +74,7 @@ class CommandRouterNode(Node):
         self.declare_parameter('fuzzy_floor', 0.6)
         self.declare_parameter('llm_fallback_enabled', True)
         self.declare_parameter('openai_api_key', '')
-        self.declare_parameter('model_name', 'gpt-4o-mini')
+        self.declare_parameter('model_name', 'gpt-5-mini')
         self.declare_parameter('action_timeout_sec', 120.0)
 
         self.action_timeout_sec = float(

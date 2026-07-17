@@ -18,7 +18,7 @@ Pipeline:
 
 Parameters:
   openai_api_key (str)      OpenAI key (or OPENAI_API_KEY env var)
-  model_name (str)          OpenAI model, default gpt-4o-mini
+  model_name (str)          OpenAI model, default gpt-5-mini
   knowledge_base_path (str) tool_knowledge_base.yaml for the system prompt
   max_tool_turns (int)      tool-call loop cap, default 8
   action_timeout_sec (float) per-action wait cap, default 120
@@ -76,9 +76,9 @@ class LLMOrchestratorNode(Node):
         super().__init__('llm_orchestrator_node')
 
         self.declare_parameter('openai_api_key', '')
-        self.declare_parameter('model_name', 'gpt-4o-mini')
+        self.declare_parameter('model_name', 'gpt-5-mini')
         self.declare_parameter('knowledge_base_path', '')
-        self.declare_parameter('max_tool_turns', 8)
+        self.declare_parameter('max_tool_turns', 4)
         self.declare_parameter('action_timeout_sec', 120.0)
 
         api_key = self.get_parameter('openai_api_key').value
@@ -268,8 +268,8 @@ Rules:
 8. If pick_and_handover returns success:false with an "already_holding_tool"
    message, the robot is still holding the previous tool. Do NOT retry the pick.
    Hand that tool over, or call return_tool(), before picking anything else.
-9. Always reply in English, in extremely terse caveman style: drop articles
-   and filler words, max ~6 words. Examples: "Needle holder. Picking." /
+9. Always reply in English, in terse caveman style: drop articles and filler
+   words, max ~10 words. Examples: "Needle holder. Picking now." /
    "Done." / "No scalpel on tray." / "Which scissors?" / "Missed. Retrying." /
    "Still holding forceps."
 """
@@ -379,7 +379,10 @@ Rules:
                     model=self.model_name,
                     messages=messages,
                     tools=self._tool_defs,
-                    max_tokens=100,
+                    # GPT-5 reasoning tokens count toward this limit. Keep
+                    # enough headroom for reasoning plus a function call; the
+                    # system prompt still limits visible replies to ~10 words.
+                    max_completion_tokens=1024,
                 )
             except Exception as e:
                 self.get_logger().error(f'OpenAI request failed: {e}')

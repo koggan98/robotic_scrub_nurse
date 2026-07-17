@@ -1190,6 +1190,10 @@ private:
         // believing the robot holds it — mark it unknown and let perception find
         // it again if it landed on a tray.
         publishHeldToolEvent("DROPPED");
+        {   // nothing held any more -> no handover to retrace
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_last_present_ = false;
+        }
         std::string home_err;
         doReturnHomeInternal(home_err);
         err = "tool_lost: " + reason;
@@ -1463,6 +1467,12 @@ private:
             return false;
         }
 
+        // A new grasp voids any remembered handover pose from a previous one.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_last_present_ = false;
+        }
+
         std::vector<tracking_msgs::msg::GraspCandidate> candidates;
         if (!collectCandidates(candidates, location_filter, err)) return false;
 
@@ -1551,6 +1561,12 @@ private:
         //    the tool centre along functional_end_dir), up to
         //    max_regrasp_retries_ times, without the slow present→home cycle.
         bool secured = false;
+        // The grasp the gripper actually CLOSED on. The re-grasp nudges shift
+        // the grip point up to regrasp-steps × attempts along the tool, and
+        // return_tool / return_tool_home place the tool relative to this TCP
+        // pose — recording the pre-flight pose instead displaced every
+        // re-grasped tool by exactly the nudge on its way back.
+        geometry_msgs::msg::Pose secured_grasp_pose = grasp_pose;
         for (int attempt = 0; attempt <= max_regrasp_retries_ && !secured; ++attempt) {
             moveit::planning_interface::MoveGroupInterface::Plan descend_try = legs.descend;
             moveit::planning_interface::MoveGroupInterface::Plan lift_try = legs.lift;
@@ -1582,6 +1598,7 @@ private:
                     RCLCPP_WARN(get_logger(), "Re-grasp lift plan failed: %s", perr.c_str());
                     continue;
                 }
+                secured_grasp_pose = grasp_try;
             }
 
             if (!executePlan(descend_try, err)) { err = "descend exec: " + err; return false; }
@@ -1630,10 +1647,14 @@ private:
         // The tool is in the gripper. Record where it came from BEFORE moving it,
         // so that any failure from here on can still be undone with return_tool —
         // putting it back where it was found is the only safe way out of a failure
-        // while holding something.
+        // while holding something. The SECURED pose (after any re-grasp nudges),
+        // not the pre-flight one: the tool goes back to where the jaws really
+        // held it. The caller's grasp_pose_out follows suit — return_tool_home
+        // derives its grip depth d from it.
+        grasp_pose_out = secured_grasp_pose;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            last_pick_grasp_pose_ = grasp_pose;
+            last_pick_grasp_pose_ = secured_grasp_pose;
             last_pick_approach_pose_ = approach_pose;
             last_pick_location_ = location_filter;
             have_last_pick_ = true;
@@ -1745,6 +1766,15 @@ private:
             transporting_.store(false);
             err = "pre-orient wrists: " + err;
             return false;
+        }
+
+        // This IS the "waiting for handoff" pose. Remember its joints so a
+        // later return_tool can retrace the handover through it instead of
+        // free-planning home from wherever the arm ended up.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            last_present_joints_ = move_group_->getCurrentJointValues();
+            have_last_present_ = !last_present_joints_.empty();
         }
 
         transporting_.store(false);
@@ -1919,6 +1949,10 @@ private:
         // fired on the force-guided release). ONLY now is it his — and from here it
         // is invisible to every camera, which is entirely normal.
         publishHeldToolEvent("HANDED_OVER");
+        {   // handover complete -> nothing to retrace any more
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            have_last_present_ = false;
+        }
 
         // Tool delivered — drop the attached collision box and forget the pick.
         detachToolBox();
@@ -2071,6 +2105,27 @@ private:
         }
 
         publishState("RETURNING", tool_id_snapshot, tool_class_snapshot);
+
+        // First pull back to the present ("waiting for handoff") pose. From the
+        // surgeon's hand the arm is stretched out into the room, and a path
+        // free-planned from there swings erratically; retracing through the
+        // present pose keeps the return to a base rotation plus the local
+        // approach — the same corridor as the way out. Best-effort: if the
+        // retract will not plan, the place transit below still has retries.
+        std::vector<double> present;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            if (have_last_present_) present = last_present_joints_;
+            have_last_present_ = false;
+        }
+        if (!present.empty()) {
+            std::string via_err;
+            if (!moveToJointPositions(present, via_err)) {
+                RCLCPP_WARN(get_logger(),
+                    "Return via present pose not clean (%s) — continuing from "
+                    "the current pose.", via_err.c_str());
+            }
+        }
 
         geometry_msgs::msg::Pose release_pose = grasp_pose;
         release_pose.position.z += return_release_height_m_;
@@ -2711,6 +2766,11 @@ private:
     // Last successful pick — used by return_tool to put a wrong tool back.
     geometry_msgs::msg::Pose last_pick_grasp_pose_;
     geometry_msgs::msg::Pose last_pick_approach_pose_;
+    // The exact joints of the "waiting for handoff" pose. return_tool retraces
+    // the handover through this pose so the way back stays as tame as the way
+    // out (base rotation + local approach). Guarded by state_mutex_.
+    std::vector<double> last_present_joints_;
+    bool have_last_present_ = false;
     // Which tray it came from — return_tool has to walk that tray's corridor.
     std::string last_pick_location_;
     bool have_last_pick_ = false;

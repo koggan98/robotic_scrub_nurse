@@ -571,7 +571,7 @@ def generate_launch_description():
                         'fuzzy_threshold': 0.8,
                         'fuzzy_floor': 0.6,
                         'llm_fallback_enabled': True,
-                        'model_name': 'gpt-4o-mini',
+                        'model_name': 'gpt-5-mini',
                         'action_timeout_sec': 120.0,
                     }],
                 ),

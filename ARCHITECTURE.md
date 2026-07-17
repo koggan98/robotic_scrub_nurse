@@ -59,7 +59,7 @@ RViz live only on the NUC.
 - Distributed launch: `jetson_launch.py` (perception/AI) + `nuc_launch.py` (robot control).
 - Single-host launch: `llm_launch.py` (layered bring-up of the same graph on one machine).
 - Reasoning core: `src/tracking_pkg/src/llm/llm_orchestrator_node.py`
-  (OpenAI `gpt-4o-mini`, native tool/function-calling, up to 8 tool turns).
+  (OpenAI `gpt-5-mini`, native tool/function-calling, up to 8 tool turns).
 - Motion core: `src/tracking_pkg/src/execution/skill_executor_node.cpp`
   (MoveIt `MoveGroupInterface`, group `ur_manipulator`, planning frame `world`).
 - Command flow is speech-driven via `/user_speech`; the LLM dispatches ROS **actions**
@@ -122,7 +122,7 @@ intermediate reclaim tray; it is **not yet wired into the world model or executi
 - ArUco localization is "lock once": camera-in-marker pose is fixed after a smoothed multi-frame lock,
   after which camera subscriptions are torn down to free Jetson CPU.
 - Reclaim-tray perception exists but is not yet a runtime input.
-- The LLM provider is **OpenAI** (`gpt-4o-mini`, set in the launch files). `config/system_config.yaml`
+- The LLM provider is **OpenAI** (`gpt-5-mini`, set in the launch files). `config/system_config.yaml`
   still lists `gpt-4o` and `whisper base`/`de`, but the launch parameters override those; treat the
   launch files as authoritative.
 

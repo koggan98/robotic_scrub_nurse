@@ -31,7 +31,7 @@ When implementing new features of external libraries or APIs (but not internal),
   - single-host launch: `src/tracking_pkg/launch/llm_launch.py`
   - reasoning core: `src/tracking_pkg/src/llm/llm_orchestrator_node.py`
   - motion core: `src/tracking_pkg/src/execution/skill_executor_node.cpp`
-- The LLM provider is **OpenAI** (`gpt-4o-mini`, set in the launch files). Treat the launch
+- The LLM provider is **OpenAI** (`gpt-5-mini`, set in the launch files). Treat the launch
   parameters as authoritative over `config/system_config.yaml` where they disagree.
 - Legacy/alternative paths — do not route new behavior into these unless explicitly requested:
   - `loop_mover.cpp` with the numeric `/tool_selection` topic (older MoveIt handover loop)

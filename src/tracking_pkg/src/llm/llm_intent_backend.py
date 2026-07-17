@@ -91,8 +91,9 @@ when you truly cannot tell."""
                     {"role": "user", "content": text},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=60,
+                # Includes GPT-5's hidden reasoning tokens as well as the
+                # small JSON object returned to the router.
+                max_completion_tokens=256,
             )
         except Exception as e:
             self._log('warn', f'LLM intent fallback failed: {e}')

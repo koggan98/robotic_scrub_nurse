@@ -109,7 +109,8 @@ Official UR simulation environment included as a git submodule for testing and d
 - **Ultralytics (YOLOv8-OBB)** + **PyTorch**: instrument detection
 - **MediaPipe**: Hand tracking and gesture detection
 - **faster-whisper** + **sounddevice**: local speech-to-text and microphone capture
-- **OpenAI Python SDK**: LLM orchestrator (requires `OPENAI_API_KEY`)
+- **OpenAI Python SDK**: LLM orchestrator using `gpt-5-mini` (requires
+  `OPENAI_API_KEY`)
 - **ur_rtde**: Direct UR RTDE motion interface for the legacy socket runtime path
 - **ALSA utils (`aplay`)**: runtime speaker playback for handover events
 
