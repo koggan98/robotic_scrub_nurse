@@ -38,6 +38,8 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from wake_word import strip_wake_word
+
 
 class ASRNode(Node):
     def __init__(self):
@@ -62,6 +64,15 @@ class ASRNode(Node):
         # >0 caps CTranslate2's CPU thread count. On the Jetson Whisper runs on CPU
         # (no CUDA ctranslate2 build), so leave cores free for sshd/other nodes.
         self.declare_parameter('cpu_threads', 0)
+        # Only utterances addressed to the robot become commands: the transcript
+        # must START with one of these (fillers like "hey" in front are fine).
+        # The wake word is stripped before publishing. Empty list = no gate.
+        # NOTE: direct injection via `ros2 topic pub /user_speech ...` bypasses
+        # the microphone and therefore needs no wake word — by design.
+        self.declare_parameter('wake_words', [
+            'robot', 'robo', 'rob', 'robi', 'robbie', 'robert'])
+        # Fuzzy acceptance for Whisper re-spellings ("Roby", "Robots").
+        self.declare_parameter('wake_word_fuzzy', 0.75)
 
         self.whisper_model_size = self.get_parameter('whisper_model').value
         self.language = self.get_parameter('language').value or None
@@ -79,6 +90,8 @@ class ASRNode(Node):
         self.cpu_threads = int(self.get_parameter('cpu_threads').value)
         self.compute_type = compute_type or (
             'float16' if str(self.asr_device).startswith('cuda') else 'int8')
+        self.wake_words = list(self.get_parameter('wake_words').value or [])
+        self.wake_word_fuzzy = float(self.get_parameter('wake_word_fuzzy').value)
 
         # Publisher
         self.publisher = self.create_publisher(String, 'user_speech', 10)
@@ -264,11 +277,25 @@ class ASRNode(Node):
 
         # Transcribe
         text = self._transcribe(audio_data)
-        if text:
-            msg = String()
-            msg.data = text
-            self.publisher.publish(msg)
-            self.get_logger().info(f'Published: "{text}"')
+        if not text:
+            return
+
+        # Wake-word gate: only utterances addressed to the robot go through.
+        if self.wake_words:
+            command = strip_wake_word(text, self.wake_words,
+                                      self.wake_word_fuzzy)
+            if command is None:
+                self.get_logger().info(f'No wake word — ignored: "{text}"')
+                return
+            if not command:
+                self.get_logger().info('Wake word only — no command, ignored.')
+                return
+            text = command
+
+        msg = String()
+        msg.data = text
+        self.publisher.publish(msg)
+        self.get_logger().info(f'Published: "{text}"')
 
     def _transcribe(self, audio_data):
         """Transcribe audio buffer using faster-whisper."""

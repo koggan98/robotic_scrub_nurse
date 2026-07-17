@@ -234,11 +234,7 @@ class CommandRouterNode(Node):
     # ── Command handlers ────────────────────────────────────────────
 
     def _cmd_pick(self, intent):
-        if intent.candidates:
-            names = [self._display_name(c) for c in intent.candidates]
-            self._publish_response(f'Which one? {" or ".join(names)}?')
-            return
-        if not intent.tool_class:
+        if not intent.tool_class and not intent.candidates:
             self._publish_response('Which instrument?')
             return
 
@@ -246,7 +242,6 @@ class CommandRouterNode(Node):
         if wm is None:
             self._publish_response('Cannot see tray.')
             return
-        name = self._display_name(intent.tool_class)
 
         # Guard: never pick while holding — picking opens the gripper and
         # would drop the held tool. This kills the pick-place-pick detours.
@@ -259,15 +254,26 @@ class CommandRouterNode(Node):
                 f'Still holding {held}. Say wrong to return it.')
             return
 
-        tool_id = self._resolve_tool_id(wm, intent.tool_class)
+        tool_class = intent.tool_class
+        if not tool_class:
+            # Ambiguous by catalog ("scissors" — long or short?), but maybe
+            # not by tray: when only ONE of the candidate classes is actually
+            # lying there, that is the one the surgeon means. Only ask when
+            # the tray itself offers a real choice.
+            tool_class = self._disambiguate_pick(wm, intent.candidates)
+            if tool_class is None:
+                return  # _disambiguate_pick already answered
+
+        name = self._display_name(tool_class)
+        tool_id = self._resolve_tool_id(wm, tool_class)
         if tool_id is None:
             # Not pickable — say precisely why, from ground truth.
-            if any(t.get('class') == intent.tool_class
+            if any(t.get('class') == tool_class
                    for t in wm.get('reclaim_tools', [])):
                 # Rule of the reclaim tray: used tools are never handed over.
                 self._publish_response(f'{name} on reclaim tray.')
                 return
-            states = self._inventory_states(wm, intent.tool_class)
+            states = self._inventory_states(wm, tool_class)
             if states and all(s == 'IN_USE' for s in states):
                 self._publish_response(f'{name} already with you.')
                 return
@@ -275,7 +281,38 @@ class CommandRouterNode(Node):
             return
 
         self._publish_response(f'{name}. Picking.')
-        self._do_pick_and_handover(tool_id, intent.tool_class)
+        self._do_pick_and_handover(tool_id, tool_class)
+
+    def _disambiguate_pick(self, wm, candidates):
+        """Resolve catalog-ambiguous candidates against the tray. Returns the
+        single resolved class, or None after publishing the answer itself."""
+        avail = {t.get('class') for t in (wm.get('available_tools') or [])}
+        present = [c for c in candidates if c in avail]
+        if len(present) == 1:
+            self.get_logger().info(
+                f'Ambiguity resolved by tray: {candidates} -> {present[0]}')
+            return present[0]
+        if len(present) > 1:
+            names = [self._display_name(c) for c in present]
+            self._publish_response(f'Which one? {" or ".join(names)}?')
+            return None
+        # None on the instrument tray: the reclaim tray or the surgeon has it.
+        reclaim = {t.get('class') for t in (wm.get('reclaim_tools') or [])}
+        on_rec = [c for c in candidates if c in reclaim]
+        if len(on_rec) == 1:
+            self._publish_response(
+                f'{self._display_name(on_rec[0])} on reclaim tray.')
+            return None
+        in_use = [c for c in candidates
+                  if (s := self._inventory_states(wm, c))
+                  and all(x == 'IN_USE' for x in s)]
+        if len(in_use) == len(candidates) and in_use:
+            self._publish_response(
+                f'{self._display_name(in_use[0])} already with you.')
+            return None
+        names = ' or '.join(self._display_name(c).lower() for c in candidates)
+        self._publish_response(f'No {names} on tray.')
+        return None
 
     def _do_pick_and_handover(self, tool_id, tool_class):
         """Pick (with deterministic re-tries on a missed grasp), then start the
@@ -411,27 +448,39 @@ class CommandRouterNode(Node):
             self._publish_response(f'Cannot return. {result.message}')
 
     def _cmd_put_back(self, intent):
-        if intent.candidates:
-            names = [self._display_name(c) for c in intent.candidates]
-            self._publish_response(f'Which one? {" or ".join(names)}?')
-            return
-
         wm = self._world_model()
         if wm is None:
             self._publish_response('Cannot see tray.')
             return
 
+        tool_class = intent.tool_class
+        if not tool_class and intent.candidates:
+            # Ambiguous by catalog — but only what actually lies on the
+            # reclaim tray can be put back, so let the tray decide.
+            reclaim_classes = {t.get('class')
+                               for t in (wm.get('reclaim_tools') or [])}
+            present = [c for c in intent.candidates if c in reclaim_classes]
+            if len(present) == 1:
+                tool_class = present[0]
+            elif len(present) > 1:
+                names = [self._display_name(c) for c in present]
+                self._publish_response(f'Which one? {" or ".join(names)}?')
+                return
+            else:
+                self._publish_response('Nothing of that on reclaim tray.')
+                return
+
         # "Put the awl back" while the awl is in the gripper is a RETURN.
         if wm.get('gripper_holds_tool') and (
-                not intent.tool_class
-                or intent.tool_class == wm.get('active_tool_class')):
+                not tool_class
+                or tool_class == wm.get('active_tool_class')):
             return self._cmd_return()
 
         reclaim = wm.get('reclaim_tools') or []
         if not reclaim:
             self._publish_response('Nothing on reclaim tray.')
             return
-        match = self._match_reclaim_tool(intent.tool_class or '', reclaim)
+        match = self._match_reclaim_tool(tool_class or '', reclaim)
         if match is None:
             there = ', '.join(t.get('display_name') or t.get('class', '?')
                               for t in reclaim)

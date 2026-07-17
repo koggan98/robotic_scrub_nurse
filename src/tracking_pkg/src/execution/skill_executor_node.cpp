@@ -247,6 +247,18 @@ public:
         tool_box_tip_m_ = declare_parameter("tool_box_tip_m", 0.18);
         tool_box_width_m_ = declare_parameter("tool_box_width_m", 0.05);
         tool_box_height_m_ = declare_parameter("tool_box_height_m", 0.05);
+        // OMPL planning is stochastic and its post-smoothing occasionally
+        // produces a path that fails validation ("path found but invalid") —
+        // one observed contact away from a perfectly plannable motion. Re-plan
+        // this many times in total before a failure is treated as real.
+        plan_attempts_ = static_cast<int>(
+            declare_parameter("plan_attempts", 3));
+        // Straight-up rise before swinging from the reclaim tray across to the
+        // instrument tray while holding a tool: at the upper reclaim pad the
+        // attached held_tool box (tool_box_tip_m toward the tip, on however
+        // short a tool) still sweeps through the reclaim tray's collision
+        // model when the base rotates. 0 disables.
+        transit_clearance_m_ = declare_parameter("transit_clearance_m", 0.10);
         move_group_name_ = declare_parameter("move_group_name", std::string("ur_manipulator"));
         end_effector_link_ = declare_parameter("end_effector_link", std::string("gripper_tip_link"));
         reference_frame_ = declare_parameter("reference_frame", std::string("world"));
@@ -704,6 +716,31 @@ private:
 
     // ── MoveIt primitives (ported from tool_pick_test_node.cpp) ──────
 
+    // plan() with up to plan_attempts_ tries. OMPL sampling is stochastic and
+    // its post-smoothing sometimes yields a "path found but invalid" abort that
+    // a fresh attempt clears; without this, one such flake mid-sequence (e.g.
+    // the reclaim→instrument transit of return_tool_home) aborted the whole
+    // skill. `resync_start` re-reads the live robot state between attempts —
+    // callers that plan from a constructed start state must pass false.
+    bool planWithRetry(moveit::planning_interface::MoveGroupInterface::Plan &plan_out,
+                       bool resync_start, std::string &err) {
+        for (int attempt = 1; attempt <= plan_attempts_; ++attempt) {
+            if (move_group_->plan(plan_out) ==
+                    moveit::core::MoveItErrorCode::SUCCESS) {
+                return true;
+            }
+            if (attempt < plan_attempts_) {
+                RCLCPP_WARN(get_logger(),
+                    "Plan attempt %d/%d failed — re-planning (OMPL is "
+                    "stochastic).", attempt, plan_attempts_);
+                if (resync_start) move_group_->setStartStateToCurrentState();
+            }
+        }
+        err = "planning failed after " + std::to_string(plan_attempts_)
+              + " attempts";
+        return false;
+    }
+
     bool moveToPoseTarget(const geometry_msgs::msg::Pose &pose,
                           std::string &err) {
         move_group_->setStartStateToCurrentState();
@@ -712,8 +749,8 @@ private:
         move_group_->setPoseTarget(pose);
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-            err = "planning to pose target failed";
+        if (!planWithRetry(plan, true, err)) {
+            err = "pose target: " + err;
             return false;
         }
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
@@ -754,13 +791,12 @@ private:
         move_group_->setMaxVelocityScalingFactor(velocity_scale_);
         move_group_->setMaxAccelerationScalingFactor(acceleration_scale_);
         move_group_->setPoseTarget(pose);
-        if (move_group_->plan(plan_out) != moveit::core::MoveItErrorCode::SUCCESS) {
-            err = "planning to pose target failed";
-            move_group_->clearPoseTargets();
-            return false;
-        }
+        // No start-state resync on retry: the caller set it (pre-flight chains
+        // plan from the end of the previous leg, not from the live robot).
+        const bool ok = planWithRetry(plan_out, false, err);
         move_group_->clearPoseTargets();
-        return true;
+        if (!ok) err = "planning to pose target failed: " + err;
+        return ok;
     }
 
     bool planLinearPose(const geometry_msgs::msg::Pose &pose,
@@ -806,8 +842,8 @@ private:
         move_group_->setJointValueTarget(target);
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        if (move_group_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-            err = "joint plan failed";
+        if (!planWithRetry(plan, true, err)) {
+            err = "joint plan failed: " + err;
             return false;
         }
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
@@ -947,6 +983,22 @@ private:
             "Reclaim exit: straight lift not clean (%s), using a planned move that "
             "still holds the grasp orientation.", lin_err.c_str());
         return moveToPoseTarget(upper, err);
+    }
+
+    // Straight-up rise by transit_clearance_m before crossing sides with a tool
+    // in the gripper. Best-effort by design: a partial or failed lift only means
+    // the transit planner starts lower, it never aborts the skill.
+    void liftForTransit() {
+        if (transit_clearance_m_ <= 0.0) return;
+        geometry_msgs::msg::Pose up =
+            move_group_->getCurrentPose(end_effector_link_).pose;
+        up.position.z += transit_clearance_m_;
+        std::string e;
+        if (!moveLinearToPose(up, e)) {
+            RCLCPP_WARN(get_logger(),
+                "Transit clearance lift not clean (%s) — crossing from the "
+                "current height instead.", e.c_str());
+        }
     }
 
     // Best-effort retreat to home after a failed grasp/place. From the reclaim tray
@@ -2211,6 +2263,14 @@ private:
                 release_pose.position.x, release_pose.position.y,
                 release_pose.position.z);
 
+            // Rise clear of the reclaim tray before the big swing across. The
+            // arm sits at the upper reclaim pad, but with the held_tool box
+            // attached the base rotation still swept the box through the
+            // reclaim tray's collision model and aborted the transit plan.
+            // Best-effort: if the lift itself will not plan, the transit's own
+            // retries are still there.
+            liftForTransit();
+
             std::string place_err;
             if (!placeToolAt(kInstrumentLocation, release_pose, place_err)) {
                 // Still holding it. Do NOT drop it here — put it back on the reclaim
@@ -2559,6 +2619,8 @@ private:
     double tool_box_tip_m_;
     double tool_box_width_m_;
     double tool_box_height_m_;
+    int plan_attempts_;
+    double transit_clearance_m_;
     std::vector<double> instrument_left_stage_joints_;
     std::vector<double> reclaim_stage_upper_joints_;
     std::vector<double> reclaim_stage_lower_joints_;

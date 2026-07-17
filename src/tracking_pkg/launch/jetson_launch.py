@@ -376,6 +376,11 @@ def generate_launch_description():
                         # Samson Q2U USB mic via direct ALSA (PulseAudio exposes no
                         # capture source for it, so the default device is silent).
                         'audio_device':                'Samson',
+                        # Only utterances addressed to the robot pass; the wake
+                        # word is stripped before /user_speech. Direct topic
+                        # injection bypasses the gate (no mic involved).
+                        'wake_words': ['robot', 'robo', 'rob', 'robi',
+                                       'robbie', 'robert'],
                     }],
                 ),
             ]

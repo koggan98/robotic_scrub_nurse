@@ -532,6 +532,11 @@ def generate_launch_description():
                         'whisper_model': 'base.en',
                         'language': 'en',
                         'silence_threshold_seconds': 0.5,
+                        # Only utterances addressed to the robot pass; the wake
+                        # word is stripped before /user_speech. Direct topic
+                        # injection bypasses the gate (no mic involved).
+                        'wake_words': ['robot', 'robo', 'rob', 'robi',
+                                       'robbie', 'robert'],
                     }],
                 ),
             ]

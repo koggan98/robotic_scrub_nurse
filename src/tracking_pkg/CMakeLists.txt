@@ -61,6 +61,7 @@ install(
     src/reasoning/tool_registry.py
     src/llm/intent_parser.py
     src/llm/llm_intent_backend.py
+    src/interfaces/wake_word.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
