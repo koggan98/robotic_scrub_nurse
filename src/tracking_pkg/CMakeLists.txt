@@ -33,8 +33,9 @@ install(
     src/reasoning/tool_semantics_node.py
     src/reasoning/world_model_node.py
     src/reasoning/world_model_builder.py
-    # LLM
+    # LLM / command routing
     src/llm/llm_orchestrator_node.py
+    src/llm/command_router_node.py
     # Interfaces
     src/interfaces/asr_node.py
     src/interfaces/handover_sound_publisher.py
@@ -58,6 +59,8 @@ install(
     src/reasoning/grasp_point_utils.py
     src/reasoning/tray_geometry_utils.py
     src/reasoning/tool_registry.py
+    src/llm/intent_parser.py
+    src/llm/llm_intent_backend.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

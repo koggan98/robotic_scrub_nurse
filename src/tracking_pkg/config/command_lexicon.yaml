@@ -1,0 +1,102 @@
+# Command Lexicon
+# ===============
+# Trigger phrases per ACTION for the deterministic intent parser. The verbs live
+# here, the instrument names live in tool_catalog.yaml — a catalogue says what a
+# tool is called, this file says what the surgeon can ask the system to DO.
+#
+# Matching is whole-word/phrase containment on the normalized transcript
+# (lowercase, punctuation stripped). Order of the groups below is NOT the match
+# priority — the parser hardcodes ABORT first (safety), see intent_parser.py.
+#
+# The `back` group is context-dependent on purpose: "awl back" (a tool is named)
+# means put_tool_back from the reclaim tray, while a bare "put it back" refers to
+# whatever the robot is holding and becomes RETURN. The parser makes that split,
+# the router double-checks it against the gripper state.
+
+actions:
+
+  abort:
+    - "stop"
+    - "abort"
+    - "halt"
+    - "cancel"
+    - "freeze"
+    - "stopp"
+    - "abbrechen"
+    - "arrete"
+    - "arrête"
+
+  return:            # the picked tool is wrong -> bring it back to its slot
+    - "wrong"
+    - "not that"
+    - "not this"
+    - "not the one"
+    - "different one"
+    - "falsch"
+    - "falsche"
+    - "falsches"
+    - "pas ça"
+    - "pas ca"
+    - "mauvais"
+
+  back:              # reclaim-tray housekeeping ("awl back", "put that away")
+    - "back"
+    - "away"
+    - "put away"
+    - "done with"
+    - "zurück"
+    - "zurueck"
+    - "weglegen"
+    - "wegräumen"
+    - "aufräumen"
+    - "range"
+    - "remets"
+    - "retourne"
+
+  count:             # the instrument count at the end of the operation
+    - "count"
+    - "how many"
+    - "we are done"
+    - "we're done"
+    - "end of operation"
+    - "operation over"
+    - "final count"
+    - "zählen"
+    - "zaehlen"
+    - "abschluss"
+    - "compte"
+    - "comptage"
+
+  register:          # freeze the tray as this operation's inventory
+    - "register"
+    - "setup ready"
+    - "setup is ready"
+    - "start the operation"
+    - "start operation"
+    - "begin the operation"
+    - "registrieren"
+    - "aufnehmen"
+    - "wir starten"
+    - "enregistre"
+    - "on commence"
+
+  release:           # open the gripper right now
+    - "release"
+    - "let go"
+    - "open the gripper"
+    - "open gripper"
+    - "drop it"
+    - "loslassen"
+    - "öffnen"
+    - "oeffnen"
+    - "lâche"
+    - "lache"
+    - "ouvre"
+
+  home:              # move the arm to its home pose
+    - "home"
+    - "go home"
+    - "return home"
+    - "grundstellung"
+    - "ausgangsposition"
+    - "position initiale"

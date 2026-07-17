@@ -537,21 +537,26 @@ def generate_launch_description():
             ]
         ),
 
-        # ── Layer 7: LLM ─────────────────────────────────────────
-        # High-level planner: consumes /user_speech, runs an OpenAI
-        # tool-calling loop, drives the skill actions. Needs OPENAI_API_KEY
-        # in the environment (or openai_api_key parameter).
+        # ── Layer 7: Command routing ─────────────────────────────
+        # Deterministic replacement for the LLM orchestrator: verb lexicon +
+        # fuzzy synonym match against the tool catalog, all guards checked
+        # against the live world model, fixed action sequences. The LLM only
+        # remains as a stateless intent-classification fallback for phrasings
+        # the parser cannot resolve (needs OPENAI_API_KEY; without a key the
+        # node runs fully offline).
         TimerAction(
             period=4.0,
             actions=[
                 Node(
                     package='tracking_pkg',
-                    executable='llm_orchestrator_node.py',
-                    name='llm_orchestrator_node',
+                    executable='command_router_node.py',
+                    name='command_router_node',
                     output='screen',
                     parameters=[{
+                        'fuzzy_threshold': 0.8,
+                        'fuzzy_floor': 0.6,
+                        'llm_fallback_enabled': True,
                         'model_name': 'gpt-4o-mini',
-                        'max_tool_turns': 8,
                         'action_timeout_sec': 120.0,
                     }],
                 ),

@@ -381,19 +381,24 @@ def generate_launch_description():
             ]
         ),
 
-        # ── LLM Orchestrator ──────────────────────────────────────
+        # ── Command router (deterministic, replaces the LLM orchestrator) ──
+        # Verb lexicon + fuzzy synonym match, guards against the live world
+        # model. LLM is only a stateless intent-classification fallback
+        # (needs OPENAI_API_KEY; without a key the node runs fully offline).
         TimerAction(
             period=6.0,
             actions=[
                 Node(
                     package='tracking_pkg',
-                    executable='llm_orchestrator_node.py',
-                    name='llm_orchestrator_node',
+                    executable='command_router_node.py',
+                    name='command_router_node',
                     output='screen',
                     parameters=[{
-                        'model_name':        'gpt-4o-mini',
-                        'max_tool_turns':    8,
-                        'action_timeout_sec': 120.0,
+                        'fuzzy_threshold':      0.8,
+                        'fuzzy_floor':          0.6,
+                        'llm_fallback_enabled': True,
+                        'model_name':           'gpt-4o-mini',
+                        'action_timeout_sec':   120.0,
                     }],
                 ),
             ]
