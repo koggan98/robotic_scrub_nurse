@@ -16,3 +16,4 @@ ros2 topic pub --once /user_speech std_msgs/msg/String "{data: 'give me the scis
 
 #hebt von reclaim auf
 ros2 action send_goal -f /grasp_tool tracking_msgs/action/GraspTool   "{tool_id: '', location: 'reclaim_tray'}"
+
