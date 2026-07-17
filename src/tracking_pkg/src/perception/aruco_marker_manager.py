@@ -104,6 +104,13 @@ class _MarkerTracker:
         self.camera_ns = self.detection['camera_namespace'].rstrip('/')
         self.camera_output_frame = self.detection['camera_output_frame']
         self.publish_once = bool(self.detection.get('publish_once', True))
+        # A fixed camera pose in the world frame [x,y,z, qx,qy,qz,qw], measured once
+        # with ros_unrelated_scripts/camera_pose_calib.py. When set, this camera is
+        # NOT re-localized via ArUco every launch — that lock drifted ~cm (reflections
+        # + oblique marker) and made grasps unrepeatable. The camera is bolted, so a
+        # fixed, measured pose is both more accurate and stable across reboots. Remove
+        # the key to fall back to ArUco detection.
+        self.hardcoded_world_pose = self.detection.get('hardcoded_world_pose', None)
         # Throttle detectMarkers while still searching so an un-locked tracker
         # (e.g. marker briefly out of view) doesn't run detection on every
         # camera frame (~25 Hz) and burn a whole core. After locking, the
@@ -135,6 +142,11 @@ class _MarkerTracker:
 
         # Build dictionary from parent config (same for all markers)
         self.aruco_dict = node.aruco_dictionary
+
+        # Fixed pose configured: publish it and never touch the camera.
+        if self.hardcoded_world_pose is not None:
+            self._publish_hardcoded_world_pose()
+            return
 
         # Subscribe to this camera's color + camera_info
         color_topic = f"{self.camera_ns}/color/image_raw"
@@ -301,6 +313,38 @@ class _MarkerTracker:
             f"{self.child_frame} -> {self.camera_output_frame} "
             f"from {len(self._pose_samples)} samples"
         )
+
+    def _publish_hardcoded_world_pose(self):
+        """Publish the fixed world -> camera TF from config and lock immediately.
+
+        The pose is the camera IN the world frame (parent = world, child = the
+        camera optical frame), so it bypasses the marker chain entirely — the
+        ArUco marker->camera lock is never run.
+        """
+        p = [float(v) for v in self.hardcoded_world_pose]
+        if len(p) != 7:
+            self.node.get_logger().error(
+                f"[{self.cfg['name']}] hardcoded_world_pose needs 7 values "
+                f"[x,y,z,qx,qy,qz,qw], got {len(p)} — falling back to detection.")
+            self.hardcoded_world_pose = None
+            return
+        world_frame = self.static_pose['parent_frame']
+        tf_msg = _make_static_tf(
+            self.node.get_clock().now().to_msg(),
+            parent_frame=world_frame,
+            child_frame=self.camera_output_frame,
+            translation=p[0:3],
+            quat_xyzw=p[3:7],
+        )
+        self.tf_broadcaster.sendTransform([tf_msg])
+        self.detection_locked = True
+        self.locked_tf = tf_msg
+        # Re-broadcast so late TF listeners pick it up (see _publish_camera_pose).
+        self.rebroadcast_timer = self.node.create_timer(
+            1.0, self._rebroadcast_locked_tf)
+        self.node.get_logger().info(
+            f"[{self.cfg['name']}] FIXED camera pose from config (ArUco lock skipped): "
+            f"{world_frame} -> {self.camera_output_frame}  t={p[0:3]}")
 
     def _teardown_subscriptions(self):
         """Drop camera subscriptions after lock so no more frames are processed."""

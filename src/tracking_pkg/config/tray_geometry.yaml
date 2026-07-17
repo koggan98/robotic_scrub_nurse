@@ -48,17 +48,14 @@ trays:
     # one frame. Measure scale from physical(read_stage_pose) vs perceived
     # (body_center_3d) pairs across the tray; pivot = the tray centre where grasps
     # are already perfect. scale = physical/perceived (right pair: 0.342/0.288).
-    # MEASURED lateral correction (fit of 9 physical/perceived pairs across the
-    # full tray, max residual ~1 cm, down from ~7 cm raw at the right edge):
-    #   physical_x = 1.1417 * perceived_x + 0.0188
-    # i.e. scale about a pivot at x = -0.1325 (the zero-error point; NOT the tray
-    # centre). Reverses the close, oblique ArUco pose's systematic scale error.
-    # Only valid because the lock is now REPRODUCIBLE — keep the marker out of
-    # direct light/reflections (bright light shifts the lock ~5 cm and this fit
-    # would then be wrong). y is left at 1.0: the tools lie along y, so a small y
-    # error just picks a slightly different spot along the shaft (harmless).
-    xy_scale: [1.1417, 1.0]
-    xy_pivot: [-0.1325, 0.0]
+    # DISABLED (1.0): superseded by the FIXED camera pose (aruco_markers.yaml,
+    # marker 110, hardcoded_world_pose). The lateral scale here was a band-aid for
+    # the drifting ArUco lock — it could never hold because the underlying pose
+    # kept moving. With the pose measured once and hardcoded, the projection is
+    # accurate directly. Only re-introduce a scale if, AFTER the pose calibration,
+    # a residual is still measured across the tray.
+    xy_scale: [1.0, 1.0]
+    xy_pivot: [0.0, 0.0]
 
     # Inner edge of the profile frame, world XY, walking around the rim.
     # A long narrow SLOT: ~665 mm along x, only ~64 mm across in y. Consequence:

@@ -77,6 +77,16 @@ markers:
       # See marker 105 above for what these do.
       search_rate_hz: 3.0
       lock_min_samples: 8
+      # FIXED camera pose (world -> tray_camera_color_optical_frame), measured once
+      # with ros_unrelated_scripts/camera_pose_calib.py. When present, the per-launch
+      # ArUco re-lock is SKIPPED and this pose is published instead. The lock drifted
+      # ~cm per launch (reflections + oblique marker) and made grasps unrepeatable;
+      # the camera is bolted, so a fixed measured pose is accurate and stable.
+      # Format: [x, y, z, qx, qy, qz, qw]. Comment out to fall back to ArUco.
+      # Calibrated 2026-07-17 via camera_pose_calib.py, 4 tray corners, reproj
+      # mean 3.9 px. If grasps are still slightly off at the edges, re-run the
+      # calibration with 6-8 well-spread points for a tighter fit.
+      hardcoded_world_pose: [-0.06684, 0.52762, 0.45098, 0.00802, 0.96752, -0.24935, 0.04068]
 
 # ─── Additional static frames (no detection, just fixed TFs) ─────────
 static_frames:
