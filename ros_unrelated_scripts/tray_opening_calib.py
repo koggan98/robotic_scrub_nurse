@@ -75,16 +75,30 @@ def tf_to_matrix(tf_msg):
     return m
 
 
-def pixel_to_world_on_plane(u, v, K, T_world_cam, plane_z):
+def _normalized_ray(u, v, K, D):
+    """Undistorted normalized camera-frame ray (x_n, y_n) for pixel (u, v).
+    Must match tool_detection_node._normalized_ray so the polygon and the tool
+    grasp points project the same way — including the lens distortion."""
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    if abs(fx) < 1e-9 or abs(fy) < 1e-9:
+        return None, None
+    if D is not None and np.size(D) > 0 and float(np.max(np.abs(D))) > 1e-12:
+        und = cv2.undistortPoints(
+            np.array([[[float(u), float(v)]]], dtype=np.float64), K, D)
+        return float(und[0, 0, 0]), float(und[0, 0, 1])
+    return (u - cx) / fx, (v - cy) / fy
+
+
+def pixel_to_world_on_plane(u, v, K, T_world_cam, plane_z, D=None):
     """Strahl durch das Pixel, geschnitten mit der Ebene z = plane_z (world).
 
     Identisch zu _pixel_to_world_on_plane() in tool_detection_node.py — bewusst,
     damit das Polygon im selben Bezugsrahmen liegt wie die Werkzeug-Greifpunkte.
     """
-    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-    if abs(fx) < 1e-9 or abs(fy) < 1e-9:
+    xn, yn = _normalized_ray(u, v, K, D)
+    if xn is None:
         return None
-    ray_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0])
+    ray_cam = np.array([xn, yn, 1.0])
     ray_cam /= np.linalg.norm(ray_cam)
 
     origin = T_world_cam[:3, 3]
@@ -99,25 +113,35 @@ def pixel_to_world_on_plane(u, v, K, T_world_cam, plane_z):
     return origin + t * ray
 
 
-def world_to_pixel(p_world, K, T_world_cam):
-    """Die Gegenrichtung — gibt es im Repo noch nicht. Fuer die Rueckprojektion."""
+def world_to_pixel(p_world, K, T_world_cam, D=None):
+    """Die Gegenrichtung — fuer die Rueckprojektion des gespeicherten Polygons.
+    Wendet die Verzerrung an (cv2.projectPoints), damit die gruene Kontur auf den
+    echten Profilen liegt und nicht am Bildrand daneben."""
     Rwc, twc = T_world_cam[:3, :3], T_world_cam[:3, 3]
     p_cam = Rwc.T @ (np.asarray(p_world, dtype=float) - twc)
     if p_cam[2] <= 1e-6:          # hinter der Kamera
         return None
+    if D is not None and np.size(D) > 0 and float(np.max(np.abs(D))) > 1e-12:
+        img, _ = cv2.projectPoints(
+            p_cam.reshape(1, 1, 3), np.zeros(3), np.zeros(3), K,
+            np.asarray(D, dtype=np.float64))
+        return (int(round(float(img[0, 0, 0]))), int(round(float(img[0, 0, 1]))))
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     return (int(round(fx * p_cam[0] / p_cam[2] + cx)),
             int(round(fy * p_cam[1] / p_cam[2] + cy)))
 
 
 class TrayCalib(Node):
-    def __init__(self, tray_key, plane_z, stored_polys, world_offset_xy):
+    def __init__(self, tray_key, plane_z, stored_polys, world_offset_xy,
+                 xy_scale=(1.0, 1.0), xy_pivot=(0.0, 0.0)):
         super().__init__('tray_opening_calib')
         cfg = TRAYS[tray_key]
         self.tray_name = cfg['name']
         self.cam_frame = cfg['frame']
         self.plane_z = plane_z
         self.stored_polys = stored_polys
+        self.scale = np.array(xy_scale, dtype=float)
+        self.pivot = np.array(xy_pivot, dtype=float)
         # Same systematic bias correction tool_detection_node applies. Without it
         # the polygon would sit in the camera's biased frame while the tool grasp
         # points sit in the corrected one, and the two would disagree by exactly
@@ -127,6 +151,7 @@ class TrayCalib(Node):
         self.bridge = CvBridge()
         self.image = None
         self.K = None
+        self.D = None              # Distortion coeffs, must match tool_detection_node
         self.corners = []          # world XYZ
         self.corners_px = []       # was angeklickt wurde
 
@@ -143,6 +168,7 @@ class TrayCalib(Node):
 
     def _on_info(self, msg):
         self.K = np.array(msg.k, dtype=float).reshape(3, 3)
+        self.D = np.array(msg.d, dtype=float).reshape(1, -1)
 
     def T_world_cam(self):
         try:
@@ -158,11 +184,12 @@ class TrayCalib(Node):
         if self.K is None or T is None:
             self.get_logger().warn('Noch keine camera_info / TF — Klick ignoriert.')
             return
-        p = pixel_to_world_on_plane(x, y, self.K, T, self.plane_z)
+        p = pixel_to_world_on_plane(x, y, self.K, T, self.plane_z, self.D)
         if p is None:
             self.get_logger().warn('Strahl trifft die Ebene nicht — Klick ignoriert.')
             return
         p[:2] += self.off          # in denselben korrigierten Frame wie die Werkzeuge
+        p[:2] = self.pivot + self.scale * (p[:2] - self.pivot)   # Skala wie im Node
         self.corners.append(p)
         self.corners_px.append((x, y))
         print(f'  Ecke {len(self.corners)}: Pixel ({x:4d},{y:4d}) '
@@ -182,14 +209,16 @@ def draw(node, frame):
     T = node.T_world_cam()
 
     # Gespeichertes Polygon zurueckprojizieren (gruen) — der Drift-Check.
-    # Das Polygon steht im KORRIGIERTEN Frame, die Kamera-Projektion ist aber die
-    # unkorrigierte. Also den Offset erst wieder herausrechnen, sonst laege die
-    # gruene Kontur um genau den Bias daneben und man wuerde eine Drift sehen,
-    # die gar keine ist.
+    # Das Polygon steht im KORRIGIERTEN Frame (Offset UND Skala schon drin), die
+    # Kamera-Projektion ist aber die unkorrigierte. Also beide Korrekturen in
+    # umgekehrter Reihenfolge herausrechnen (erst Skala, dann Offset), sonst laege
+    # die gruene Kontur daneben und man wuerde eine Drift sehen, die keine ist.
+    def _uncorrect(x, y):
+        xy = node.pivot + (np.array([x, y]) - node.pivot) / node.scale  # un-scale
+        return [xy[0] - node.off[0], xy[1] - node.off[1], node.plane_z]  # un-offset
     if T is not None and node.K is not None:
         for poly in node.stored_polys:
-            pts = [world_to_pixel([x - node.off[0], y - node.off[1], node.plane_z],
-                                  node.K, T)
+            pts = [world_to_pixel(_uncorrect(x, y), node.K, T, node.D)
                    for x, y in poly]
             pts = [p for p in pts if p is not None]
             if len(pts) >= 2:
@@ -227,12 +256,15 @@ def main():
 
     tray_name = TRAYS[args.tray]['name']
     plane_z, stored, offset = 0.0, [], [0.0, 0.0]
+    scale, pivot = [1.0, 1.0], [0.0, 0.0]
     try:
         with open(args.yaml) as f:
             cfg = (yaml.safe_load(f) or {}).get('trays', {}).get(tray_name, {})
         plane_z = float(cfg.get('plane_z', 0.0))
         stored = [o.get('polygon', []) for o in (cfg.get('openings') or [])]
         offset = [float(v) for v in cfg.get('world_offset_xy', [0.0, 0.0])]
+        scale = [float(v) for v in cfg.get('xy_scale', [1.0, 1.0])]
+        pivot = [float(v) for v in cfg.get('xy_pivot', [0.0, 0.0])]
     except Exception as e:
         print(f'WARNUNG: {args.yaml} nicht lesbar ({e}) — plane_z=0.0')
 
@@ -240,6 +272,8 @@ def main():
     print(f'Ebene : z = {plane_z:+.4f}  (muss fixed_tool_plane_z_m entsprechen)')
     print(f'Bias  : world_offset_xy = [{offset[0]:+.4f}, {offset[1]:+.4f}] '
           f'-> wird auf jeden Klick addiert (wie in tool_detection_node)')
+    print(f'Skala : xy_scale = [{scale[0]:.4f}, {scale[1]:.4f}] um pivot '
+          f'[{pivot[0]:+.4f}, {pivot[1]:+.4f}] (wie in tool_detection_node)')
     print(f'Bereits gespeichert: {len(stored)} Polygon(e) -> werden gruen zurueckprojiziert')
     if args.tray == 'reclaim':
         print('ACHTUNG: Seitenkamera. Immer die OBERE Innenkante des Profils klicken,')
@@ -247,7 +281,7 @@ def main():
     print()
 
     rclpy.init()
-    node = TrayCalib(args.tray, plane_z, stored, offset)
+    node = TrayCalib(args.tray, plane_z, stored, offset, scale, pivot)
     win = f'tray_opening_calib [{tray_name}]'
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, node.on_click)

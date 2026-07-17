@@ -148,9 +148,16 @@ class SocketControllerNode(Node):
         self.declare_parameter("grasp_check.empty_close_pos", 230)
         self.declare_parameter("grasp_check.pos_margin", 10)
         self.declare_parameter("grasp_check.use_position_crosscheck", False)
+        # Lower bound for the thin-tool position rescue. The rescue only applies
+        # when the fingers are actually CLOSED and stopped just short of the empty
+        # full close. An OPEN gripper sits well below this (open command = ~100), so
+        # this bound keeps the rescue from ever calling an open/idle gripper
+        # "grasped" — which would make the holding-guard block every pick.
+        self.declare_parameter("grasp_check.rescue_min_pos", 180)
         self.grasp_empty_close_pos = int(self.get_parameter("grasp_check.empty_close_pos").value)
         self.grasp_pos_margin = int(self.get_parameter("grasp_check.pos_margin").value)
         self.grasp_use_pos_crosscheck = bool(self.get_parameter("grasp_check.use_position_crosscheck").value)
+        self.grasp_rescue_min_pos = int(self.get_parameter("grasp_check.rescue_min_pos").value)
 
         # Kontinuierliche Überwachung: pollt gOBJ, solange ein Werkzeug gehalten
         # wird, und meldet, wenn es verloren geht (gOBJ 2 -> 3).
@@ -236,10 +243,21 @@ class SocketControllerNode(Node):
         """Bewertet gOBJ/gPO, publiziert /tool_grasped und (de)aktiviert den
         Verlust-Monitor entsprechend."""
         grasped = (obj == 2)
-        if self.grasp_use_pos_crosscheck and pos is not None:
-            # Bei rausgefallenem Werkzeug fahren die Finger weiter zu (gPO nahe
-            # Vollschluss). Mit Werkzeug stoppen sie davor.
-            grasped = grasped and (pos < self.grasp_empty_close_pos - self.grasp_pos_margin)
+        # Thin-tool rescue. A flat tool (the retractor lying on its side) can be
+        # held firmly yet give the Robotiq too little resistance to flag contact,
+        # so gOBJ reads 3 ("closed through to target, no object"). Catch it by
+        # position — BUT only in the narrow band just below the empty full close:
+        # the fingers CLOSED and stopped a little short. The lower bound is critical:
+        # an open/idle gripper (pos ~100) also sits below empty_close_pos, and
+        # without the bound the rescue would call it "grasped" and the holding-guard
+        # would then block every pick.
+        rescue_lo = self.grasp_rescue_min_pos
+        rescue_hi = self.grasp_empty_close_pos - self.grasp_pos_margin
+        if not grasped and pos is not None and rescue_lo <= pos < rescue_hi:
+            grasped = True
+            self.get_logger().info(
+                f"Duennes-Tool-Rescue: gOBJ={obj}, Finger bei gPO={pos} in "
+                f"[{rescue_lo}, {rescue_hi}) -> gegriffen.")
 
         if obj is None:
             self.get_logger().warn("Werkzeug-Greif-Check: keine Antwort vom Gripper (OBJ=None).")

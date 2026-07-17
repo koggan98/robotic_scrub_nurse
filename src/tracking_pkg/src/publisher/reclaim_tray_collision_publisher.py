@@ -20,6 +20,11 @@ DROP_LENGTH_Z = 0.17           # vertical drop, -Z
 SEGMENT2_LENGTH_X = 0.27        # bottom bar length, +X
 WIDTH_Y = 0.13                 # total width along world Y
 BAR_THICKNESS_Z = 0.03         # Z-thickness of horizontal bars (10mm < instrument tray)
+# The top bar alone, thickened UPWARD. The arm passes over this bar on its way in
+# and out of the reclaim tray, and the real structure sits higher than the bare
+# profile does — so it gets modelled taller. The bottom face stays put; only the
+# top face rises (see _local_segments).
+TOP_BAR_THICKNESS_Z = 0.06     # top face: -0.015 + 0.06 = +0.045 in world
 POST_THICKNESS_X = 0.03        # X-thickness of the vertical drop
 
 # 40x40 vertical post rising +Z from the bottom of the drop, flush to outer (+X) face:
@@ -49,6 +54,8 @@ class ReclaimTrayCollisionPublisher(Node):
             self.declare_parameter("width_y_m", WIDTH_Y).value)
         self.bar_thickness_m = float(
             self.declare_parameter("bar_thickness_m", BAR_THICKNESS_Z).value)
+        self.top_bar_thickness_m = float(
+            self.declare_parameter("top_bar_thickness_m", TOP_BAR_THICKNESS_Z).value)
         self.post_thickness_m = float(
             self.declare_parameter("post_thickness_m", POST_THICKNESS_X).value)
         self.post40_size_m = float(
@@ -154,9 +161,16 @@ class ReclaimTrayCollisionPublisher(Node):
         ]
         segments = [
             (
-                # top bar, runs +X
-                [self.segment1_length_m, self.width_y_m, self.bar_thickness_m],
-                [self.segment1_length_m / 2.0, 0.0, 0.0],
+                # Top bar, runs +X. Thickened UPWARD: the centre rises with the
+                # extra thickness so the BOTTOM face stays where the real profile
+                # is (-bar_thickness/2), instead of the box growing symmetrically
+                # about z=0 and eating into the space below the bar.
+                [self.segment1_length_m, self.width_y_m, self.top_bar_thickness_m],
+                [
+                    self.segment1_length_m / 2.0,
+                    0.0,
+                    (self.top_bar_thickness_m - self.bar_thickness_m) / 2.0,
+                ],
                 [0.0, 0.0, 0.0],
             ),
             (

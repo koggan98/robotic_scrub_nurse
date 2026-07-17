@@ -19,6 +19,7 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/robot_state/robot_state.h>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
 // MoveGroupInterface::Plan member is `trajectory_` on Humble but `trajectory` on
@@ -272,12 +273,6 @@ public:
         post_gesture_settle_sec_ = declare_parameter("post_gesture_settle_sec", 0.5);
         // return_tool releases the wrong tool this far above the pickup pose.
         return_release_height_m_ = declare_parameter("return_release_height_m", 0.005);
-        // grasp_tool on the reclaim tray rises to this absolute world z after the
-        // lift, before attaching the held-tool box. The reclaim tray sits inside
-        // a bracket whose top bar spans z ~= [-0.015, +0.015]; attaching the
-        // 0.30 m tool box down at the approach pose would put it through the
-        // bracket's drop wall and wedge every later plan.
-        reclaim_hold_z_m_ = declare_parameter("reclaim_hold_z_m", 0.10);
         // After a successful pick the arm rotates shoulder_pan to this angle to
         // present the tool. 250 deg = 4.36332 rad (requires the widened
         // shoulder_pan limit on the live robot).
@@ -316,11 +311,55 @@ public:
         handover_orientation_.x = hq[0]; handover_orientation_.y = hq[1];
         handover_orientation_.z = hq[2]; handover_orientation_.w = hq[3];
 
+        // home is the hub: over the instrument tray, right of centre. Every
+        // instrument tool is reachable from here by direct planning, a short pan
+        // rotation reaches the handover pose, and it is the taught pivot the arm
+        // routes through to place on the right side of the tray. The arm drives
+        // here once at launch (see main()).
         home_joints_ = parameterVectorOrDefault(
             *this, "home_joints",
-            {-0.1601136366, -2.2975937329, 2.2748802344,
-             -1.5248240244, -1.2305892150, -4.8166621367},
+            {0.7702576518, -1.9044758282, 1.8983271758,
+             -1.5910726986, -1.5716832320, 0.8188708425},
             6);
+        // Taught transit pose over the LEFT side of the instrument tray, the
+        // counterpart of home (which sits over the right side). Placing a tool back
+        // on a left slot routes through here instead of home, so the arm crosses to
+        // the left directly rather than swinging out to the right and back.
+        instrument_left_stage_joints_ = parameterVectorOrDefault(
+            *this, "instrument_left_stage_joints",
+            {2.1318871975, -1.1601789457, 1.1124246756,
+             -1.5276912202, -1.5967219512, 2.1804935932},
+            6);
+
+        // ── Reclaim staging ──────────────────────────────────────────
+        // The reclaim tray sits under a 60 cm camera post, so the arm cannot fly
+        // straight at a tool there or lift straight up out of it. Instead it enters
+        // and leaves through two taught joint poses over the tray: an upper one
+        // (clear of the post, where the held-tool box is attached) and a lower one
+        // (just above the tools, the launch pad the grasp descends from). Both are
+        // joint angles — no IK, no sampling. Teach by jogging + read_stage_pose.py.
+        reclaim_stage_upper_joints_ = parameterVectorOrDefault(
+            *this, "reclaim_stage_upper_joints",
+            {4.8814082146, -1.1096825761, 1.2962282340,
+             -1.7339645825, -1.5696294943, 0.1715736389},
+            6);
+        reclaim_stage_lower_joints_ = parameterVectorOrDefault(
+            *this, "reclaim_stage_lower_joints",
+            {4.8818922043, -0.8805474800, 1.6040924231,
+             -2.2710281811, -1.5696328322, 0.1718008518},
+            6);
+        // The world-x boundary between the left and right side of the instrument
+        // tray (tray centre = 0.0). A tool picked to the RIGHT of it is presented
+        // via home first (from there the present rotation is clear); a tool picked
+        // to the left turns toward the surgeon straight away. Only doPick uses this.
+        instrument_right_side_x_ =
+            declare_parameter("instrument_right_side_x", 0.0);
+        // Tool classes whose held-tool collision box is built REVERSED: the long
+        // reach toward the handle, the short toward the tip. For tools gripped near
+        // their functional end (the hammer, grasped close to its head) the body
+        // runs backward from the jaws, not forward — see attachToolBox.
+        reversed_tool_box_classes_ = declare_parameter(
+            "reversed_tool_box_classes", std::vector<std::string>{"hammer"});
 
         // ── Publishers ───────────────────────────────────────────────
         gripper_mover_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
@@ -368,6 +407,29 @@ public:
             "SkillExecutor constructed (move_group=%s, ee=%s, frame=%s).",
             move_group_name_.c_str(), end_effector_link_.c_str(),
             reference_frame_.c_str());
+    }
+
+    // Drive the arm to home once at startup, so it always begins from the hub
+    // pose the whole motion model assumes. Call from main() after the executor is
+    // spinning (getCurrentState / plan need it). Best-effort: a failure is logged
+    // loudly but does not abort the node.
+    void goHomeOnStartup() {
+        // Wait for the controllers and the state monitor to come up.
+        for (int i = 0; i < 50 && rclcpp::ok(); ++i) {
+            if (move_group_ && move_group_->getCurrentState(0.5)) break;
+            rclcpp::sleep_for(std::chrono::milliseconds(200));
+        }
+        std::lock_guard<std::mutex> lock(execution_mutex_);
+        RCLCPP_INFO(get_logger(), "Startup: moving to home.");
+        std::string err;
+        if (!moveToJointPositions(home_joints_, err)) {
+            RCLCPP_WARN(get_logger(),
+                "Startup home move failed (%s). The arm is NOT at home — move it "
+                "there before issuing a pick.", err.c_str());
+            return;
+        }
+        publishState("IDLE", "", "");
+        RCLCPP_INFO(get_logger(), "Startup: at home, ready.");
     }
 
     // Must be called from main() after make_shared, because MoveGroupInterface
@@ -755,6 +817,149 @@ private:
         return true;
     }
 
+    // Cross to another side of the workspace tamely: first swing ONLY the base
+    // (shoulder_pan) to the target's pan, holding the rest of the arm's shape, then
+    // settle the remaining joints. This turns a big side change into a controlled
+    // base rotation plus a small reshape, instead of a freely-sampled pose-target
+    // RRT that flips the arm around. target[0] is shoulder_pan (canonical order).
+    bool moveToJointsViaBaseRotation(const std::vector<double> &target,
+                                     std::string &err) {
+        if (target.size() != joint_state_names_.size()) {
+            err = "target joints must have " +
+                  std::to_string(joint_state_names_.size()) + " values";
+            return false;
+        }
+        if (!rotateShoulderPanTo(target[0], err)) return false;
+        return moveToJointPositions(target, err);
+    }
+
+    // Cross to a transit pose WHILE HOLDING A TOOL, without snapping the wrist to
+    // the pose's taught angles — that snap rotates the held tool to a fixed
+    // orientation only for the approach to rotate it right back. Base-swing to the
+    // transit side (the tool rotates smoothly with the base), then move only to the
+    // transit POSITION keeping the current TCP orientation. The approach afterwards
+    // is the one and only wrist rotation, straight to the placement orientation.
+    // Mirrors exitReclaimToUpper, with a base rotation in front because this crosses
+    // sides.
+    bool moveAcrossKeepingOrientation(const std::vector<double> &transit,
+                                      std::string &err) {
+        if (transit.size() != joint_state_names_.size()) {
+            err = "transit joints must have " +
+                  std::to_string(joint_state_names_.size()) + " values";
+            return false;
+        }
+        if (!rotateShoulderPanTo(transit[0], err)) return false;   // base to the side
+
+        geometry_msgs::msg::Pose target;
+        if (!jointsToTcpPose(transit, target, err)) {
+            err = "transit FK: " + err; return false;
+        }
+        target.orientation = move_group_->getCurrentPose(end_effector_link_)
+                                 .pose.orientation;                // hold, do not snap
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        move_group_->setStartStateToCurrentState();
+        std::string lin_err;
+        if (planLinearPose(target, plan, lin_err) && executePlan(plan, lin_err)) {
+            return true;
+        }
+        RCLCPP_WARN(get_logger(),
+            "Transit: straight move not clean (%s), using a planned move that still "
+            "holds the grasp orientation.", lin_err.c_str());
+        return moveToPoseTarget(target, err);
+    }
+
+    // TCP pose (position + orientation of end_effector_link) at a set of joint
+    // values, in reference_frame_. Forward kinematics on a scratch RobotState.
+    bool jointsToTcpPose(const std::vector<double> &joints,
+                         geometry_msgs::msg::Pose &out, std::string &err) {
+        if (joints.size() != joint_state_names_.size()) {
+            err = "joints must have " +
+                  std::to_string(joint_state_names_.size()) + " values";
+            return false;
+        }
+        moveit::core::RobotStatePtr current = move_group_->getCurrentState(2.0);
+        if (!current) { err = "could not read current robot state for FK"; return false; }
+        moveit::core::RobotState rs(*current);
+        for (size_t i = 0; i < joints.size(); ++i) {
+            rs.setVariablePosition(joint_state_names_[i], joints[i]);
+        }
+        rs.update();
+        if (!rs.knowsFrameTransform(reference_frame_)) {
+            err = "the robot model does not know frame '" + reference_frame_ + "'";
+            return false;
+        }
+        const Eigen::Isometry3d tf =
+            rs.getFrameTransform(reference_frame_).inverse() *
+            rs.getGlobalLinkTransform(end_effector_link_);
+        const Eigen::Quaterniond q(tf.rotation());
+        out.position.x = tf.translation().x();
+        out.position.y = tf.translation().y();
+        out.position.z = tf.translation().z();
+        out.orientation.x = q.x();
+        out.orientation.y = q.y();
+        out.orientation.z = q.z();
+        out.orientation.w = q.w();
+        return true;
+    }
+
+    // ── Reclaim staging ──────────────────────────────────────────────
+    // The reclaim tray sits under a 60 cm camera post, so the arm can neither fly
+    // straight at a tool there nor lift straight out. It enters and leaves through
+    // two taught joint poses: the upper pad (post-clear, where the tool box is
+    // (de)attached) and the lower pad (just above the tools, the launch height a
+    // grasp/place plans from).
+
+    bool enterReclaimStaging(std::string &err) {
+        // Cross from the instrument side to the reclaim side as a base rotation,
+        // not a freely-sampled swing that contorts the arm.
+        if (!moveToJointsViaBaseRotation(reclaim_stage_upper_joints_, err)) {
+            err = "reclaim upper: " + err; return false;
+        }
+        if (!moveToJointPositions(reclaim_stage_lower_joints_, err)) {
+            err = "reclaim lower: " + err; return false;
+        }
+        return true;
+    }
+
+    // Rise from the tool to the upper pad WITHOUT snapping the wrist to the pad's
+    // taught orientation — that snap swings the held tool into the tray or its
+    // neighbours. Keep the current (grasp) TCP orientation and move only to the
+    // upper pad's POSITION, which is clear of the camera post (x ~= 0.196). A
+    // cartesian move holds the orientation fixed along the way; if the straight
+    // path is not clean, fall back to a pose target whose GOAL orientation is still
+    // the current one, so the wrist still does not rotate.
+    bool exitReclaimToUpper(std::string &err) {
+        geometry_msgs::msg::Pose upper;
+        if (!jointsToTcpPose(reclaim_stage_upper_joints_, upper, err)) {
+            err = "upper pad FK: " + err; return false;
+        }
+        upper.orientation = move_group_->getCurrentPose(end_effector_link_)
+                                .pose.orientation;
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        move_group_->setStartStateToCurrentState();
+        std::string lin_err;
+        if (planLinearPose(upper, plan, lin_err) && executePlan(plan, lin_err)) {
+            return true;
+        }
+        RCLCPP_WARN(get_logger(),
+            "Reclaim exit: straight lift not clean (%s), using a planned move that "
+            "still holds the grasp orientation.", lin_err.c_str());
+        return moveToPoseTarget(upper, err);
+    }
+
+    // Best-effort retreat to home after a failed grasp/place. From the reclaim tray
+    // that means rising to the upper pad first, to clear the camera post before the
+    // big swing back. From the instrument tray, straight home.
+    void retreatToHome(const std::string &location) {
+        std::string e;
+        if (location == kReclaimLocation) {
+            moveToJointPositions(reclaim_stage_upper_joints_, e);
+        }
+        doReturnHomeInternal(e);
+    }
+
     // Rotate shoulder_pan to a target angle, holding all other joints at their
     // current values. Uses a joint-space goal (not a pose target) so the path
     // stays deterministic instead of wandering through random IK solutions.
@@ -832,6 +1037,16 @@ private:
 
         double handle_len = tool_box_handle_m_;
         double tip_len = tool_box_tip_m_;
+        // Some tools are gripped near their functional end, so the body runs
+        // backward from the jaws (toward the handle), not forward: the long reach
+        // has to point at the handle. The hammer, grasped close to its head, is the
+        // case. Swapping the two lengths flips the box without touching the
+        // tip-vs-handle direction derived above.
+        if (std::find(reversed_tool_box_classes_.begin(),
+                      reversed_tool_box_classes_.end(), cand.tool_class)
+                != reversed_tool_box_classes_.end()) {
+            std::swap(handle_len, tip_len);
+        }
         double tip_sign = (toward_tip >= 0.0) ? 1.0 : -1.0;
         if (std::abs(toward_tip) < 0.5) {
             // TCP Y does not run along the tool at all, so "toward the tip" has no
@@ -1101,12 +1316,20 @@ private:
     // because the two trays are perceived differently (top-down camera + depth-free
     // plane on the instrument tray vs. a side camera on the reclaim tray), so their
     // depth errors do not have the same sign or size.
+    // The legs of one pick, all planned from the current state before the arm
+    // moves at all: reach above the tool (RRT), straight down onto it, straight
+    // back up. For a reclaim pick the caller has already parked the arm at the
+    // lower reclaim stage pose, so "the current state" is that launch pad.
+    struct PickLegs {
+        moveit::planning_interface::MoveGroupInterface::Plan approach;
+        moveit::planning_interface::MoveGroupInterface::Plan descend;
+        moveit::planning_interface::MoveGroupInterface::Plan lift;
+    };
+
     bool tryPlanPickSequence(
         const tracking_msgs::msg::GraspCandidate &cand,
         double z_offset_m,
-        moveit::planning_interface::MoveGroupInterface::Plan &approach_plan,
-        moveit::planning_interface::MoveGroupInterface::Plan &descend_plan,
-        moveit::planning_interface::MoveGroupInterface::Plan &lift_plan,
+        PickLegs &legs,
         geometry_msgs::msg::Pose &approach_pose_out,
         geometry_msgs::msg::Pose &grasp_pose_out,
         std::string &err) {
@@ -1123,50 +1346,49 @@ private:
                                   + z_offset_m;
         grasp_pose_out.orientation = topDownQuaternionFromHandleAxis(
             cand.handle_axis, tool_yaw_offset_rad_);
-        approach_pose_out = grasp_pose_out;
-        approach_pose_out.position.z = grasp_pose_out.position.z + approach_height_m_;
 
-        // 1. Plan approach from current state
+        approach_pose_out = grasp_pose_out;
+        approach_pose_out.position.z += approach_height_m_;
+
         move_group_->setStartStateToCurrentState();
-        if (!planPoseTarget(approach_pose_out, approach_plan, err)) {
+        if (!planPoseTarget(approach_pose_out, legs.approach, err)) {
             err = "approach plan: " + err;
             return false;
         }
-
-        // 2. Plan descend (cartesian) from approach end state
-        move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
-        if (!planLinearPose(grasp_pose_out, descend_plan, err)) {
+        move_group_->setStartState(makeStartStateFromPlanEnd(legs.approach));
+        if (!planLinearPose(grasp_pose_out, legs.descend, err)) {
             err = "descend plan: " + err;
             return false;
         }
-
-        // 3. Plan lift (cartesian) from descend end state
-        move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
-        if (!planLinearPose(approach_pose_out, lift_plan, err)) {
+        move_group_->setStartState(makeStartStateFromPlanEnd(legs.descend));
+        if (!planLinearPose(approach_pose_out, legs.lift, err)) {
             err = "lift plan: " + err;
             return false;
         }
-
         return true;
     }
 
     // ── Grasp core (shared by PickTool and GraspTool) ────────────────
 
-    // Holding-guard → candidate selection → pre-flight (approach + descend +
-    // lift all planned before any motion) → approach → open → descend → close →
-    // /tool_grasped check → lift → post-lift verify → escalating local re-grasp
-    // → attachToolBox().
+    // Holding-guard → candidate selection → (reclaim only: swing to the lower
+    // reclaim pad) → pre-flight (approach + descend + lift planned before motion)
+    // → approach → open → descend → close → /tool_grasped check → lift → post-lift
+    // verify → escalating local re-grasp → (reclaim only: rise to the upper pad) →
+    // attachToolBox().
     //
     // Ends with the tool in the gripper and moves the arm no further. Presenting,
     // handing over and placing are the caller's business.
     //
-    // `clearout_world_z` is an absolute world z to rise to after the lift and
-    // before the tool box is attached; pass NaN to skip it (see below).
+    // For a reclaim pick the arm is parked on the lower reclaim stage pose before
+    // planning, so the approach is planned FROM there — not flown at the tool
+    // through the 60 cm camera post — and after the grasp it rises to the upper
+    // stage pose before the tool box is attached (down low the box fouls the tray).
+    // The instrument tray needs none of this: it is planned directly from home.
+    //
     // `chosen_out` is filled as soon as pre-flight commits to a candidate, so a
     // caller can name the tool even when a later motion phase fails.
     bool graspToolCore(const std::string &tool_id_arg,
                        const std::string &location_filter,
-                       double clearout_world_z,
                        tracking_msgs::msg::GraspCandidate &chosen_out,
                        geometry_msgs::msg::Pose &grasp_pose_out,
                        geometry_msgs::msg::Pose &approach_pose_out,
@@ -1204,20 +1426,33 @@ private:
             }
         }
 
-        const double z_off = (location_filter == kReclaimLocation)
-            ? reclaim_z_offset_m_ : z_offset_m_;
+        const bool reclaim = (location_filter == kReclaimLocation);
+        const double z_off = reclaim ? reclaim_z_offset_m_ : z_offset_m_;
 
-        // Pre-flight: try each candidate in confidence order. Only when
-        // approach + descend + lift all plan successfully do we commit to
-        // a grasp. No motion happens before this loop succeeds.
-        moveit::planning_interface::MoveGroupInterface::Plan approach_plan, descend_plan, lift_plan;
+        // A reclaim pick is planned from the lower reclaim pad, so get there first.
+        // (The instrument tray is planned directly from home — no staging.)
+        if (reclaim) {
+            std::string stage_err;
+            if (!enterReclaimStaging(stage_err)) {
+                err = "reclaim staging: " + stage_err;
+                std::string e;
+                doReturnHomeInternal(e);
+                return false;
+            }
+        }
+
+        // Pre-flight: try each candidate in confidence order. Only when every leg
+        // plans successfully do we commit to a grasp. No motion happens before this
+        // loop succeeds (the reclaim staging above is the one exception — the arm
+        // must be at the pad for the approach to plan from the right place).
+        PickLegs legs;
         geometry_msgs::msg::Pose approach_pose, grasp_pose;
         tracking_msgs::msg::GraspCandidate chosen;
         std::vector<std::string> rejection_log;
         bool found = false;
         for (const auto &cand : candidates) {
             std::string plan_err;
-            if (tryPlanPickSequence(cand, z_off, approach_plan, descend_plan, lift_plan,
+            if (tryPlanPickSequence(cand, z_off, legs,
                                     approach_pose, grasp_pose, plan_err)) {
                 chosen = cand;
                 found = true;
@@ -1232,6 +1467,7 @@ private:
             err = "no reachable candidate. Tried " +
                   std::to_string(rejection_log.size()) + ": ";
             for (const auto &r : rejection_log) err += "[" + r + "] ";
+            retreatToHome(location_filter);
             return false;
         }
 
@@ -1246,7 +1482,11 @@ private:
 
         publishState("PICKING", chosen.tool_id, chosen.tool_class);
 
-        if (!executePlan(approach_plan, err)) { err = "approach exec: " + err; return false; }
+        if (!executePlan(legs.approach, err)) {
+            err = "approach exec: " + err;
+            retreatToHome(location_filter);
+            return false;
+        }
         publishGripper(true);   // open
         sleepForGripper();
 
@@ -1260,8 +1500,8 @@ private:
         //    max_regrasp_retries_ times, without the slow present→home cycle.
         bool secured = false;
         for (int attempt = 0; attempt <= max_regrasp_retries_ && !secured; ++attempt) {
-            moveit::planning_interface::MoveGroupInterface::Plan descend_try = descend_plan;
-            moveit::planning_interface::MoveGroupInterface::Plan lift_try = lift_plan;
+            moveit::planning_interface::MoveGroupInterface::Plan descend_try = legs.descend;
+            moveit::planning_interface::MoveGroupInterface::Plan lift_try = legs.lift;
 
             if (attempt > 0) {
                 geometry_msgs::msg::Pose grasp_try = grasp_pose;
@@ -1303,8 +1543,7 @@ private:
                 publishGripper(true);
                 std::string lift_err;
                 executePlan(lift_try, lift_err);   // raise empty gripper off the tray
-                std::string home_err;
-                doReturnHomeInternal(home_err);
+                retreatToHome(location_filter);
                 err = "grasp_failed: no tool in gripper after close";
                 return false;
             }
@@ -1330,47 +1569,40 @@ private:
 
         if (!secured) {
             publishGripper(true);
-            std::string home_err;
-            doReturnHomeInternal(home_err);   // best-effort: free the tray camera
+            retreatToHome(location_filter);   // best-effort: free the tray camera
             err = "grasp_failed: tool slips during lift after " +
                   std::to_string(max_regrasp_retries_ + 1) + " attempts";
             return false;
         }
 
-        // Clear-out lift, before the tool box is attached.
-        //
-        // attachToolBox() hangs a box off the TCP that reaches tool_box_tip_m_
-        // (0.18 m) toward the tool's tip. On the reclaim tray the approach height
-        // is still down inside the tray: the box would sweep through the tray's
-        // vertical drop wall, and MoveIt would then refuse every later plan with
-        // "start state in collision" — the arm would be stuck holding the tool. So
-        // rise clear of the tray first and attach up there. The instrument tray
-        // needs none of this (its approach pose is already in free space), so doPick
-        // passes NaN and this is skipped — its behaviour is unchanged.
-        if (std::isfinite(clearout_world_z) &&
-            clearout_world_z > approach_pose.position.z + 1e-6) {
-            geometry_msgs::msg::Pose clear = approach_pose;
-            clear.position.z = clearout_world_z;
-            moveit::planning_interface::MoveGroupInterface::Plan clear_plan;
-            move_group_->setStartStateToCurrentState();
-            std::string clear_err;
-            if (planLinearPose(clear, clear_plan, clear_err) &&
-                executePlan(clear_plan, clear_err)) {
-                RCLCPP_INFO(get_logger(),
-                    "Clear-out lift to z=%.3f before attaching tool box.",
-                    clearout_world_z);
-            } else if (!moveToPoseTarget(clear, clear_err)) {
-                // Do not attach the box at a pose where it is in collision —
-                // that would wedge the planner. Bail out holding the tool and
-                // let the caller decide.
-                err = "clear-out lift: " + clear_err;
+        // The tool is in the gripper. Record where it came from BEFORE moving it,
+        // so that any failure from here on can still be undone with return_tool —
+        // putting it back where it was found is the only safe way out of a failure
+        // while holding something.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            last_pick_grasp_pose_ = grasp_pose;
+            last_pick_approach_pose_ = approach_pose;
+            last_pick_location_ = location_filter;
+            have_last_pick_ = true;
+        }
+
+        // For a reclaim pick, rise to the upper stage pose before attaching the
+        // box: the box reaches tool_box_tip_m_ (0.18 m) toward the tip, and down in
+        // the tray that would sweep the camera post and wedge every later plan. The
+        // upper pad is 213 mm above the tray plane — clear. The instrument tray's
+        // approach pose is already free space, so nothing to do there.
+        if (reclaim) {
+            std::string ex_err;
+            if (!exitReclaimToUpper(ex_err)) {
+                err = "reclaim exit to upper: " + ex_err;
                 return false;
             }
         }
 
-        // Tool is now in the gripper: make it visible to the planner so any
-        // onward motion (present rotation, handover, place-back) avoids the
-        // tray-camera stand and accounts for the tool's reach beyond the box.
+        // Tool is clear of the tray: make it visible to the planner so any onward
+        // motion (present rotation, handover, place-back) avoids the tray-camera
+        // stand and accounts for the tool's reach beyond the gripper.
         attachToolBox(chosen, grasp_pose);
 
         rememberHeldTool(chosen, grasp_pose);
@@ -1392,12 +1624,8 @@ private:
         // to the surgeon. So a pick that leads to a handover only ever sources from
         // the instrument tray — asking for a reclaim id here fails with
         // "tool_id 'reclaim_N' not in candidates", which is the right answer.
-        //
-        // NaN = no clear-out lift: the instrument tray's approach pose is already in
-        // free space, so the tool box can be attached right there.
         const bool grasped = graspToolCore(
             tool_id_arg, kInstrumentLocation,
-            std::numeric_limits<double>::quiet_NaN(),
             chosen, grasp_pose, approach_pose, err);
         // chosen is filled the moment pre-flight commits, so the tool can still
         // be named when a later motion phase fails — the LLM keys its retry on
@@ -1405,20 +1633,7 @@ private:
         picked_id_out = chosen.tool_id;
         picked_class_out = chosen.tool_class;
         if (!grasped) return false;
-
-        // Remember where this tool came from NOW, not at the end of the pick. From
-        // here on the tool is in the gripper, so every later failure leaves it
-        // there — and the only clean way out is to put it back where it was found,
-        // which is exactly what return_tool does. Recording this at the end meant a
-        // failed present rotation left the arm holding the tool while return_tool
-        // refused with "no recorded pick to return", and the only remaining option
-        // was release_tool, which drops the tool wherever the arm happens to be.
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            last_pick_grasp_pose_ = grasp_pose;
-            last_pick_approach_pose_ = approach_pose;
-            have_last_pick_ = true;
-        }
+        // graspToolCore already recorded the pick, the moment the tool was secured.
 
         publishState("TRANSPORTING", chosen.tool_id, chosen.tool_class);
         // From here the tool is in transit: a /tool_grasped=false stops the
@@ -1426,8 +1641,26 @@ private:
         // check whether that happened and bail to home if so.
         transporting_.store(true);
 
-        // Immediately turn the arm around to present the tool. The attached
-        // tool box + the tray-camera stand in the scene keep this collision-free.
+        // A tool picked on the RIGHT side goes to home first: from there the present
+        // rotation is clear. A tool picked on the LEFT turns toward the surgeon
+        // straight away — no detour through home, one less stop.
+        if (grasp_pose.position.x > instrument_right_side_x_) {
+            std::string home_err;
+            if (!moveToJointPositions(home_joints_, home_err)) {
+                bool hd = false;
+                if (!lastToolGrasped(hd) && hd) {
+                    transporting_.store(false);
+                    abortHoldingAndGoHome("tool dropped returning home before handover", err);
+                    return false;
+                }
+                transporting_.store(false);
+                err = "return home before handover: " + home_err;
+                return false;
+            }
+        }
+
+        // Turn the arm around to present the tool. The attached tool box + the
+        // tray-camera stand in the scene keep this collision-free.
         const bool present_ok = rotateShoulderPanTo(present_shoulder_pan_rad_, err);
         {
             bool hd = false;
@@ -1687,13 +1920,49 @@ private:
 
     // ── Place primitive (shared by ReturnTool and ReturnToolHome) ────
 
-    // Put the held tool down at release_pose and let go. Plans all three legs
-    // before moving, exactly as ReturnTool always has.
-    bool placeToolAt(const geometry_msgs::msg::Pose &approach_pose,
+    // Put the held tool down at release_pose on `location`'s tray and let go.
+    //
+    // Instrument tray: reach the slot's side through a taught transit pose first —
+    // home for a right slot, the left stage pose for a left slot — as a base
+    // rotation, then plan the short local approach from there (approach RRT →
+    // descend → release → lift). The transit pose keeps the only pose-target RRT
+    // short and local; planning the approach straight across from the far reclaim
+    // side is what contorted the arm and dumped tools back on the reclaim tray.
+    //
+    // Reclaim tray (only the safety fallback of return_tool_home puts a tool back
+    // here): stage through the two reclaim pads exactly like a reclaim grasp —
+    // upper → lower, descend/release from the lower pad, then rise back to upper to
+    // clear the camera post.
+    bool placeToolAt(const std::string &location,
                      const geometry_msgs::msg::Pose &release_pose,
                      std::string &err) {
-        moveit::planning_interface::MoveGroupInterface::Plan approach_plan,
-            descend_plan, lift_plan;
+        const bool reclaim = (location == kReclaimLocation);
+
+        // Get the arm to the launch point the place is planned from.
+        if (reclaim) {
+            std::string stage_err;
+            if (!enterReclaimStaging(stage_err)) {
+                err = "place reclaim staging: " + stage_err; return false;
+            }
+        } else {
+            const bool right = release_pose.position.x > instrument_right_side_x_;
+            const std::vector<double> &transit =
+                right ? home_joints_ : instrument_left_stage_joints_;
+            // Keep the held tool's orientation across the transit — do not snap the
+            // wrist to the transit pose and rotate the tool back at the approach.
+            std::string transit_err;
+            if (!moveAcrossKeepingOrientation(transit, transit_err)) {
+                err = std::string("place route via ") +
+                      (right ? "home" : "left stage") + ": " + transit_err;
+                return false;
+            }
+        }
+
+        geometry_msgs::msg::Pose approach_pose = release_pose;
+        approach_pose.position.z += approach_height_m_;
+
+        moveit::planning_interface::MoveGroupInterface::Plan
+            approach_plan, descend_plan, lift_plan;
         move_group_->setStartStateToCurrentState();
         if (!planPoseTarget(approach_pose, approach_plan, err)) {
             err = "place approach plan: " + err; return false;
@@ -1707,9 +1976,9 @@ private:
             err = "place lift plan: " + err; return false;
         }
 
-        RCLCPP_INFO(get_logger(), "Placing at (%.3f, %.3f, %.3f).",
+        RCLCPP_INFO(get_logger(), "Placing at (%.3f, %.3f, %.3f) on the %s tray.",
             release_pose.position.x, release_pose.position.y,
-            release_pose.position.z);
+            release_pose.position.z, location.c_str());
 
         if (!executePlan(approach_plan, err)) { err = "place approach exec: " + err; return false; }
         if (!executePlan(descend_plan, err))  { err = "place descend exec: "  + err; return false; }
@@ -1717,6 +1986,16 @@ private:
         sleepForGripper();
         detachToolBox();
         if (!executePlan(lift_plan, err))     { err = "place lift exec: "     + err; return false; }
+
+        // Rise out of the reclaim tray before anything else moves — the box is
+        // detached now, but the gripper itself must still clear the camera post.
+        if (reclaim) {
+            std::string ex_err;
+            if (!exitReclaimToUpper(ex_err)) {
+                err = "placed, but could not clear the reclaim post: " + ex_err;
+                return false;
+            }
+        }
         return true;
     }
 
@@ -1725,8 +2004,8 @@ private:
     // Brings the currently-held tool back to where it was picked from and
     // releases it return_release_height_m_ above the original grasp pose.
     bool doReturnTool(std::string &err) {
-        geometry_msgs::msg::Pose grasp_pose, approach_pose;
-        std::string tool_id_snapshot, tool_class_snapshot;
+        geometry_msgs::msg::Pose grasp_pose;
+        std::string tool_id_snapshot, tool_class_snapshot, location;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (!have_last_pick_) {
@@ -1734,7 +2013,7 @@ private:
                 return false;
             }
             grasp_pose = last_pick_grasp_pose_;
-            approach_pose = last_pick_approach_pose_;
+            location = last_pick_location_;
             tool_id_snapshot = active_tool_id_;
             tool_class_snapshot = active_tool_class_;
         }
@@ -1744,7 +2023,8 @@ private:
         geometry_msgs::msg::Pose release_pose = grasp_pose;
         release_pose.position.z += return_release_height_m_;
 
-        if (!placeToolAt(approach_pose, release_pose, err)) return false;
+        // Back down the same tray it came from, so the corridor is the right one.
+        if (!placeToolAt(location, release_pose, err)) return false;
 
         // Back where it was picked from — for the instrument tray, that is its home.
         publishHeldToolEvent("PLACED_HOME");
@@ -1808,8 +2088,7 @@ private:
     // which lands the tool's handle exactly back on its home handle position.
     void computePlacePose(const tracking_msgs::srv::GetToolHome::Response &home,
                           double grasp_distance_m,
-                          geometry_msgs::msg::Pose &release_out,
-                          geometry_msgs::msg::Pose &approach_out) {
+                          geometry_msgs::msg::Pose &release_out) {
         const double nx = home.home_functional_end_dir.x;
         const double ny = home.home_functional_end_dir.y;
         const double n = std::hypot(nx, ny);
@@ -1828,9 +2107,6 @@ private:
         handle_axis.z = 0.0;
         release_out.orientation =
             topDownQuaternionFromHandleAxis(handle_axis, tool_yaw_offset_rad_);
-
-        approach_out = release_out;
-        approach_out.position.z = release_out.position.z + approach_height_m_;
     }
 
     // The goal names a tool — but WHICH kind of name? A track id (reclaim_0), a
@@ -1907,14 +2183,13 @@ private:
             tracking_msgs::msg::GraspCandidate chosen;
             geometry_msgs::msg::Pose grasp_pose, approach_pose;
             std::string grasp_err;
-            if (!graspToolCore(cand.tool_id, kReclaimLocation, reclaim_hold_z_m_,
+            if (!graspToolCore(cand.tool_id, kReclaimLocation,
                                chosen, grasp_pose, approach_pose, grasp_err)) {
                 RCLCPP_WARN(get_logger(), "Could not grasp %s: %s",
                             cand.tool_id.c_str(), grasp_err.c_str());
                 skipped_ids_out.push_back(cand.tool_id);
                 skipped_reasons_out.push_back(grasp_err);
-                std::string home_ret;
-                doReturnHomeInternal(home_ret);
+                // graspToolCore already retreated to home on failure.
                 continue;
             }
 
@@ -1924,8 +2199,8 @@ private:
                 grasp_pose.position.x - chosen.handle_center.x,
                 grasp_pose.position.y - chosen.handle_center.y);
 
-            geometry_msgs::msg::Pose release_pose, place_approach;
-            computePlacePose(home, d, release_pose, place_approach);
+            geometry_msgs::msg::Pose release_pose;
+            computePlacePose(home, d, release_pose);
 
             publishState("RETURNING", chosen.tool_id, chosen.tool_class);
             RCLCPP_INFO(get_logger(),
@@ -1937,11 +2212,11 @@ private:
                 release_pose.position.z);
 
             std::string place_err;
-            if (!placeToolAt(place_approach, release_pose, place_err)) {
+            if (!placeToolAt(kInstrumentLocation, release_pose, place_err)) {
                 // Still holding it. Do NOT drop it here — put it back on the reclaim
                 // tray, where it at least stays findable.
                 std::string back_err;
-                if (!placeToolAt(approach_pose, grasp_pose, back_err)) {
+                if (!placeToolAt(kReclaimLocation, grasp_pose, back_err)) {
                     err = "could not place " + chosen.tool_id + " at its home ("
                           + place_err + ") and could not put it back either ("
                           + back_err + ") — the tool is still in the gripper";
@@ -2045,16 +2320,12 @@ private:
         const std::string location =
             goal->location.empty() ? kReclaimLocation : goal->location;
 
-        // The reclaim tray sits down inside a bracket; rise clear of it before
-        // the tool box is attached. The instrument tray does not need it.
-        const double clearout = (location == kReclaimLocation)
-            ? reclaim_hold_z_m_
-            : std::numeric_limits<double>::quiet_NaN();
-
+        // graspToolCore stages the reclaim tray itself (upper/lower pads); the
+        // instrument tray is planned directly from home.
         tracking_msgs::msg::GraspCandidate chosen;
         geometry_msgs::msg::Pose grasp_pose, approach_pose;
         std::string err;
-        const bool ok = graspToolCore(goal->tool_id, location, clearout, chosen,
+        const bool ok = graspToolCore(goal->tool_id, location, chosen,
                                       grasp_pose, approach_pose, err);
         result->success = ok;
         result->grasped_tool_id = chosen.tool_id;
@@ -2288,6 +2559,11 @@ private:
     double tool_box_tip_m_;
     double tool_box_width_m_;
     double tool_box_height_m_;
+    std::vector<double> instrument_left_stage_joints_;
+    std::vector<double> reclaim_stage_upper_joints_;
+    std::vector<double> reclaim_stage_lower_joints_;
+    double instrument_right_side_x_;
+    std::vector<std::string> reversed_tool_box_classes_;
     std::string move_group_name_;
     std::string end_effector_link_;
     std::string reference_frame_;
@@ -2311,7 +2587,6 @@ private:
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;
     double return_release_height_m_;
-    double reclaim_hold_z_m_;
     double present_shoulder_pan_rad_;
     double present_wrist1_rad_;
     double present_wrist2_rad_;
@@ -2374,6 +2649,8 @@ private:
     // Last successful pick — used by return_tool to put a wrong tool back.
     geometry_msgs::msg::Pose last_pick_grasp_pose_;
     geometry_msgs::msg::Pose last_pick_approach_pose_;
+    // Which tray it came from — return_tool has to walk that tray's corridor.
+    std::string last_pick_location_;
     bool have_last_pick_ = false;
 
     // Identity + tool pose of whatever is in the gripper, so a later event (the
@@ -2395,7 +2672,12 @@ int main(int argc, char **argv) {
 
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node);
-    executor.spin();
+
+    // Spin in the background so the startup home move can read the current state
+    // and plan. Then drive to home once before handing control to the executor.
+    std::thread spin_thread([&executor]() { executor.spin(); });
+    node->goHomeOnStartup();
+    spin_thread.join();
 
     rclcpp::shutdown();
     return 0;

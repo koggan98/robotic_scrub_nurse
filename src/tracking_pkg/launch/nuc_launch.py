@@ -176,18 +176,47 @@ def generate_launch_description():
                         'gesture_wait_timeout_sec':          0.0,
                         'post_gesture_settle_sec':           0.5,
                         'return_release_height_m':           0.005,
-                        # grasp_tool rises to this world z after lifting a tool off
-                        # the reclaim tray, before the held-tool box is attached —
-                        # clear of the tray bracket's top bar (z ~= +0.015).
-                        'reclaim_hold_z_m':                  0.10,
                         'hand_offset':                       [-0.08, 0.0, 0.08],
                         'handover_orientation':              [-0.63, 0.63, -0.321, 0.321],
-                        'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,
-                                        -1.5248240244, -1.2305892150, -4.8166621367],
+                        # home = the hub. Over the instrument tray, right of centre.
+                        # All instrument tools are reachable from here by direct
+                        # planning, and a pan rotation reaches the handover pose. The
+                        # arm drives here once at launch.
+                        'home_joints': [0.7702576518, -1.9044758282, 1.8983271758,
+                                        -1.5910726986, -1.5716832320, 0.8188708425],
+                        # Transit pose over the LEFT side of the instrument tray
+                        # (counterpart of home, which is over the right). Placing a
+                        # tool on a left slot routes through here, not home.
+                        'instrument_left_stage_joints':
+                            [2.1318871975, -1.1601789457, 1.1124246756,
+                             -1.5276912202, -1.5967219512, 2.1804935932],
                         'present_shoulder_pan_rad':          3.36332313,
                         'present_wrist1_rad':               -1.5248240244,
                         'present_wrist2_rad':               -1.2305892150,
                         'present_wrist3_rad':               -1.507562509029,
+
+                        # ── Reclaim staging ───────────────────────────────────
+                        # The reclaim tray sits under a 60 cm camera post, so the
+                        # arm enters/leaves through two taught height poses over the
+                        # tray (same x/y, different z): upper is post-clear (box is
+                        # (de)attached there), lower is the grasp/place launch pad.
+                        # Taught with joint_state_jogger_node + read_stage_pose.py.
+                        'reclaim_stage_upper_joints':
+                            [4.8814082146, -1.1096825761, 1.2962282340,
+                             -1.7339645825, -1.5696294943, 0.1715736389],
+                        'reclaim_stage_lower_joints':
+                            [4.8818922043, -0.8805474800, 1.6040924231,
+                             -2.2710281811, -1.5696328322, 0.1718008518],
+                        # Left/right boundary of the instrument tray (world-x, tray
+                        # centre = 0.0). Decides two things: a tool picked to the
+                        # RIGHT is presented via home (left turns to the surgeon
+                        # directly), and a tool placed back on a RIGHT slot transits
+                        # via home (a left slot via instrument_left_stage_joints).
+                        'instrument_right_side_x':           0.0,
+                        # Tool classes whose held-tool collision box is built
+                        # reversed (long reach toward the handle) — gripped near the
+                        # functional end, so the body runs backward from the jaws.
+                        'reversed_tool_box_classes':         ['hammer'],
                     }],
                 ),
             ]

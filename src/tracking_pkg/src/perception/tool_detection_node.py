@@ -128,7 +128,7 @@ class ToolDetectionNode(Node):
         self.detections_topic = self.get_parameter('detections_topic').value
         self.annotated_topic = self.get_parameter('annotated_topic').value
         self.location = self.get_parameter('location').value
-        self.world_offset_xy = self._load_world_offset(
+        self._load_tray_corrections(
             self.get_parameter('tray_geometry_path').value)
 
         self.bridge = CvBridge()
@@ -136,6 +136,12 @@ class ToolDetectionNode(Node):
         self._latest_color_msg = None
         self._latest_depth_msg = None
         self._camera_matrix = None
+        # Lens distortion coefficients from camera_info. Without them the
+        # projection is a pure pinhole and lands tools near the image edges
+        # (the tray ends) several cm off — the centre stays perfect. None until
+        # the first camera_info arrives; logged once so the model is visible.
+        self._dist_coeffs = None
+        self._dist_logged = False
 
         self._model = None
 
@@ -167,15 +173,20 @@ class ToolDetectionNode(Node):
             f'rate={self.inference_rate_hz} Hz, device={self.device})'
         )
 
-    def _load_world_offset(self, path):
-        """This camera's systematic world-XY bias, from config/tray_geometry.yaml.
-
-        Added to every projected point. Zero unless a tray has been calibrated.
+    def _load_tray_corrections(self, path):
+        """This camera's world-XY corrections, from config/tray_geometry.yaml:
+        an additive bias (world_offset_xy) and a lateral scale about a pivot
+        (xy_scale / xy_pivot). Both applied to every projected point, in that
+        order. Defaults (offset 0, scale 1) mean no correction.
         """
         import os
 
         import yaml
         from ament_index_python.packages import get_package_share_directory
+
+        self.world_offset_xy = [0.0, 0.0]
+        self.xy_scale = [1.0, 1.0]
+        self.xy_pivot = [0.0, 0.0]
 
         if not path:
             path = os.path.join(
@@ -186,16 +197,21 @@ class ToolDetectionNode(Node):
             with open(path, 'r') as f:
                 data = yaml.safe_load(f) or {}
             tray = (data.get('trays', {}) or {}).get(self.location, {}) or {}
-            off = [float(v) for v in tray.get('world_offset_xy', [0.0, 0.0])]
-            if any(abs(v) > 1e-9 for v in off):
+            self.world_offset_xy = [float(v) for v in tray.get('world_offset_xy', [0.0, 0.0])]
+            self.xy_scale = [float(v) for v in tray.get('xy_scale', [1.0, 1.0])]
+            self.xy_pivot = [float(v) for v in tray.get('xy_pivot', [0.0, 0.0])]
+            if any(abs(v) > 1e-9 for v in self.world_offset_xy):
                 self.get_logger().info(
-                    f'{self.location}: correcting a systematic world-XY bias of '
-                    f'[{off[0]:+.4f}, {off[1]:+.4f}] m from {path}')
-            return off
+                    f'{self.location}: world-XY bias '
+                    f'[{self.world_offset_xy[0]:+.4f}, {self.world_offset_xy[1]:+.4f}] m')
+            if any(abs(s - 1.0) > 1e-9 for s in self.xy_scale):
+                self.get_logger().info(
+                    f'{self.location}: lateral scale [{self.xy_scale[0]:.4f}, '
+                    f'{self.xy_scale[1]:.4f}] about pivot '
+                    f'[{self.xy_pivot[0]:+.4f}, {self.xy_pivot[1]:+.4f}] m from {path}')
         except Exception as e:
             self.get_logger().warn(
-                f'No tray geometry at {path} ({e}) — no bias correction applied.')
-            return [0.0, 0.0]
+                f'No tray geometry at {path} ({e}) — no XY correction applied.')
 
     def _on_color(self, msg):
         # Store the raw ROS msg; convert to cv2 only at tick time (inference rate),
@@ -211,6 +227,12 @@ class ToolDetectionNode(Node):
     def _on_camera_info(self, msg):
         with self._lock:
             self._camera_matrix = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+            self._dist_coeffs = np.array(msg.d, dtype=np.float64).reshape(1, -1)
+        if not self._dist_logged:
+            self._dist_logged = True
+            self.get_logger().info(
+                f'camera_info: distortion_model="{msg.distortion_model}", '
+                f'd={list(msg.d)} — undistorting pixels before projection.')
 
     def _ensure_model(self):
         if self._model is not None:
@@ -396,6 +418,11 @@ class ToolDetectionNode(Node):
         # robot's.
         world[0] += self.world_offset_xy[0]
         world[1] += self.world_offset_xy[1]
+        # Lateral scale about the tray centre: the close, oblique camera's pose
+        # compresses positions toward the nadir, growing with distance from it, so
+        # tools near the tray edges land several cm off. Reverse it about the pivot.
+        world[0] = self.xy_pivot[0] + self.xy_scale[0] * (world[0] - self.xy_pivot[0])
+        world[1] = self.xy_pivot[1] + self.xy_scale[1] * (world[1] - self.xy_pivot[1])
         return world
 
     def _pixel_to_world_raw(self, pt_px, depth_img, cam_matrix, tf_world_from_cam):
@@ -418,28 +445,40 @@ class ToolDetectionNode(Node):
         z = self._median_depth_m(depth_img, ui, vi)
         if z is None:
             return None
-        fx = cam_matrix[0, 0]
-        fy = cam_matrix[1, 1]
-        cx = cam_matrix[0, 2]
-        cy = cam_matrix[1, 2]
-        if abs(fx) < 1e-9 or abs(fy) < 1e-9:
+        xn, yn = self._normalized_ray(pt_px[0], pt_px[1], cam_matrix)
+        if xn is None:
             return None
-        x_cam = (pt_px[0] - cx) / fx * z
-        y_cam = (pt_px[1] - cy) / fy * z
-        p_cam = np.array([x_cam, y_cam, z, 1.0])
+        p_cam = np.array([xn * z, yn * z, z, 1.0])
         p_world = tf_world_from_cam @ p_cam
         return p_world[:3]
 
-    def _pixel_to_world_on_plane(self, u, v, cam_matrix, tf_world_from_cam, plane_z_world):
-        """Ray-plane intersection: shoot ray through pixel, intersect z=plane plane in world."""
+    def _normalized_ray(self, u, v, cam_matrix):
+        """Normalized camera-frame ray direction (x_n, y_n) for pixel (u, v),
+        UNDISTORTED. Undistortion is where the edge accuracy comes from: a pure
+        pinhole (u-cx)/fx puts tools near the image border cm off. cv2.undistort-
+        Points already returns coordinates divided by focal length, relative to the
+        principal point, so the ray is [x_n, y_n, 1]. Falls back to the pinhole
+        formula when no distortion is known yet."""
         fx = cam_matrix[0, 0]
         fy = cam_matrix[1, 1]
         cx = cam_matrix[0, 2]
         cy = cam_matrix[1, 2]
         if abs(fx) < 1e-9 or abs(fy) < 1e-9:
+            return None, None
+        d = self._dist_coeffs
+        if d is not None and d.size > 0 and float(np.max(np.abs(d))) > 1e-12:
+            und = cv2.undistortPoints(
+                np.array([[[float(u), float(v)]]], dtype=np.float64), cam_matrix, d)
+            return float(und[0, 0, 0]), float(und[0, 0, 1])
+        return (u - cx) / fx, (v - cy) / fy
+
+    def _pixel_to_world_on_plane(self, u, v, cam_matrix, tf_world_from_cam, plane_z_world):
+        """Ray-plane intersection: shoot ray through pixel, intersect z=plane plane in world."""
+        xn, yn = self._normalized_ray(u, v, cam_matrix)
+        if xn is None:
             return None
 
-        ray_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+        ray_cam = np.array([xn, yn, 1.0], dtype=float)
         ray_cam_norm = float(np.linalg.norm(ray_cam))
         if ray_cam_norm < 1e-9:
             return None

@@ -453,8 +453,16 @@ def generate_launch_description():
                         'return_release_height_m': 0.005,
                         'hand_offset': [-0.08, 0.0, 0.08],
                         'handover_orientation': [-0.63, 0.63, -0.321, 0.321],
-                        'home_joints': [-0.1601136366, -2.2975937329, 2.2748802344,
-                                        -1.5248240244, -1.2305892150, -4.8166621367],
+                        # home = the hub, over the instrument tray right of centre.
+                        # Driven to once at launch; all instrument tools reachable
+                        # from here by direct planning.
+                        'home_joints': [0.7702576518, -1.9044758282, 1.8983271758,
+                                        -1.5910726986, -1.5716832320, 0.8188708425],
+                        # Transit pose over the LEFT of the instrument tray; left-slot
+                        # places route through here instead of home.
+                        'instrument_left_stage_joints':
+                            [2.1318871975, -1.1601789457, 1.1124246756,
+                             -1.5276912202, -1.5967219512, 2.1804935932],
                         # Presentation pose after a pick: turn the base to this
                         # angle, then reorient the tool via wrist_2/wrist_3 only.
                         # 3.36332 rad = 193 deg. Tune the wrist values by jogging
@@ -463,6 +471,22 @@ def generate_launch_description():
                         'present_wrist1_rad': -1.5248240244,
                         'present_wrist2_rad': -1.2305892150,
                         'present_wrist3_rad': -1.507562509029,
+
+                        # ── Reclaim staging ───────────────────────────────────
+                        # Keep in step with nuc_launch.py — see the comment there.
+                        # Upper/lower height poses over the reclaim tray, taught
+                        # with the jogger + read_stage_pose.py.
+                        'reclaim_stage_upper_joints':
+                            [4.8814082146, -1.1096825761, 1.2962282340,
+                             -1.7339645825, -1.5696294943, 0.1715736389],
+                        'reclaim_stage_lower_joints':
+                            [4.8818922043, -0.8805474800, 1.6040924231,
+                             -2.2710281811, -1.5696328322, 0.1718008518],
+                        # Left/right boundary of the instrument tray (world-x).
+                        # Right-side picks present via home; right-side places
+                        # transit via home, left-side places via the left stage pose.
+                        'instrument_right_side_x': 0.0,
+                        'reversed_tool_box_classes': ['hammer'],
                     }],
                 ),
             ]
