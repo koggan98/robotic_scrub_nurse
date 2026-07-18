@@ -35,7 +35,8 @@ Perception + AI (headless, ARM64/CUDA)        Robot control (x86_64)
 
 - Jetson bring-up: `src/tracking_pkg/launch/jetson_launch.py`, DDS `cyclone_dds_jetson.xml`.
 - NUC bring-up: `src/tracking_pkg/launch/nuc_launch.py`, DDS `cyclone_dds_nuc.xml`.
-- Single-host all-in-one (one machine with GPU + robot): `src/tracking_pkg/launch/llm_launch.py`.
+- `src/tracking_pkg/launch/llm_launch.py` is an obsolete single-host snapshot and is not an active
+  deployment path.
 
 The Jetson is deliberately **headless** — `jetson_launch.py` does not build a `robot_description`
 (that would pull version-fragile UR xacros and abort the launch on failure); the robot model and
@@ -57,7 +58,6 @@ RViz live only on the NUC.
 
 ### Active Path (LLM + MoveIt skill actions)
 - Distributed launch: `jetson_launch.py` (perception/AI) + `nuc_launch.py` (robot control).
-- Single-host launch: `llm_launch.py` (layered bring-up of the same graph on one machine).
 - Reasoning core: `src/tracking_pkg/src/llm/llm_orchestrator_node.py`
   (OpenAI `gpt-5-mini`, native tool/function-calling, up to 8 tool turns).
 - Motion core: `src/tracking_pkg/src/execution/skill_executor_node.cpp`
@@ -67,6 +67,8 @@ RViz live only on the NUC.
   `/get_world_model` service.
 
 ### Legacy / Alternative Paths (not the active runtime)
+- **Obsolete single-host snapshot:** `llm_launch.py` is retained for reference but is not kept in
+  sync with the distributed runtime. New runtime behavior belongs in the per-machine launches.
 - **Loop path (MoveIt-centric, numeric tool selection):** `loop_mover.cpp` driven by the
   `/tool_selection` topic. The executable is retained for direct manual bench testing, but neither
   `nuc_launch.py` nor `llm_launch.py` starts it. This is the older generation.
@@ -78,8 +80,10 @@ RViz live only on the NUC.
   camera rate, ~63% CPU + ~1.6 GB, for no production consumer).
 
 ## High-Level Active ROS Flow
-1. `asr_node` (faster-whisper `base.en`, local, energy-based VAD, Samson USB mic) transcribes a
-   spoken command and publishes it on `/user_speech`.
+1. `asr_node` (faster-whisper `tiny.en`, local, energy-based VAD) runs on the Jetson, transcribes a
+   spoken command, and publishes it on `/user_speech`. `jetson_launch.py` selects either the
+   `samson` profile (Samson Q2U, direct 16 kHz) or the `jieli` profile (Jieli USB receiver, native
+   48 kHz decoded/resampled to Whisper's 16 kHz); `default` delegates selection to PortAudio.
 2. `llm_orchestrator_node` consumes `/user_speech`, calls `/get_world_model` (JSON scene snapshot),
    matches the request to a tracked `tool_id` via `config/tool_knowledge_base.yaml` synonyms
    (multilingual, incl. German), and runs an OpenAI tool-calling loop.

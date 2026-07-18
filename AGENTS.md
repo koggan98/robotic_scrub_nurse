@@ -28,12 +28,12 @@ When implementing new features of external libraries or APIs (but not internal),
 - Active runtime path is the **LLM + MoveIt skill-action** pipeline (speech → LLM → skills → motion):
   - distributed launch: `src/tracking_pkg/launch/jetson_launch.py` (perception/AI, Jetson) +
     `src/tracking_pkg/launch/nuc_launch.py` (robot control, NUC)
-  - single-host launch: `src/tracking_pkg/launch/llm_launch.py`
   - reasoning core: `src/tracking_pkg/src/llm/llm_orchestrator_node.py`
   - motion core: `src/tracking_pkg/src/execution/skill_executor_node.cpp`
 - The LLM provider is **OpenAI** (`gpt-5-mini`, set in the launch files). Treat the launch
   parameters as authoritative over `config/system_config.yaml` where they disagree.
 - Legacy/alternative paths — do not route new behavior into these unless explicitly requested:
+  - `llm_launch.py` (obsolete single-host snapshot; not kept in sync with the distributed runtime)
   - `loop_mover.cpp` with the numeric `/tool_selection` topic (older MoveIt handover loop)
   - `socket_mover` with `ur_rtde` (MoveIt-free, dormant/deferred)
 

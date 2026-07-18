@@ -24,6 +24,8 @@ The system has moved from a single-host, numeric `/tool_selection` MoveIt loop t
 
 ### WS-2: Speech + LLM orchestration
 - Local speech-to-text (`asr_node`, faster-whisper, energy VAD, `/user_speech`).
+- Jetson launch profiles for the Samson Q2U and Jieli USB receiver, including native-rate capture
+  and 48 kHz → 16 kHz decoding for the Jieli device.
 - OpenAI function-calling orchestrator (`llm_orchestrator_node`) exposing robot skills as tools
   (`get_world_model`, `pick_and_handover`, `return_tool`, `release_tool`, `return_home`, `abort`).
 - Terse status feedback on `/system_response`; audio cues via `handover_sound_publisher`.
@@ -56,7 +58,7 @@ The system has moved from a single-host, numeric `/tool_selection` MoveIt loop t
 
 ## Cross-Cutting Items
 - **Execution context hardening:** keep runbooks valid for the distributed NUC/Jetson runtime and
-  SSH-friendly; keep the single-host `llm_launch.py` path working as a fallback.
+  SSH-friendly. The obsolete single-host `llm_launch.py` snapshot is not a supported fallback.
 - **Observability:** ROS-native logging of hand detection, reachability, and accepted/rejected
   actions with reasons (per `AGENTS.md`).
 - **Legacy paths:** `loop_mover` (numeric `/tool_selection`) and `socket_mover` (RTDE) remain in the

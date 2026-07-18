@@ -54,7 +54,8 @@ Core experimental package, organized by responsibility under `src/tracking_pkg/s
 - `publisher/` — MoveIt collision objects (instrument tray, reclaim tray, MiR base)
 
 Two per-machine launch files bring the system up: `jetson_launch.py` (perception + AI) and
-`nuc_launch.py` (robot control). `llm_launch.py` runs the whole graph on a single machine.
+`nuc_launch.py` (robot control). The older `llm_launch.py` is an obsolete single-host snapshot and
+is not kept in sync with this active distributed runtime.
 
 ### tracking_msgs
 
@@ -97,9 +98,9 @@ Official UR simulation environment included as a git submodule for testing and d
 - Universal Robots UR3e manipulator
 - Robotiq 2F gripper
 - 2× Intel RealSense D455 cameras (reclaim tray + instrument tray)
-- Compute: NVIDIA Jetson Orin Nano (perception/AI) + Intel NUC (robot control), or a single
-  GPU workstation for the all-in-one `llm_launch.py` path
-- USB microphone for spoken commands (Samson Q2U in the reference setup)
+- Compute: NVIDIA Jetson Orin Nano (perception/AI) + Intel NUC (robot control)
+- USB microphone connected to the Jetson for spoken commands: Samson Q2U or the Jieli-based
+  `USB Composite Device` receiver
 
 ### Software Dependencies
 
@@ -151,22 +152,30 @@ The runtime is distributed across two machines that share a `ROS_DOMAIN_ID` over
 `192.168.12.0/24` link (per-machine CycloneDDS configs `cyclone_dds_nuc.xml` / `cyclone_dds_jetson.xml`):
 
 ```bash
-# On the Jetson Orin Nano (perception + AI); needs OPENAI_API_KEY in the environment
+# On the Jetson Orin Nano (perception + AI); Samson Q2U is the default.
+# Export OPENAI_API_KEY first when the LLM fallback should be available.
 ros2 launch tracking_pkg jetson_launch.py
+
+# Alternatively, use the Jieli USB microphone receiver
+ros2 launch tracking_pkg jetson_launch.py microphone:=jieli
 
 # On the Intel NUC (robot control); start the UR driver separately first
 ros2 launch tracking_pkg nuc_launch.py ur_type:=ur3e
 ```
 
-To run everything on a single GPU machine instead, use `ros2 launch tracking_pkg llm_launch.py`.
+The available Jetson microphone profiles are `samson`, `jieli`, and `default`. `default` uses the
+PortAudio system default. The `jieli` profile opens `USB Composite Device` at its native 48 kHz and
+lets faster-whisper decode/resample the captured WAV buffer to 16 kHz. This avoids numeric ALSA
+device indices, which can change after a reboot or after reconnecting USB hardware.
+
+`llm_launch.py` is retained only as an obsolete historical snapshot; do not use it for deployment.
 
 The perception pipelines use separate YOLO-OBB weights by default:
 `ros_unrelated_scripts/instrument_tray_detector.pt` for the instrument tray and
 `ros_unrelated_scripts/reclaim_tray_detector.pt` for the reclaim tray. Override them when needed
 with `INSTRUMENT_TRAY_MODEL_PATH` and `RECLAIM_TRAY_MODEL_PATH`; `OBB_DEVICE` selects the inference
 device (default: `cuda:0`). The launch files detect both the `~/robotic_scrub_nurse` deployment
-directory and the `~/robotic_scrub_nurse_ws` development workspace. The single-host launch
-currently runs only the instrument-tray detector.
+directory and the `~/robotic_scrub_nurse_ws` development workspace.
 
 RViz shows three processed camera views: the instrument-tray tool detections, reclaim-tray hand
 annotations, and reclaim-tray tool detections. Raw camera feeds are intentionally omitted. In the
@@ -270,7 +279,7 @@ To request a top-down grasp pose in `world` for a tracked TF frame such as `tool
 ros2 service call /get_grasp_approach_pose tracking_pkg/srv/GetGraspApproachPose "{target_frame: tool_holder_frame}"
 ```
 
-`nuc_launch.py` (and the single-host `llm_launch.py`) starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `-frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
+`nuc_launch.py` starts `grasp_approach_pose_service.py` by default. The service looks up the requested TF frame, keeps the frame position, and recomputes the orientation so that `TCP z = -world z` while `TCP x` follows the world-horizontal projection of `-frame z`. The result is returned as a `geometry_msgs/PoseStamped` in `world`. If `target_frame` is empty, the node falls back to its default parameter `tool_holder_frame`.
 
 ## ROS Frame Capture for YOLO Training
 
@@ -477,15 +486,15 @@ ros2 run tracking_pkg joint_state_jogger_node --ros-args \
 > **⚠️ Legacy / alternative runtime paths below.**
 > The sections that follow document the older MoveIt loop and the MoveIt-free RTDE path driven by
 > the numeric `/tool_selection` interface. The `loop_mover` executable is retained only for direct
-> manual bench testing and is not started by `nuc_launch.py` or `llm_launch.py`. The **active**
-> runtime is the LLM + skill-action pipeline via `jetson_launch.py` + `nuc_launch.py` (distributed)
-> or `llm_launch.py` (single host) — see [ARCHITECTURE.md](ARCHITECTURE.md).
+> manual bench testing and is not started by `nuc_launch.py`. The **active** runtime is the LLM +
+> skill-action pipeline via `jetson_launch.py` + `nuc_launch.py`; `llm_launch.py` is an obsolete
+> single-host snapshot — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Combined MoveIt + Tracking Launch (retired)
 
 `loop_with_moveit_launch.py` is retained as historical source but is not a supported launch path: it
 references the removed `loop_launch.py`. It is intentionally not repaired as part of the active LLM
-runtime. Use the distributed or single-host active launch described above.
+runtime. Use the active distributed launch described above.
 
 ## Loop Mover Profiles
 
