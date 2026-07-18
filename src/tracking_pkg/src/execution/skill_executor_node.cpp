@@ -799,14 +799,18 @@ private:
 
     bool planLinearPose(const geometry_msgs::msg::Pose &pose,
                         moveit::planning_interface::MoveGroupInterface::Plan &plan_out,
-                        std::string &err) {
+                        std::string &err,
+                        double required_fraction = -1.0) {
         move_group_->setMaxVelocityScalingFactor(velocity_scale_);
         move_group_->setMaxAccelerationScalingFactor(acceleration_scale_);
         std::vector<geometry_msgs::msg::Pose> waypoints{pose};
         moveit_msgs::msg::RobotTrajectory traj;
         const double fraction = move_group_->computeCartesianPath(
             waypoints, 0.005, 0.0, traj);
-        if (fraction < cartesian_min_fraction_) {
+        const double minimum = required_fraction >= 0.0
+                                   ? required_fraction
+                                   : cartesian_min_fraction_;
+        if (fraction < minimum) {
             err = "cartesian path only " + std::to_string(fraction * 100.0) + "%";
             return false;
         }
@@ -901,6 +905,46 @@ private:
             "Transit: straight move not clean (%s), using a planned move that still "
             "holds the grasp orientation.", lin_err.c_str());
         return moveToPoseTarget(target, err);
+    }
+
+    // Move from an already reached transit point to another transit POSITION in
+    // one straight Cartesian leg while preserving the held tool's orientation.
+    // Unlike moveAcrossKeepingOrientation this deliberately performs no initial
+    // shoulder-pan rotation and has no pose-target/RRT fallback. It is used for
+    // the observed-safe left-stage -> home corridor: an isolated home pan first
+    // swings the TCP beyond home, after which it has to travel back again.
+    bool moveLinearlyToTransitKeepingOrientation(
+        const std::vector<double> &transit,
+        std::string &err) {
+        if (transit.size() != joint_state_names_.size()) {
+            err = "transit joints must have " +
+                  std::to_string(joint_state_names_.size()) + " values";
+            return false;
+        }
+
+        geometry_msgs::msg::Pose target;
+        if (!jointsToTcpPose(transit, target, err)) {
+            err = "linear transit FK: " + err;
+            return false;
+        }
+        target.orientation = move_group_->getCurrentPose(end_effector_link_)
+                                 .pose.orientation;
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        move_group_->setStartStateToCurrentState();
+        // This safety corridor must reach the complete Home TCP target. A partial
+        // Cartesian trajectory would leave the following slot approach starting
+        // from an unintended pose and could reintroduce a large corrective move.
+        constexpr double kCompletePathFraction = 1.0 - 1e-6;
+        if (!planLinearPose(target, plan, err, kCompletePathFraction)) {
+            err = "complete linear transit required: " + err;
+            return false;
+        }
+        if (!executePlan(plan, err)) {
+            err = "linear transit execute: " + err;
+            return false;
+        }
+        return true;
     }
 
     // TCP pose (position + orientation of end_effector_link) at a set of joint
@@ -1971,20 +2015,25 @@ private:
 
     // Put the held tool down at release_pose on `location`'s tray and let go.
     //
-    // Instrument tray: reach the slot's side through a taught transit pose first —
-    // home for a right slot, the left stage pose for a left slot — as a base
-    // rotation, then plan the short local approach from there (approach RRT →
-    // descend → release → lift). The transit pose keeps the only pose-target RRT
-    // short and local; planning the approach straight across from the far reclaim
-    // side is what contorted the arm and dumped tools back on the reclaim tray.
+    // Instrument tray: reach the slot's side through a taught transit pose first,
+    // then plan the short local approach from there (approach RRT -> descend ->
+    // release -> lift). A Reclaim->RIGHT return goes through left stage, then in
+    // one straight Cartesian leg to home; Reclaim->LEFT stops at left stage. Other
+    // callers keep their existing transit behavior.
     //
     // Reclaim tray (only the safety fallback of return_tool_home puts a tool back
     // here): stage through the two reclaim pads exactly like a reclaim grasp —
     // upper → lower, descend/release from the lower pad, then rise back to upper to
     // clear the camera post.
+    enum class PlaceRouteContext {
+        DEFAULT,
+        RETURN_HOME_FROM_RECLAIM,
+    };
+
     bool placeToolAt(const std::string &location,
                      const geometry_msgs::msg::Pose &release_pose,
-                     std::string &err) {
+                     std::string &err,
+                     PlaceRouteContext route_context = PlaceRouteContext::DEFAULT) {
         const bool reclaim = (location == kReclaimLocation);
 
         // A tool can slip out anywhere on the way to the tray. Arm transporting_
@@ -2018,16 +2067,26 @@ private:
             }
         } else {
             const bool right = release_pose.position.x > instrument_right_side_x_;
+            const bool linear_home_from_left_stage =
+                right && route_context == PlaceRouteContext::RETURN_HOME_FROM_RECLAIM;
             // Keep the held tool's orientation across the transit — do not snap the
             // wrist to the transit pose and rotate the tool back at the approach.
             // A LEFT slot is reached directly via the left stage pose. A RIGHT
-            // slot goes via the left stage FIRST and then to home: coming off the
-            // reclaim side, the single big base swing straight to home contorts
-            // the arm, so it is broken into left-then-right base rotations.
+            // slot goes via the left stage FIRST and then to home.
             if (right) {
+                if (linear_home_from_left_stage) {
+                    RCLCPP_INFO(get_logger(),
+                        "ReturnToolHome route: reclaim -> left stage.");
+                }
                 std::string via_err;
                 if (!moveAcrossKeepingOrientation(
                         instrument_left_stage_joints_, via_err)) {
+                    if (linear_home_from_left_stage) {
+                        err = freshGripperHoldsTool()
+                                  ? "place route to required left stage: " + via_err
+                                  : "tool_lost: gripper empty during place transit";
+                        return false;
+                    }
                     // Best-effort intermediate: if it will not plan, still try to
                     // reach home directly rather than aborting the place.
                     RCLCPP_WARN(get_logger(),
@@ -2038,7 +2097,17 @@ private:
             const std::vector<double> &transit =
                 right ? home_joints_ : instrument_left_stage_joints_;
             std::string transit_err;
-            if (!moveAcrossKeepingOrientation(transit, transit_err)) {
+            bool transit_ok = false;
+            if (linear_home_from_left_stage) {
+                RCLCPP_INFO(get_logger(),
+                    "ReturnToolHome route: left stage -> home linear "
+                    "(no shoulder-pan pre-rotation, no RRT fallback).");
+                transit_ok = moveLinearlyToTransitKeepingOrientation(
+                    home_joints_, transit_err);
+            } else {
+                transit_ok = moveAcrossKeepingOrientation(transit, transit_err);
+            }
+            if (!transit_ok) {
                 err = freshGripperHoldsTool()
                           ? (std::string("place route via ") +
                              (right ? "home" : "left stage") + ": " + transit_err)
@@ -2343,7 +2412,11 @@ private:
             // by reclaim_exit_clearance_m so the held tool clears the tray for
             // the cross-swing below — no separate transit lift needed.
             std::string place_err;
-            if (!placeToolAt(kInstrumentLocation, release_pose, place_err)) {
+            if (!placeToolAt(
+                    kInstrumentLocation,
+                    release_pose,
+                    place_err,
+                    PlaceRouteContext::RETURN_HOME_FROM_RECLAIM)) {
                 // The tool fell out during the transit across: mark it DROPPED
                 // (registry -> UNKNOWN) and go home. There is nothing to put
                 // back, so skip the reclaim fallback below.

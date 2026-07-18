@@ -182,6 +182,14 @@ Non-red display transitions use a short `0.1 s` debounce; red motion/error state
 immediate. The executor still observes `pre_release_dwell_seconds` before enabling force-guided
 physical release, so the faster visual transition does not shorten the release safety dwell.
 
+When `ReturnToolHome` carries a used tool from the reclaim tray to a right-side instrument home
+slot (`world-x > 0`), it exits through the raised reclaim stage, transits through
+`instrument_left_stage`, and then moves the TCP in one complete collision-checked Cartesian leg to
+the Home position while preserving the held-tool orientation. There is no isolated Home
+shoulder-pan rotation or RRT fallback on that left-stage-to-Home leg. If the complete straight path
+is unavailable, the existing safety fallback returns the still-held tool to the reclaim tray.
+Left-side home slots and normal `return_tool` routes retain their existing behavior.
+
 The perception pipelines use separate YOLO-OBB weights by default:
 `ros_unrelated_scripts/instrument_tray_detector.pt` for the instrument tray and
 `ros_unrelated_scripts/reclaim_tray_detector.pt` for the reclaim tray. Override them when needed

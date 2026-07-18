@@ -93,7 +93,10 @@ RViz live only on the NUC.
    model reasons about (retry / disambiguate / stop). Terse status is published on `/system_response`.
 4. `skill_executor_node` (NUC) executes motion. `pick_tool` pre-plans approach→descend→lift for each
    candidate (confidence order) and only commits to a fully-plannable one; on grasp it attaches a
-   `held_tool` collision box to the TCP, then presents the tool.
+   `held_tool` collision box to the TCP, then presents the tool. `ReturnToolHome` routes a used tool
+   from the raised reclaim exit through `instrument_left_stage`; for a right-side home slot it then
+   requires a complete Cartesian left-stage→Home transit with fixed tool orientation and no isolated
+   Home shoulder-pan rotation or RRT fallback. Failure returns the still-held tool to reclaim.
 5. `handover_tool` sets `/handover_waiting=true`, waits for the surgeon's `double_open_close` gesture
    on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
    `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
