@@ -221,7 +221,13 @@ class ASRNode(Node):
         self._phase = 'wait_wake'      # 'wait_wake' | 'command'
         self._command_deadline = 0.0
 
-        # Audio state
+        # Audio state. Capture runs continuously on one thread and hands whole
+        # speech segments to a transcription thread through this queue, so the
+        # microphone is NEVER closed while Whisper is busy — speech spoken during
+        # a transcription is captured instead of lost. The queue is bounded: if
+        # transcription lags (loaded Jetson), the oldest stale segment is dropped
+        # rather than letting a backlog grow without limit.
+        self._max_queued_segments = 8
         self._audio_queue = queue.Queue()
         self._model = None
         self._running = True
@@ -292,8 +298,9 @@ class ASRNode(Node):
 
     def _listen_loop(self):
         """
-        Main audio capture + VAD + transcription loop.
-        Runs in a dedicated thread to not block ROS callbacks.
+        Set up audio + model, then run the continuous capture producer. A
+        separate worker thread transcribes queued segments and runs the wake
+        FSM, so the microphone stays open while Whisper is busy.
         """
         try:
             import sounddevice as sd
@@ -314,18 +321,22 @@ class ASRNode(Node):
         # This flips the HRI display from "starting up" to ready.
         self._publish_status('ready')
 
-        chunk_duration = 0.1  # 100ms chunks
+        # Consumer: transcribe queued segments + run the wake FSM.
+        self._transcribe_thread = Thread(
+            target=self._transcribe_worker, daemon=True)
+        self._transcribe_thread.start()
 
+        # Producer: keep the mic open and push speech segments to the queue.
+        self._capture_loop(sd)
+
+    def _capture_loop(self, sd):
+        """Producer: hold the mic open and enqueue speech segments forever.
+        Never blocks on transcription — that runs on the worker thread."""
+        chunk_duration = 0.1  # 100ms chunks
         _no_mic_warned = False
         while self._running and rclpy.ok():
             try:
-                # In the command phase, cap how long we wait for the command to
-                # begin so a wake word with no follow-up disarms on its own.
-                max_wait = None
-                if self._phase == 'command':
-                    max_wait = max(0.0, self._command_deadline - time.time())
-                text = self._capture_and_transcribe(sd, chunk_duration, max_wait)
-                self._handle_segment(text)
+                self._stream_and_segment(sd, chunk_duration)
                 _no_mic_warned = False
             except sd.PortAudioError as e:
                 if self._auto_select_audio:
@@ -352,7 +363,7 @@ class ASRNode(Node):
                     self.get_logger().error(f'Audio device error: {e}')
                     time.sleep(2.0)
             except Exception as e:
-                self.get_logger().error(f'Listen loop error: {e}')
+                self.get_logger().error(f'Capture loop error: {e}')
                 time.sleep(1.0)
 
     def _refresh_portaudio_devices(self, sd):
@@ -426,34 +437,26 @@ class ASRNode(Node):
             should_refresh = True
         return False
 
-    def _capture_and_transcribe(self, sd, chunk_duration,
-                                max_wait_for_speech=None):
-        """
-        Capture one speech segment and transcribe it. Returns the transcript
-        (str) or None (nothing usable / timed out before speech began).
+    def _stream_and_segment(self, sd, chunk_duration):
+        """Hold ONE InputStream open and enqueue each complete speech segment.
 
-        Uses a simple energy-based VAD:
-        1. Wait for energy above threshold (speech start)
-        2. Accumulate audio while energy stays above threshold
-        3. When silence exceeds silence_threshold → segment complete
-        4. Transcribe if long enough
-
-        max_wait_for_speech: if set, return None when no speech has STARTED
-        within this many seconds (used to disarm the command window). Once
-        speech begins it is always captured to completion.
+        Energy-based VAD:
+        1. energy above threshold  -> speech start
+        2. accumulate while above threshold
+        3. silence longer than silence_threshold -> segment complete -> enqueue
+        Then keep reading immediately for the next segment. Returns only on
+        shutdown; a device error propagates to _capture_loop for a rescan.
         """
         speech_buffer = []
         is_speaking = False
         silence_start = None
 
-        self.get_logger().info('Listening for speech...')
-
-        # Recomputed for every stream so a Samson/Jieli hot-swap also updates
-        # the 100 ms block size from 1600 to 4800 samples (or vice versa).
+        # Recomputed per stream so a Samson/Jieli hot-swap also updates the
+        # 100 ms block size from 1600 to 4800 samples (or vice versa).
         chunk_samples = audio_capture_block_size(
             self.capture_sample_rate, chunk_duration)
 
-        wait_start = time.time()
+        self.get_logger().info('Listening for speech...')
         with sd.InputStream(
             samplerate=self.capture_sample_rate,
             channels=1,
@@ -466,46 +469,71 @@ class ASRNode(Node):
                 if overflowed:
                     self.get_logger().debug('Audio overflow (dropped frames)')
 
-                # Compute RMS energy
                 rms = np.sqrt(np.mean(audio_chunk ** 2))
-
                 if rms >= self.energy_threshold:
-                    # Speech detected
                     if not is_speaking:
                         is_speaking = True
                         self.get_logger().debug('Speech started')
                     speech_buffer.append(audio_chunk.copy())
                     silence_start = None
                 elif is_speaking:
-                    # Below threshold but was speaking → count silence
                     speech_buffer.append(audio_chunk.copy())
                     if silence_start is None:
                         silence_start = time.time()
                     elif time.time() - silence_start >= self.silence_threshold:
-                        # Silence long enough → end of speech segment
-                        break
-                elif (max_wait_for_speech is not None
-                      and (time.time() - wait_start) >= max_wait_for_speech):
-                    # Armed for a command but nobody spoke in time.
-                    return None
+                        # Segment complete: hand it off and keep listening.
+                        self._enqueue_segment(speech_buffer)
+                        speech_buffer = []
+                        is_speaking = False
+                        silence_start = None
 
+    def _enqueue_segment(self, speech_buffer):
+        """Queue a finished segment for the transcription worker (bounded)."""
         if not speech_buffer:
-            return None
-
-        # Concatenate speech buffer
+            return
         audio_data = np.concatenate(speech_buffer, axis=0).flatten()
         duration = len(audio_data) / self.capture_sample_rate
-
         if duration < self.min_speech_seconds:
             self.get_logger().debug(
-                f'Speech too short ({duration:.2f}s < {self.min_speech_seconds}s), skipping'
-            )
-            return None
+                f'Speech too short ({duration:.2f}s), skipping')
+            return
+        self.get_logger().info(f'Captured {duration:.1f}s of speech, queued.')
+        # Drop the oldest stale segment rather than let a backlog grow if
+        # transcription is lagging behind capture.
+        if self._audio_queue.qsize() >= self._max_queued_segments:
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                pass
+        self._audio_queue.put(audio_data)
 
-        self.get_logger().info(f'Captured {duration:.1f}s of speech, transcribing...')
-        return self._transcribe(audio_data)
+    # ── Transcription worker + two-stage wake FSM ───────────────────
 
-    # ── Two-stage wake FSM ──────────────────────────────────────────
+    def _transcribe_worker(self):
+        """Consumer: transcribe queued segments and drive the wake FSM. Runs on
+        its own thread so capture never stops while Whisper decodes."""
+        while self._running and rclpy.ok():
+            if self._phase == 'command':
+                remaining = self._command_deadline - time.time()
+                if remaining <= 0:
+                    self._handle_segment(None)      # window elapsed -> disarm
+                    continue
+                try:
+                    audio = self._audio_queue.get(timeout=remaining)
+                except queue.Empty:
+                    self._handle_segment(None)      # window elapsed -> disarm
+                    continue
+                text = self._transcribe(audio)
+                if not text:
+                    continue    # empty/garbage segment: keep the window open
+                self._handle_segment(text)          # -> publish command, disarm
+            else:  # wait_wake — block for a segment, waking periodically to exit
+                try:
+                    audio = self._audio_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                text = self._transcribe(audio)
+                self._handle_segment(text)          # wake decision
 
     def _publish_status(self, status):
         msg = String()

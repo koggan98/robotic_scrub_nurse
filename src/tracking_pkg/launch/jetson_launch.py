@@ -349,13 +349,9 @@ def generate_launch_description():
         # needs world→tray_camera_color_optical_frame, which still arrives on the
         # NUC from this node's aruco_marker_manager over DDS.
 
-        # ── Sound ─────────────────────────────────────────────────
-        Node(
-            package='tracking_pkg',
-            executable='handover_sound_publisher.py',
-            name='handover_sound_publisher',
-            output='screen',
-        ),
+        # ── Sound: intentionally NOT started — the Jetson has no speakers.
+        # (handover_sound_publisher still exists for hosts that do; see
+        # llm_launch.py. The HRI display carries the surgeon-facing feedback.)
 
         # ── ASR (Whisper — CPU on the Jetson, ctranslate2 has no CUDA build) ──
         # Loaded last (13 s) and thread-capped so it doesn't peg all 6 cores /
