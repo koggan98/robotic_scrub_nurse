@@ -68,7 +68,9 @@ def resolve_display(alert_active, alert_text, system_state, active_tool_class,
     if alert_active:
         return ('red', 'ALERT', alert_text, 'blink')
     if system_state in _RECOVERY_ERROR:
-        return ('red', 'RECOVERY', 'Send robot home', 'blink')
+        tool = pretty_tool(active_tool_class)
+        detail = f'{tool} held — return tool' if tool else 'Send robot home'
+        return ('red', 'RECOVERY', detail, 'blink')
     if system_state in _MOVING:
         tool = pretty_tool(active_tool_class)
         if system_state == 'RETURNING':

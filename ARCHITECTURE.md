@@ -94,17 +94,22 @@ RViz live only on the NUC.
    `return_tool`, `release_tool`, `return_home`, `abort`. Each returns a JSON result string the
    model reasons about (retry / disambiguate / stop). Terse status is published on `/system_response`.
 4. `skill_executor_node` (NUC) executes motion. `pick_tool` pre-plans approach→descend→lift for each
-   candidate (confidence order) and only commits to a fully-plannable one. Reclaim picks run up to
+   candidate (confidence order) and only commits to a fully-plannable one. Instrument-tray grasp
+   pre-flights constrain `elbow_joint >= 0` and independently validate every trajectory point, so an
+   Elbow-down IK branch is rejected before any gripper command; the constraint does not leak into
+   later motion. Reclaim picks run up to
    two complete pre-flight rounds from the unchanged lower staging pose; a failed first round causes
    no motion, perception refresh, or Home retreat. Physical grasp/execution/loss failures are not
    retried locally. Generic picks attach a `held_tool` collision box after clearing their tray.
    `ReturnToolHome` instead extends each pre-flight through approach→descent→4 cm lift→the fixed
-   `instrument_stage_joints` pose→a controlled `instrument_left_stage` transit. All legs use chained
-   future start states and execute from the cached plans after grasping. Its hardware-validated
-   reclaim-to-Left-Stage corridor intentionally has no hypothetical tool box; the real box is
-   attached at Left-Stage, before the collision-checked Home/slot plans. Right-side slots require a
-   complete Cartesian Left-Stage→Home leg with fixed orientation and no pan/RRT fallback; left slots
-   start locally from Left-Stage. Other reclaim routes retain `exitReclaimToUpper`.
+   `instrument_stage_joints` pose→the complete taught `instrument_left_stage` TCP pose. For a
+   right-side slot, the pre-flight continues through a complete Cartesian interpolation to the full
+   taught Home TCP pose, including its orientation; it does not freeze the Left-Stage orientation.
+   All legs use chained future start states and execute from cached plans after grasping, so a
+   right-corridor planning failure leaves the tool untouched on reclaim. This hardware-validated
+   fixed corridor intentionally has no hypothetical tool box; the real box is attached at
+   Left-Stage for left slots or Home for right slots, before the collision-checked local slot plan.
+   Other reclaim routes retain `exitReclaimToUpper`.
 5. `handover_tool` sets `/handover_waiting=true`, waits for the surgeon's `double_open_close` gesture
    on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
    `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
@@ -122,12 +127,15 @@ RViz live only on the NUC.
    `grasp_check.loss_confirm_delay_sec=0.1` and reports loss only if both are negative.
 7. The executor broadcasts `STATE:tool_id:tool_class` on `/system_state_update`; `world_model_node`
    folds this back into the world model (`gripper_holds_tool`, active tool, state).
-8. On a post-grasp `ReturnToolHome` execution/place failure, the executor stops, waits 0.25 s,
-   detaches the planning box, opens at the current pose, publishes `DROPPED`, and replans Home from
-   the live state. It does not attempt to carry the tool back to reclaim. If Home fails it publishes
-   `RECOVERY_ERROR` and rejects new pick-like goals until `return_home` succeeds; it does not publish
-   a false `IDLE`. On other dropped/lost tools the executor surfaces `tool_lost`/`grasp_failed`; the router can
-   start an **autonomous** LLM turn (no human command) to re-pick by class, capped at 2 retries.
+8. On a post-grasp `ReturnToolHome` execution/place failure, the executor stops and confirms the
+   Robotiq state. If the tool is still held, it waits 0.25 s, keeps the gripper closed and the
+   collision box attached, publishes `RECOVERY_ERROR` with the held tool identity, and rejects new
+   pick-like goals. `return_home` can reposition the arm but cannot publish `IDLE` while this holding
+   lock is active; `return_tool` or an explicit `release_tool` clears it. Only a fresh negative grasp
+   check permits the existing `DROPPED`/open recovery; a timeout remains inconclusive and keeps the
+   gripper closed. On other dropped/lost tools the executor
+   surfaces `tool_lost`/`grasp_failed`; the router can start an **autonomous** LLM turn (no human
+   command) to re-pick by class, capped at 2 retries.
 9. `handover_sound_publisher` plays canned WAV cues for `gesture_detected` and unreachable events
    via the first available backend (`paplay`, `pw-play`, then `aplay`).
 

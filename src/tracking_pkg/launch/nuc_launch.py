@@ -162,6 +162,10 @@ def generate_launch_description():
                         'reclaim_z_offset':                  0.001,
                         'approach_height_m':                 0.04,
                         'tool_yaw_offset_rad':               1.57079632679,
+                        # Dynamic instrument-tray IK must remain elbow-up. If a
+                        # complete approach/descend/lift path with elbow >= 0 is
+                        # unavailable, the executor does not close the gripper.
+                        'instrument_pick.elbow_min_rad':     0.0,
                         # One local re-plan from the unchanged lower reclaim
                         # stage before a failed pre-flight retreats to Home.
                         'reclaim_preflight_attempts':        2,

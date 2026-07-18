@@ -4,6 +4,7 @@
 #include <vector>
 #include <limits>
 
+#include "tracking_pkg/elbow_up_guard.hpp"
 #include "tracking_pkg/preflight_retry.hpp"
 #include "tracking_pkg/return_home_route.hpp"
 
@@ -108,13 +109,84 @@ TEST(ReturnHomeRoute, UsesFixedPostLiftPhaseOrder) {
 
 TEST(ReturnHomeRoute, ValidatesSixFiniteStageJoints) {
   using tracking_pkg::execution::isValidSixJointPose;
-  EXPECT_TRUE(isValidSixJointPose({
-    4.8766698837, -1.1527752441, 1.1332219283,
-    -1.5510326673, -1.5708482901, -2.9439778964}));
+  EXPECT_TRUE(
+    isValidSixJointPose(
+    {
+      4.8766698837, -1.1527752441, 1.1332219283,
+      -1.5510326673, -1.5708482901, -2.9439778964}));
   EXPECT_FALSE(isValidSixJointPose({1.0, 2.0, 3.0, 4.0, 5.0}));
-  EXPECT_FALSE(isValidSixJointPose({
-    1.0, 2.0, 3.0, 4.0, 5.0,
-    std::numeric_limits<double>::quiet_NaN()}));
+  EXPECT_FALSE(
+    isValidSixJointPose(
+    {
+      1.0, 2.0, 3.0, 4.0, 5.0,
+      std::numeric_limits<double>::quiet_NaN()}));
+}
+
+TEST(ReturnHomeRoute, AddsCachedHomeTransitOnlyForRightSlots) {
+  using tracking_pkg::execution::returnHomeNeedsHomeTransit;
+  EXPECT_TRUE(returnHomeNeedsHomeTransit(0.01, 0.0));
+  EXPECT_FALSE(returnHomeNeedsHomeTransit(0.0, 0.0));
+  EXPECT_FALSE(returnHomeNeedsHomeTransit(-0.01, 0.0));
+  EXPECT_FALSE(
+    returnHomeNeedsHomeTransit(
+      std::numeric_limits<double>::quiet_NaN(), 0.0));
+}
+
+TEST(ReturnHomeRoute, KeepsClosedOnPostGraspMotionFailure) {
+  using tracking_pkg::execution::PostGraspFailureDisposition;
+  using tracking_pkg::execution::postGraspFailureDisposition;
+  EXPECT_EQ(
+    postGraspFailureDisposition(true),
+    PostGraspFailureDisposition::KEEP_HOLDING);
+  EXPECT_EQ(
+    postGraspFailureDisposition(false),
+    PostGraspFailureDisposition::CONFIRMED_NOT_HELD);
+  EXPECT_EQ(
+    postGraspFailureDisposition(std::nullopt),
+    PostGraspFailureDisposition::KEEP_HOLDING);
+}
+
+TEST(InstrumentElbowUpGuard, AcceptsPositiveTrajectoryIncludingZero) {
+  const auto result = tracking_pkg::execution::checkJointMinimum(
+    {"shoulder_pan_joint", "elbow_joint"},
+    {{1.0, 1.2}, {1.1, 0.0}, {1.2, 0.8}},
+    "elbow_joint", 0.0);
+  EXPECT_TRUE(result.valid);
+  EXPECT_DOUBLE_EQ(result.minimum, 0.0);
+  EXPECT_DOUBLE_EQ(result.final, 0.8);
+}
+
+TEST(InstrumentElbowUpGuard, RejectsOneNegativeTrajectoryPoint) {
+  const auto result = tracking_pkg::execution::checkJointMinimum(
+    {"shoulder_pan_joint", "elbow_joint"},
+    {{1.0, 1.2}, {1.1, -0.01}, {1.2, 0.8}},
+    "elbow_joint", 0.0);
+  EXPECT_FALSE(result.valid);
+  EXPECT_NE(result.reason.find("below required minimum"), std::string::npos);
+}
+
+TEST(InstrumentElbowUpGuard, RejectsMissingJointAndEmptyTrajectory) {
+  const auto missing = tracking_pkg::execution::checkJointMinimum(
+    {"shoulder_pan_joint"}, {{1.0}}, "elbow_joint", 0.0);
+  EXPECT_FALSE(missing.valid);
+  EXPECT_NE(missing.reason.find("missing joint"), std::string::npos);
+
+  const auto empty = tracking_pkg::execution::checkJointMinimum(
+    {"elbow_joint"}, {}, "elbow_joint", 0.0);
+  EXPECT_FALSE(empty.valid);
+  EXPECT_NE(empty.reason.find("no points"), std::string::npos);
+}
+
+TEST(InstrumentElbowUpGuard, RejectsInvalidConfiguredMinimum) {
+  using tracking_pkg::execution::isValidInstrumentElbowMinimum;
+  EXPECT_TRUE(isValidInstrumentElbowMinimum(0.0));
+  EXPECT_FALSE(isValidInstrumentElbowMinimum(-0.01));
+  EXPECT_FALSE(
+    isValidInstrumentElbowMinimum(
+      std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(
+    isValidInstrumentElbowMinimum(
+      tracking_pkg::execution::kUrElbowUpperLimitRad));
 }
 
 }  // namespace

@@ -20,6 +20,8 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit/robot_state/robot_state.h>
+#include <moveit_msgs/msg/constraints.hpp>
+#include <moveit_msgs/msg/joint_constraint.hpp>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
 // MoveGroupInterface::Plan member is `trajectory_` on Humble but `trajectory` on
@@ -53,6 +55,7 @@
 #include <tracking_msgs/action/return_tool.hpp>
 #include <tracking_msgs/action/return_tool_home.hpp>
 
+#include "tracking_pkg/elbow_up_guard.hpp"
 #include "tracking_pkg/preflight_retry.hpp"
 #include "tracking_pkg/return_home_route.hpp"
 
@@ -66,6 +69,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -240,6 +244,19 @@ public:
         reclaim_z_offset_m_ = declare_parameter("reclaim_z_offset", 0.009);
         approach_height_m_ = declare_parameter("approach_height_m", 0.04);
         tool_yaw_offset_rad_ = declare_parameter("tool_yaw_offset_rad", 1.57079632679);
+        // Dynamic instrument-tray IK must stay on the elbow-up branch. A pose
+        // target otherwise lets KDL/RRTConnect choose the negative branch, where
+        // the held-tool box can already intersect upper_arm_link after the lift.
+        instrument_pick_elbow_min_rad_ = declare_parameter(
+            "instrument_pick.elbow_min_rad", 0.0);
+        if (!tracking_pkg::execution::isValidInstrumentElbowMinimum(
+                instrument_pick_elbow_min_rad_)) {
+            const std::string message =
+                "instrument_pick.elbow_min_rad must be finite and satisfy "
+                "0.0 <= value < pi";
+            RCLCPP_FATAL(get_logger(), "%s", message.c_str());
+            throw std::invalid_argument(message);
+        }
         // The held tool's collision box, measured FROM THE JAWS along the tool —
         // not from its middle. See attachToolBox().
         tool_box_handle_m_ = declare_parameter("tool_box_handle_m", 0.08);
@@ -680,7 +697,8 @@ private:
             current_state_ = state;
             if (state == "PICKING" || state == "TRANSPORTING"
                 || state == "HANDOVER" || state == "RELEASING"
-                || state == "PRESENTING" || state == "HOLDING") {
+                || state == "PRESENTING" || state == "HOLDING"
+                || (state == "RECOVERY_ERROR" && !tool_id.empty())) {
                 active_tool_id_ = tool_id;
                 active_tool_class_ = tool_class;
             } else if (state == "IDLE" || state == "RECOVERY_ERROR") {
@@ -822,14 +840,22 @@ private:
 
     bool planPoseTarget(const geometry_msgs::msg::Pose &pose,
                         moveit::planning_interface::MoveGroupInterface::Plan &plan_out,
-                        std::string &err) {
+                        std::string &err,
+                        const moveit_msgs::msg::Constraints *path_constraints = nullptr) {
         move_group_->setMaxVelocityScalingFactor(velocity_scale_);
         move_group_->setMaxAccelerationScalingFactor(acceleration_scale_);
+        // Never inherit a constraint from an earlier plan. The instrument
+        // elbow-up constraint is scoped to this one planning request.
+        move_group_->clearPathConstraints();
+        if (path_constraints) {
+            move_group_->setPathConstraints(*path_constraints);
+        }
         move_group_->setPoseTarget(pose);
         // No start-state resync on retry: the caller set it (pre-flight chains
         // plan from the end of the previous leg, not from the live robot).
         const bool ok = planWithRetry(plan_out, false, err);
         move_group_->clearPoseTargets();
+        move_group_->clearPathConstraints();
         if (!ok) err = "planning to pose target failed: " + err;
         return ok;
     }
@@ -837,13 +863,17 @@ private:
     bool planLinearPose(const geometry_msgs::msg::Pose &pose,
                         moveit::planning_interface::MoveGroupInterface::Plan &plan_out,
                         std::string &err,
-                        double required_fraction = -1.0) {
+                        double required_fraction = -1.0,
+                        const moveit_msgs::msg::Constraints *path_constraints = nullptr) {
         move_group_->setMaxVelocityScalingFactor(velocity_scale_);
         move_group_->setMaxAccelerationScalingFactor(acceleration_scale_);
         std::vector<geometry_msgs::msg::Pose> waypoints{pose};
         moveit_msgs::msg::RobotTrajectory traj;
-        const double fraction = move_group_->computeCartesianPath(
-            waypoints, 0.005, 0.0, traj);
+        const double fraction = path_constraints
+            ? move_group_->computeCartesianPath(
+                waypoints, 0.005, 0.0, traj, *path_constraints, true)
+            : move_group_->computeCartesianPath(
+                waypoints, 0.005, 0.0, traj);
         const double minimum = required_fraction >= 0.0
                                    ? required_fraction
                                    : cartesian_min_fraction_;
@@ -986,46 +1016,6 @@ private:
             "Transit: straight move not clean (%s), using a planned move that still "
             "holds the grasp orientation.", lin_err.c_str());
         return moveToPoseTarget(target, err);
-    }
-
-    // Move from an already reached transit point to another transit POSITION in
-    // one straight Cartesian leg while preserving the held tool's orientation.
-    // Unlike moveAcrossKeepingOrientation this deliberately performs no initial
-    // shoulder-pan rotation and has no pose-target/RRT fallback. It is used for
-    // the observed-safe left-stage -> home corridor: an isolated home pan first
-    // swings the TCP beyond home, after which it has to travel back again.
-    bool moveLinearlyToTransitKeepingOrientation(
-        const std::vector<double> &transit,
-        std::string &err) {
-        if (transit.size() != joint_state_names_.size()) {
-            err = "transit joints must have " +
-                  std::to_string(joint_state_names_.size()) + " values";
-            return false;
-        }
-
-        geometry_msgs::msg::Pose target;
-        if (!jointsToTcpPose(transit, target, err)) {
-            err = "linear transit FK: " + err;
-            return false;
-        }
-        target.orientation = move_group_->getCurrentPose(end_effector_link_)
-                                 .pose.orientation;
-
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
-        move_group_->setStartStateToCurrentState();
-        // This safety corridor must reach the complete Home TCP target. A partial
-        // Cartesian trajectory would leave the following slot approach starting
-        // from an unintended pose and could reintroduce a large corrective move.
-        constexpr double kCompletePathFraction = 1.0 - 1e-6;
-        if (!planLinearPose(target, plan, err, kCompletePathFraction)) {
-            err = "complete linear transit required: " + err;
-            return false;
-        }
-        if (!executePlan(plan, err)) {
-            err = "linear transit execute: " + err;
-            return false;
-        }
-        return true;
     }
 
     // TCP pose (position + orientation of end_effector_link) at a set of joint
@@ -1303,18 +1293,19 @@ private:
         }
     }
 
-    // A post-grasp ReturnToolHome failure must never launch another speculative
-    // corridor while holding the tool. Stop, wait for the joints to settle,
-    // remove the attached box, deliberately open at the current pose, publish a
-    // truthful DROPPED event, and only then plan Home from the fresh live state.
-    bool abortHoldingAndGoHome(const std::string &reason, std::string &err) {
+    // Use only after a grasp check explicitly reports that the tool is no longer
+    // held. Stop, clean up the now-stale collision representation, publish a
+    // truthful DROPPED event, and plan Home from the fresh live state.
+    bool recoverAfterConfirmedToolLoss(
+        const std::string &reason, std::string &err) {
         RCLCPP_WARN(get_logger(),
-            "Post-grasp recovery (%s): stopping, dropping at current pose, "
-            "then returning home.",
+            "Confirmed tool-loss recovery (%s): stopping, opening the empty "
+            "gripper, then returning home.",
             reason.c_str());
         transporting_.store(false);
         if (move_group_) move_group_->stop();
         rclcpp::sleep_for(std::chrono::milliseconds(250));
+        recovery_holds_tool_.store(false);
         detachToolBox();
         publishGripper(true);   // open
         sleepForGripper();
@@ -1339,6 +1330,26 @@ private:
         publishState("IDLE", "", "");
         err = "tool_lost: " + reason;
         return true;
+    }
+
+    // A ReturnToolHome corridor/placement failure while the gripper still
+    // positively holds the tool is not a reason to release it. Freeze safely
+    // and keep the planning box attached. return_home may reposition the arm,
+    // but only return_tool (or a deliberate release) clears this holding lock.
+    void enterHoldingRecovery(
+        const std::string &reason,
+        const std::string &tool_id,
+        const std::string &tool_class,
+        std::string &err) {
+        transporting_.store(false);
+        if (move_group_) move_group_->stop();
+        rclcpp::sleep_for(std::chrono::milliseconds(250));
+        recovery_holds_tool_.store(true);
+        recovery_error_.store(true);
+        publishState("RECOVERY_ERROR", tool_id, tool_class);
+        err = "holding_recovery: " + reason +
+              "; gripper remains closed — use return_home and/or return_tool";
+        RCLCPP_ERROR(get_logger(), "%s", err.c_str());
     }
 
     // ── Gripper primitives ───────────────────────────────────────────
@@ -1457,11 +1468,10 @@ private:
         return tool_grasped_value_;
     }
 
-    // Fresh check of whether the gripper currently holds a tool, used as a guard
-    // before a new pick. Forces a /verify_grasp query so the answer reflects the
-    // real gOBJ now (not a possibly-stale monitor value). A timeout assumes NOT
-    // holding, so a gripper-comms hiccup never blocks all picks.
-    bool freshGripperHoldsTool() {
+    // Return a fresh tri-state grasp result. In particular, a timeout remains
+    // unknown: post-grasp recovery must never translate missing Robotiq data into
+    // permission to open the gripper.
+    std::optional<bool> freshGripperHoldState() {
         std::unique_lock<std::mutex> lock(tool_grasped_mutex_);
         tool_grasped_received_ = false;
         lock.unlock();
@@ -1473,11 +1483,22 @@ private:
                 std::chrono::duration<double>(grasp_check_timeout_sec_)),
             [this] { return tool_grasped_received_; });
         if (!ok) {
+            return std::nullopt;
+        }
+        return tool_grasped_value_;
+    }
+
+    // Fresh check used by the pre-pick holding guard and normal place logic.
+    // Preserve the established pre-pick timeout policy here; safety-critical
+    // post-grasp recovery uses freshGripperHoldState() directly instead.
+    bool freshGripperHoldsTool() {
+        const auto state = freshGripperHoldState();
+        if (!state.has_value()) {
             RCLCPP_WARN(get_logger(),
                 "Holding-guard re-check timed out; assuming gripper empty.");
             return false;
         }
-        return tool_grasped_value_;
+        return *state;
     }
 
     // Blocks until a fresh double_open_close gesture arrives. Any gesture
@@ -1527,6 +1548,56 @@ private:
     // moves at all: reach above the tool (RRT), straight down onto it, straight
     // back up. For a reclaim pick the caller has already parked the arm at the
     // lower reclaim stage pose, so "the current state" is that launch pad.
+    moveit_msgs::msg::Constraints instrumentElbowUpConstraints() const {
+        moveit_msgs::msg::Constraints constraints;
+        constraints.name = "instrument_pick_elbow_up";
+        moveit_msgs::msg::JointConstraint elbow;
+        elbow.joint_name = "elbow_joint";
+        // JointConstraint describes a closed interval around `position`.
+        // Centre it between the configured minimum and the UR elbow's +pi hard
+        // limit so exactly 0.0 remains valid with the default setting.
+        elbow.position = 0.5 * (
+            instrument_pick_elbow_min_rad_ +
+            tracking_pkg::execution::kUrElbowUpperLimitRad);
+        elbow.tolerance_below =
+            elbow.position - instrument_pick_elbow_min_rad_;
+        elbow.tolerance_above =
+            tracking_pkg::execution::kUrElbowUpperLimitRad - elbow.position;
+        elbow.weight = 1.0;
+        constraints.joint_constraints.push_back(elbow);
+        return constraints;
+    }
+
+    bool validateElbowUpPlan(
+        const moveit::planning_interface::MoveGroupInterface::Plan &plan,
+        const std::string &leg,
+        double &minimum_out,
+        double &final_out,
+        std::string &err) const {
+        const auto &trajectory = plan.RSN_PLAN_TRAJECTORY.joint_trajectory;
+        std::vector<std::vector<double>> samples;
+        samples.reserve(trajectory.points.size());
+        for (const auto &point : trajectory.points) {
+            samples.push_back(point.positions);
+        }
+        const auto check = tracking_pkg::execution::checkJointMinimum(
+            trajectory.joint_names,
+            samples,
+            "elbow_joint",
+            instrument_pick_elbow_min_rad_);
+        if (!check.valid) {
+            err = "instrument elbow-up guard rejected " + leg + ": " +
+                  check.reason;
+            if (std::isfinite(check.minimum)) {
+                err += " (minimum=" + std::to_string(check.minimum) + " rad)";
+            }
+            return false;
+        }
+        minimum_out = check.minimum;
+        final_out = check.final;
+        return true;
+    }
+
     struct PickLegs {
         moveit::planning_interface::MoveGroupInterface::Plan approach;
         moveit::planning_interface::MoveGroupInterface::Plan descend;
@@ -1534,15 +1605,21 @@ private:
         moveit::planning_interface::MoveGroupInterface::Plan instrument_stage;
         moveit::planning_interface::MoveGroupInterface::Plan left_stage_pan;
         moveit::planning_interface::MoveGroupInterface::Plan left_stage_transit;
+        moveit::planning_interface::MoveGroupInterface::Plan home_transit;
         bool has_return_home_exit = false;
+        bool has_home_transit = false;
     };
 
     // Complete the ReturnToolHome-only pre-flight after the normal 4 cm lift.
     // The first leg reaches the hardware-taught joint pose exactly. The second
     // rotates only shoulder_pan toward the left side. The final leg reaches the
-    // left-stage TCP position while retaining the orientation produced by that
-    // base rotation. Every start state is the previous plan's future end state.
-    bool tryPlanReturnHomeExit(PickLegs &legs, std::string &err) {
+    // complete hardware-taught Left-Stage TCP pose. For a right-hand slot, an
+    // additional full-pose Cartesian leg reaches Home. Every start state is the
+    // previous plan's future end state.
+    bool tryPlanReturnHomeExit(
+        PickLegs &legs,
+        bool plan_home_transit,
+        std::string &err) {
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.lift));
         if (!planJointPositions(
                 instrument_stage_joints_, legs.instrument_stage, err, false)) {
@@ -1574,29 +1651,18 @@ private:
             return false;
         }
 
-        std::vector<double> pan_end;
-        if (!jointValuesFromPlanEnd(legs.left_stage_pan, pan_end, err)) {
-            err = "left-stage pan end state: " + err;
-            return false;
-        }
         geometry_msgs::msg::Pose left_target;
         if (!jointsToTcpPose(instrument_left_stage_joints_, left_target, err)) {
             err = "left-stage target FK: " + err;
             return false;
         }
-        geometry_msgs::msg::Pose pan_pose;
-        if (!jointsToTcpPose(pan_end, pan_pose, err)) {
-            err = "left-stage orientation FK: " + err;
-            return false;
-        }
-        left_target.orientation = pan_pose.orientation;
 
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.left_stage_pan));
         std::string linear_err;
         if (!planLinearPose(left_target, legs.left_stage_transit, linear_err)) {
-            // This is the same controlled fallback used by
-            // moveAcrossKeepingOrientation(), but it is planned now and cached;
-            // nothing is re-planned after the grasp.
+            // The fixed Left-Stage pose may need a joint-space solution from the
+            // taught shoulder-pan waypoint. It is planned now and cached; nothing
+            // is re-planned after the grasp.
             move_group_->setStartState(
                 makeStartStateFromPlanEnd(legs.left_stage_pan));
             if (!planPoseTarget(
@@ -1607,18 +1673,42 @@ private:
             }
         }
         legs.has_return_home_exit = true;
+
+        if (plan_home_transit) {
+            geometry_msgs::msg::Pose home_target;
+            if (!jointsToTcpPose(home_joints_, home_target, err)) {
+                err = "home target FK: " + err;
+                return false;
+            }
+            move_group_->setStartState(
+                makeStartStateFromPlanEnd(legs.left_stage_transit));
+            // Both endpoints are taught full TCP poses. Interpolate position and
+            // orientation together; freezing the Left-Stage orientation made IK
+            // stop consistently around 35.9% of this corridor.
+            constexpr double kCompletePathFraction = 1.0 - 1e-6;
+            if (!planLinearPose(
+                    home_target, legs.home_transit, err,
+                    kCompletePathFraction)) {
+                err = "left-stage -> home full-pose plan: " + err;
+                return false;
+            }
+            legs.has_home_transit = true;
+        }
         return true;
     }
 
     bool tryPlanPickSequence(
         const tracking_msgs::msg::GraspCandidate &cand,
         double z_offset_m,
+        bool require_elbow_up,
         bool plan_return_home_exit,
+        bool plan_return_home_to_home,
         PickLegs &legs,
         geometry_msgs::msg::Pose &approach_pose_out,
         geometry_msgs::msg::Pose &grasp_pose_out,
         std::string &err) {
         legs.has_return_home_exit = false;
+        legs.has_home_transit = false;
         grasp_pose_out.position.x = cand.grasp_pose.pose.position.x;
         grasp_pose_out.position.y = cand.grasp_pose.pose.position.y;
         // Three terms, each with one job:
@@ -1636,22 +1726,63 @@ private:
         approach_pose_out = grasp_pose_out;
         approach_pose_out.position.z += approach_height_m_;
 
+        const moveit_msgs::msg::Constraints elbow_constraints =
+            require_elbow_up ? instrumentElbowUpConstraints()
+                             : moveit_msgs::msg::Constraints{};
+        const moveit_msgs::msg::Constraints *elbow_constraints_ptr =
+            require_elbow_up ? &elbow_constraints : nullptr;
+        double approach_min = 0.0, approach_final = 0.0;
+        double descend_min = 0.0, descend_final = 0.0;
+        double lift_min = 0.0, lift_final = 0.0;
+
         move_group_->setStartStateToCurrentState();
-        if (!planPoseTarget(approach_pose_out, legs.approach, err)) {
+        if (!planPoseTarget(
+                approach_pose_out, legs.approach, err,
+                elbow_constraints_ptr)) {
             err = "approach plan: " + err;
             return false;
         }
+        if (require_elbow_up && !validateElbowUpPlan(
+                legs.approach, "approach", approach_min, approach_final, err)) {
+            return false;
+        }
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.approach));
-        if (!planLinearPose(grasp_pose_out, legs.descend, err)) {
+        if (!planLinearPose(
+                grasp_pose_out, legs.descend, err, -1.0,
+                elbow_constraints_ptr)) {
             err = "descend plan: " + err;
             return false;
         }
+        if (require_elbow_up && !validateElbowUpPlan(
+                legs.descend, "descend", descend_min, descend_final, err)) {
+            return false;
+        }
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.descend));
-        if (!planLinearPose(approach_pose_out, legs.lift, err)) {
+        if (!planLinearPose(
+                approach_pose_out, legs.lift, err, -1.0,
+                elbow_constraints_ptr)) {
             err = "lift plan: " + err;
             return false;
         }
-        if (plan_return_home_exit && !tryPlanReturnHomeExit(legs, err)) {
+        if (require_elbow_up && !validateElbowUpPlan(
+                legs.lift, "lift", lift_min, lift_final, err)) {
+            return false;
+        }
+        if (require_elbow_up) {
+            const double minimum = std::min(
+                approach_min, std::min(descend_min, lift_min));
+            constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+            RCLCPP_INFO(get_logger(),
+                "Instrument elbow-up pre-flight accepted for %s: minimum "
+                "elbow %.1f deg; leg endpoints approach=%.1f, descend=%.1f, "
+                "lift=%.1f deg (required >= %.1f deg).",
+                cand.tool_id.c_str(), minimum * kRadToDeg,
+                approach_final * kRadToDeg, descend_final * kRadToDeg,
+                lift_final * kRadToDeg,
+                instrument_pick_elbow_min_rad_ * kRadToDeg);
+        }
+        if (plan_return_home_exit && !tryPlanReturnHomeExit(
+                legs, plan_return_home_to_home, err)) {
             err = "return-home exit plan: " + err;
             return false;
         }
@@ -1683,7 +1814,8 @@ private:
                        geometry_msgs::msg::Pose &grasp_pose_out,
                        geometry_msgs::msg::Pose &approach_pose_out,
                        std::string &err,
-                       bool plan_return_home_exit = false) {
+                       bool plan_return_home_exit = false,
+                       bool plan_return_home_to_home = false) {
         if (recovery_error_.load()) {
             err = "recovery_failed: executor is in RECOVERY_ERROR; "
                   "return_home must succeed before another grasp";
@@ -1730,6 +1862,8 @@ private:
         }
 
         const bool reclaim = (location_filter == kReclaimLocation);
+        const bool require_elbow_up =
+            (location_filter == kInstrumentLocation);
         const double z_off = reclaim ? reclaim_z_offset_m_ : z_offset_m_;
 
         // A reclaim pick is planned from the lower reclaim pad, so get there first.
@@ -1767,7 +1901,9 @@ private:
             [&](const tracking_msgs::msg::GraspCandidate &cand,
                 int attempt, std::string &rejection) {
                 std::string plan_err;
-                if (tryPlanPickSequence(cand, z_off, plan_return_home_exit, legs,
+                if (tryPlanPickSequence(cand, z_off, require_elbow_up,
+                                        plan_return_home_exit,
+                                        plan_return_home_to_home, legs,
                                         approach_pose, grasp_pose, plan_err)) {
                     chosen = cand;
                     return true;
@@ -1914,9 +2050,10 @@ private:
         }
 
         // ReturnToolHome executes the already-validated exit exactly as planned:
-        // lift -> fixed instrument stage -> controlled left-stage transit. No
-        // held_tool box exists on this hardware-validated corridor, and no plan
-        // is recomputed after the gripper closes.
+        // lift -> fixed instrument stage -> controlled full-pose left-stage
+        // transit -> (right slot only) full-pose Home transit. No held_tool box
+        // exists on this hardware-validated corridor, and no plan is recomputed
+        // after the gripper closes.
         if (reclaim && plan_return_home_exit) {
             if (!legs.has_return_home_exit) {
                 err = "post_grasp: cached ReturnToolHome exit is missing";
@@ -1955,10 +2092,10 @@ private:
                     case tracking_pkg::execution::ReturnHomeExitPhase::
                             LEFT_STAGE_TRANSIT:
                         plan = &legs.left_stage_transit;
-                        label = "left-stage orientation-preserving transit";
+                        label = "left-stage full-pose transit";
                         RCLCPP_INFO(get_logger(),
                             "ReturnToolHome cached exit: shoulder pan -> "
-                            "left-stage orientation-preserving transit.");
+                            "left-stage full-pose transit.");
                         break;
                 }
                 if (!plan || !executePlan(*plan, exit_err)) {
@@ -1966,13 +2103,27 @@ private:
                     return false;
                 }
             }
+            if (plan_return_home_to_home) {
+                if (!legs.has_home_transit) {
+                    err = "post_grasp: cached Left-Stage -> Home transit is missing";
+                    return false;
+                }
+                RCLCPP_INFO(get_logger(),
+                    "ReturnToolHome cached exit: left stage -> home full-pose "
+                    "Cartesian transit.");
+                if (!executePlan(legs.home_transit, exit_err)) {
+                    err = "post_grasp: cached left-stage -> home exec: " + exit_err;
+                    return false;
+                }
+            }
             if (!freshGripperHoldsTool()) {
-                err = "post_grasp: tool_lost on cached exit to left stage";
+                err = "post_grasp: tool_lost on cached exit to " +
+                      std::string(plan_return_home_to_home ? "home" : "left stage");
                 return false;
             }
 
             // Only now is the real tool represented in the planning scene. The
-            // subsequent Home/slot plans retain their full collision checking.
+            // subsequent local slot plans retain their full collision checking.
             attachToolBox(chosen, grasp_pose);
             return true;
         }
@@ -2040,7 +2191,8 @@ private:
                 bool hd = false;
                 if (!lastToolGrasped(hd) && hd) {
                     transporting_.store(false);
-                    abortHoldingAndGoHome("tool dropped returning home before handover", err);
+                    recoverAfterConfirmedToolLoss(
+                        "tool dropped returning home before handover", err);
                     return false;
                 }
                 transporting_.store(false);
@@ -2056,7 +2208,8 @@ private:
             bool hd = false;
             if (!lastToolGrasped(hd) && hd) {
                 transporting_.store(false);
-                abortHoldingAndGoHome("tool dropped during present rotation", err);
+                recoverAfterConfirmedToolLoss(
+                    "tool dropped during present rotation", err);
                 return false;
             }
         }
@@ -2075,7 +2228,8 @@ private:
             bool hd = false;
             if (!lastToolGrasped(hd) && hd) {
                 transporting_.store(false);
-                abortHoldingAndGoHome("tool dropped during pre-orient", err);
+                recoverAfterConfirmedToolLoss(
+                    "tool dropped during pre-orient", err);
                 return false;
             }
         }
@@ -2173,7 +2327,8 @@ private:
                     // Tool fell out while waiting? Treat as a loss and retry.
                     bool have_grasp_data = false;
                     if (!lastToolGrasped(have_grasp_data) && have_grasp_data) {
-                        abortHoldingAndGoHome("gripper empty during handover", err);
+                        recoverAfterConfirmedToolLoss(
+                            "gripper empty during handover", err);
                         return false;
                     }
                     bool preempted = false;
@@ -2248,7 +2403,8 @@ private:
         bool have_grasp_data = false;
         const bool still_holding = lastToolGrasped(have_grasp_data);
         if (have_grasp_data && !still_holding) {
-            abortHoldingAndGoHome("gripper empty before handover", err);
+            recoverAfterConfirmedToolLoss(
+                "gripper empty before handover", err);
             return false;
         }
 
@@ -2347,9 +2503,9 @@ private:
     //
     // Instrument tray: reach the slot's side through a taught transit pose first,
     // then plan the short local approach from there (approach RRT -> descend ->
-    // release -> lift). A Reclaim->RIGHT return goes through left stage, then in
-    // one straight Cartesian leg to home; Reclaim->LEFT stops at left stage. Other
-    // callers keep their existing transit behavior.
+    // release -> lift). A Reclaim->RIGHT ReturnToolHome arrives here only after
+    // its cached full-pose Left-Stage->Home leg; Reclaim->LEFT arrives at
+    // Left-Stage. Other callers keep their existing transit behavior.
     //
     // Reclaim tray (used by normal return_tool): stage through the two reclaim
     // pads exactly like a reclaim grasp —
@@ -2358,6 +2514,7 @@ private:
     enum class PlaceRouteContext {
         DEFAULT,
         RETURN_HOME_AT_LEFT_STAGE,
+        RETURN_HOME_AT_HOME,
     };
 
     bool placeToolAt(const std::string &location,
@@ -2399,11 +2556,12 @@ private:
             const bool right = release_pose.position.x > instrument_right_side_x_;
             const bool already_at_left_stage =
                 route_context == PlaceRouteContext::RETURN_HOME_AT_LEFT_STAGE;
-            // Keep the held tool's orientation across the transit — do not snap the
-            // wrist to the transit pose and rotate the tool back at the approach.
-            // A LEFT slot is reached directly via the left stage pose. A RIGHT
-            // slot goes via the left stage FIRST and then to home.
-            if (right && !already_at_left_stage) {
+            const bool already_at_home =
+                route_context == PlaceRouteContext::RETURN_HOME_AT_HOME;
+            // Generic placement keeps the held tool's orientation across its
+            // transit. ReturnToolHome instead arrives through its cached route:
+            // a LEFT slot from Left-Stage, a RIGHT slot from Home.
+            if (right && !already_at_left_stage && !already_at_home) {
                 std::string via_err;
                 if (!moveAcrossKeepingOrientation(
                         instrument_left_stage_joints_, via_err)) {
@@ -2414,7 +2572,16 @@ private:
                         "home directly.", via_err.c_str());
                 }
             }
-            if (already_at_left_stage && !right) {
+            if (already_at_home) {
+                RCLCPP_INFO(get_logger(),
+                    "ReturnToolHome route: cached full-pose transit already "
+                    "reached Home; planning local right-slot approach.");
+            } else if (already_at_left_stage) {
+                if (right) {
+                    err = "internal ReturnToolHome route mismatch: right slot "
+                          "did not pre-plan the cached Home transit";
+                    return false;
+                }
                 RCLCPP_INFO(get_logger(),
                     "ReturnToolHome route: already at left stage; planning local "
                     "left-slot approach.");
@@ -2422,16 +2589,8 @@ private:
                 const std::vector<double> &transit =
                     right ? home_joints_ : instrument_left_stage_joints_;
                 std::string transit_err;
-                bool transit_ok = false;
-                if (already_at_left_stage) {
-                RCLCPP_INFO(get_logger(),
-                    "ReturnToolHome route: left stage -> home linear "
-                    "(no shoulder-pan pre-rotation, no RRT fallback).");
-                transit_ok = moveLinearlyToTransitKeepingOrientation(
-                    home_joints_, transit_err);
-                } else {
-                    transit_ok = moveAcrossKeepingOrientation(transit, transit_err);
-                }
+                const bool transit_ok =
+                    moveAcrossKeepingOrientation(transit, transit_err);
                 if (!transit_ok) {
                     err = freshGripperHoldsTool()
                               ? (std::string("place route via ") +
@@ -2544,7 +2703,8 @@ private:
             // UNKNOWN) and go home, rather than reporting it neatly placed.
             if (err.rfind("tool_lost", 0) == 0) {
                 std::string lost_err;
-                abortHoldingAndGoHome("return_tool: " + err, lost_err);
+                recoverAfterConfirmedToolLoss(
+                    "return_tool: " + err, lost_err);
             }
             return false;
         }
@@ -2703,12 +2863,26 @@ private:
                 continue;
             }
 
+            // The side is already known from the untouched candidate: grasp x/y
+            // is exactly the point later returned by graspToolCore. For a right
+            // slot, extend the pre-flight through the complete fixed-pose
+            // Left-Stage -> Home leg before allowing the gripper to close.
+            const double planned_grasp_distance = std::hypot(
+                cand.grasp_pose.pose.position.x - cand.handle_center.x,
+                cand.grasp_pose.pose.position.y - cand.handle_center.y);
+            geometry_msgs::msg::Pose planned_release_pose;
+            computePlacePose(home, planned_grasp_distance, planned_release_pose);
+            const bool preplan_to_home =
+                tracking_pkg::execution::returnHomeNeedsHomeTransit(
+                    planned_release_pose.position.x,
+                    instrument_right_side_x_);
+
             tracking_msgs::msg::GraspCandidate chosen;
             geometry_msgs::msg::Pose grasp_pose, approach_pose;
             std::string grasp_err;
             if (!graspToolCore(cand.tool_id, kReclaimLocation,
                                chosen, grasp_pose, approach_pose, grasp_err,
-                               true)) {
+                               true, preplan_to_home)) {
                 RCLCPP_WARN(get_logger(), "Could not grasp %s: %s",
                             cand.tool_id.c_str(), grasp_err.c_str());
                 if (recovery_error_.load()) {
@@ -2718,10 +2892,27 @@ private:
                     return false;
                 }
                 if (grasp_err.rfind("post_grasp:", 0) == 0) {
-                    std::string recovery_err;
-                    abortHoldingAndGoHome(
-                        "return_tool_home: " + grasp_err, recovery_err);
-                    err = recovery_err;
+                    const auto still_held = freshGripperHoldState();
+                    if (!still_held.has_value()) {
+                        RCLCPP_WARN(get_logger(),
+                            "ReturnToolHome post-grasp check timed out; keeping "
+                            "the gripper closed conservatively.");
+                    }
+                    if (tracking_pkg::execution::postGraspFailureDisposition(
+                            still_held) == tracking_pkg::execution::
+                                PostGraspFailureDisposition::KEEP_HOLDING) {
+                        // The cached corridor failed, but the tool did not. Keep
+                        // it instead of opening at an arbitrary point.
+                        attachToolBox(chosen, grasp_pose);
+                        enterHoldingRecovery(
+                            "return_tool_home: " + grasp_err,
+                            chosen.tool_id, chosen.tool_class, err);
+                    } else {
+                        std::string recovery_err;
+                        recoverAfterConfirmedToolLoss(
+                            "return_tool_home: " + grasp_err, recovery_err);
+                        err = recovery_err;
+                    }
                     return false;
                 }
                 skipped_ids_out.push_back(cand.tool_id);
@@ -2749,19 +2940,36 @@ private:
                 release_pose.position.x, release_pose.position.y,
                 release_pose.position.z);
 
-            // graspToolCore has already executed the cached lift -> fixed
-            // instrument stage -> left-stage corridor and attached the real tool
-            // box there. Start only the side-specific Home/slot portion now.
+            // graspToolCore has already executed the complete cached corridor:
+            // right slots end at Home, left slots at Left-Stage. Only the local
+            // slot approach is planned after the grasp.
             std::string place_err;
             if (!placeToolAt(
                     kInstrumentLocation,
                     release_pose,
                     place_err,
-                    PlaceRouteContext::RETURN_HOME_AT_LEFT_STAGE)) {
-                std::string recovery_err;
-                abortHoldingAndGoHome(
-                    "return_tool_home placement: " + place_err, recovery_err);
-                err = recovery_err;
+                    preplan_to_home
+                        ? PlaceRouteContext::RETURN_HOME_AT_HOME
+                        : PlaceRouteContext::RETURN_HOME_AT_LEFT_STAGE)) {
+                const auto still_held = freshGripperHoldState();
+                if (!still_held.has_value()) {
+                    RCLCPP_WARN(get_logger(),
+                        "ReturnToolHome placement grasp check timed out; keeping "
+                        "the gripper closed conservatively.");
+                }
+                if (tracking_pkg::execution::postGraspFailureDisposition(
+                        still_held) == tracking_pkg::execution::
+                            PostGraspFailureDisposition::KEEP_HOLDING) {
+                    enterHoldingRecovery(
+                        "return_tool_home placement: " + place_err,
+                        chosen.tool_id, chosen.tool_class, err);
+                } else {
+                    std::string recovery_err;
+                    recoverAfterConfirmedToolLoss(
+                        "return_tool_home placement: " + place_err,
+                        recovery_err);
+                    err = recovery_err;
+                }
                 return false;
             }
 
@@ -3028,6 +3236,10 @@ private:
         const bool ok = doRelease(err);
         result->success = ok;
         result->message = ok ? "ok" : err;
+        if (ok) {
+            recovery_holds_tool_.store(false);
+            recovery_error_.store(false);
+        }
         publishIdleUnlessRecoveryError();
         if (ok) goal_handle->succeed(result);
         else    goal_handle->abort(result);
@@ -3056,13 +3268,31 @@ private:
             goal_handle->abort(result);
             return;
         }
-        std::string err;
+        std::string err, held_id, held_class;
+        const bool holding_recovery = recovery_holds_tool_.load();
+        if (holding_recovery) {
+            std::lock_guard<std::mutex> state_lock(state_mutex_);
+            held_id = active_tool_id_;
+            held_class = active_tool_class_;
+        }
         const bool ok = doReturnHomeInternal(err);
         result->success = ok;
-        result->message = ok ? "ok" : err;
+        result->message = ok
+            ? (holding_recovery
+                   ? "home reached; tool remains held — use return_tool"
+                   : "ok")
+            : err;
         if (ok) {
-            recovery_error_.store(false);
-            publishState("IDLE", "", "");
+            if (holding_recovery) {
+                recovery_error_.store(true);
+                publishState("RECOVERY_ERROR", held_id, held_class);
+                RCLCPP_WARN(get_logger(),
+                    "Home reached, but recovery tool remains held. IDLE is "
+                    "blocked until return_tool or release_tool succeeds.");
+            } else {
+                recovery_error_.store(false);
+                publishState("IDLE", "", "");
+            }
         } else {
             recovery_error_.store(true);
             publishState("RECOVERY_ERROR", "", "");
@@ -3109,6 +3339,10 @@ private:
         const bool ok = doReturnTool(err);
         result->success = ok;
         result->message = ok ? "ok" : err;
+        if (ok) {
+            recovery_holds_tool_.store(false);
+            recovery_error_.store(false);
+        }
         publishIdleUnlessRecoveryError();
         if (ok) {
             goal_handle->succeed(result);
@@ -3126,6 +3360,7 @@ private:
     double reclaim_z_offset_m_;
     double approach_height_m_;
     double tool_yaw_offset_rad_;
+    double instrument_pick_elbow_min_rad_;
     double tool_box_handle_m_;
     double tool_box_tip_m_;
     double tool_box_width_m_;
@@ -3210,9 +3445,13 @@ private:
     // True while the arm is transporting a grasped tool (present/pre-orient).
     // A /tool_grasped=false during this window stops the running motion.
     std::atomic<bool> transporting_{false};
-    // Set only when the forced-drop recovery could not reach Home. Pick-like
-    // goals are rejected until an explicit return_home succeeds.
+    // Blocks pick-like goals after an incomplete recovery. In the stronger
+    // recovery_holds_tool_ case, reaching Home alone deliberately does not clear
+    // this flag because the gripper still contains a tool.
     std::atomic<bool> recovery_error_{false};
+    // Stronger recovery state: the gripper intentionally remains closed around
+    // a tool. Reaching Home alone must not publish IDLE or clear the pick lock.
+    std::atomic<bool> recovery_holds_tool_{false};
     std::mutex gesture_mutex_;
     std::condition_variable gesture_cv_;
     bool gesture_received_ = false;

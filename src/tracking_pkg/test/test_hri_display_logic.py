@@ -89,6 +89,12 @@ def test_recovery_error_is_a_persistent_red_recovery_prompt():
         'red', 'RECOVERY', 'Send robot home', 'blink')
 
 
+def test_holding_recovery_prompts_operator_to_return_tool():
+    assert _r(
+        system_state='RECOVERY_ERROR', active_tool_class='hammer') == (
+        'red', 'RECOVERY', 'Hammer held — return tool', 'blink')
+
+
 # ── Priority ordering ───────────────────────────────────────────────
 
 def test_moving_beats_gesture_and_listening():

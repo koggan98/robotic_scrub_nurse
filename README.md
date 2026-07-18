@@ -190,27 +190,41 @@ second failed planning round does the executor retreat through the upper reclaim
 This local retry does not apply after a real empty grasp, an execution error, or a tool slipping
 during the lift; those cases retain their existing safe recovery behavior.
 
+Dynamic picks from the instrument tray use a hard Elbow-up guard. The MoveIt approach and both
+Cartesian grasp legs must keep `elbow_joint >= instrument_pick.elbow_min_rad` (fixed to `0.0` in
+`nuc_launch.py`), and the executor independently checks every generated trajectory point before it
+moves. An Elbow-down IK solution is rejected before the gripper opens or closes; if no complete
+Elbow-up candidate is available, the empty gripper returns Home. The constraint is scoped only to
+instrument-tray grasp pre-flights and is cleared before all later Home, presentation, placement, and
+Reclaim planning.
+
 The surgeon-facing HRI display changes to green `TAKE` as soon as the executor reaches the hand.
 Non-red display transitions use a short `0.1 s` debounce; red motion/error states and alerts remain
 immediate. The executor still observes `pre_release_dwell_seconds` before enabling force-guided
 physical release, so the faster visual transition does not shorten the release safety dwell.
 
-`ReturnToolHome` validates its complete reclaim exit before closing the gripper: approach, straight
-descent, straight 4 cm lift, the fixed `instrument_stage_joints` pose, and the controlled transit to
-`instrument_left_stage` are planned from chained future start states. After a successful grasp,
-those cached plans execute unchanged in exactly that order. The generic Cartesian reclaim-upper
-exit is not used on this path. The intentionally hardware-validated corridor carries no
-hypothetical `held_tool` collision box; the real box is attached only after Left-Stage is reached.
-From there, a right-side slot (`world-x > 0`) uses the complete Cartesian Left-Stage→Home leg with
-stable orientation and no shoulder-pan/RRT fallback; a left slot starts its local approach directly.
-Other reclaim picks and normal `return_tool` routes retain their existing upper-stage behavior.
+`ReturnToolHome` validates its complete destination-dependent reclaim exit before closing the
+gripper. Every route pre-plans approach, straight descent, straight 4 cm lift, the fixed
+`instrument_stage_joints` pose, and the controlled transit to the complete taught
+`instrument_left_stage` TCP pose from chained future start states. For a right-side slot
+(`world-x > 0`), that same pre-flight also includes a complete Cartesian interpolation to the full
+taught Home TCP pose, including its orientation. This avoids the former artificial constraint that
+froze the Left-Stage orientation and consistently exhausted IK after about 35.9% of the corridor.
+After a successful grasp all cached plans execute unchanged; only the short local slot approach is
+planned afterward. The generic reclaim-upper exit is not used on this path. The intentionally
+hardware-validated fixed corridor carries no hypothetical `held_tool` box; the real collision box
+is attached at Left-Stage for a left slot or at Home for a right slot. Other reclaim picks and
+normal `return_tool` routes retain their existing upper-stage behavior.
 
-If a cached exit or later Home-slot operation fails after the grasp, the executor stops, waits
-0.25 s for joint standstill, removes the collision box, opens at the current pose, publishes
-`DROPPED`, and plans Home freshly. It no longer attempts the unreliable fallback trip back to the
-reclaim tray. A failed Home recovery leaves the executor in `RECOVERY_ERROR`; pick/grasp/put-back
-goals are rejected until an explicit `return_home` succeeds. Consequently `IDLE` never masks a
-failed recovery.
+A planning failure on the extended right-side pre-flight occurs before the gripper closes, so the
+tool remains on reclaim. If a cached execution or later Home-slot operation nevertheless fails
+after a confirmed grasp, the executor stops, waits 0.25 s for joint standstill, keeps the gripper
+closed and the collision box attached, and publishes `RECOVERY_ERROR` with the held tool identity.
+It never interprets a motion failure as permission to drop a still-held tool. New pick-like goals
+and `IDLE` remain blocked; `return_home` may reposition the arm but preserves the holding recovery,
+while `return_tool` or an explicit `release_tool` clears it. `DROPPED` is reserved for a fresh
+gripper check that explicitly confirms the tool is no longer held; a timeout or otherwise unknown
+Robotiq result keeps the gripper closed.
 
 The continuous Robotiq loss monitor uses the same `[180, 228)` rescue as the initial grasp check,
 so `gOBJ=3, gPO=225` remains held. `OBJ=None` and moving state `OBJ=0` are inconclusive. A conclusive
