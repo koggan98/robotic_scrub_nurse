@@ -141,6 +141,9 @@ class ASRNode(Node):
         # After the wake word, how long to wait for the command to START before
         # disarming back to idle.
         self.declare_parameter('command_window_sec', 6.0)
+        # faster-whisper no_speech probability above which a segment is treated
+        # as silence and skipped fast (keeps noise from blocking the pipeline).
+        self.declare_parameter('no_speech_threshold', 0.6)
         # Domain bias for Whisper's decoder: fed as initial_prompt, it pulls
         # the transcription toward this vocabulary — "end surgery" instead of
         # "and surgery", "finish" instead of "Finnish". Practically free
@@ -198,6 +201,8 @@ class ASRNode(Node):
         self.two_stage_wake = bool(self.get_parameter('two_stage_wake').value)
         self.command_window_sec = float(
             self.get_parameter('command_window_sec').value)
+        self.no_speech_threshold = float(
+            self.get_parameter('no_speech_threshold').value)
 
         # Publishers
         self.publisher = self.create_publisher(String, 'user_speech', 10)
@@ -549,14 +554,23 @@ class ASRNode(Node):
                     wav_file.writeframes(pcm.tobytes())
                 audio_input.seek(0)
 
-            # Speed-tuned: energy-based VAD already trims silence upstream,
-            # so faster-whisper's internal Silero VAD pass is redundant.
             # Greedy decoding (beam_size=1) is ~2x faster than beam search.
+            # The rest is about bailing FAST on non-speech: background noise used
+            # to trigger a segment and then take up to 30 s to decode (Whisper
+            # looping/hallucinating), blocking the wake word. Silero vad_filter
+            # drops non-speech before decoding, condition_on_previous_text=False
+            # stops the repetition spiral, and the thresholds abort low-confidence
+            # / repetitive output early.
             segments, info = self._model.transcribe(
                 audio_input,
                 language=self.language,
                 beam_size=1,
-                vad_filter=False,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=300),
+                condition_on_previous_text=False,
+                no_speech_threshold=self.no_speech_threshold,
+                compression_ratio_threshold=2.4,
+                log_prob_threshold=-1.0,
                 # Vocabulary bias toward our command set — see the parameter.
                 initial_prompt=self.initial_prompt,
             )

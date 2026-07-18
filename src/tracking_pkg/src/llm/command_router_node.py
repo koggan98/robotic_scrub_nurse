@@ -118,9 +118,10 @@ class CommandRouterNode(Node):
         # drive a deterministic retry of the same instrument.
         self._active_handover_class = ''
         self._handover_retry_count = 0
-        self._max_handover_retries = 2
+        # One extra attempt only (re-perceive + re-pick once), then give up.
+        self._max_handover_retries = 1
         # Pick-stage retries within one command (executor missed the grasp).
-        self._max_pick_retries = 2
+        self._max_pick_retries = 1
 
         # ── ROS interfaces (same seam as the LLM orchestrator) ───
         cb = ReentrantCallbackGroup()

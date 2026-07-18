@@ -21,6 +21,35 @@ def pretty_tool(tool_class):
     return tool_class.replace('_', ' ').title() if tool_class else ''
 
 
+def wrap_lines(text, max_chars, max_lines=3):
+    """Greedy word-wrap into <= max_lines lines of <= max_chars each. The last
+    line is ellipsised if the text still overflows, so a long response reads as
+    several lines instead of one cut-off line."""
+    text = (text or '').strip()
+    if not text:
+        return []
+    words, lines, cur = text.split(), [], ''
+    for w in words:
+        cand = w if not cur else cur + ' ' + w
+        if len(cand) <= max_chars or not cur:
+            cur = cand
+        else:
+            lines.append(cur)
+            cur = w
+        if len(lines) == max_lines:
+            break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    # Anything left over -> ellipsis on the last line.
+    packed = ' '.join(lines)
+    if len(packed) < len(text):
+        last = lines[-1]
+        if len(last) >= max_chars:
+            last = last[:max_chars - 1].rstrip()
+        lines[-1] = last + '…'
+    return lines
+
+
 def is_alert_response(text):
     """Does this /system_response line warrant a transient red alert?"""
     low = (text or '').lower()
@@ -50,7 +79,7 @@ def resolve_display(alert_active, alert_text, system_state, active_tool_class,
         tool = pretty_tool(active_tool_class)
         detail = f'Take {tool}' if tool else 'Take the tool'
         return ('green', 'TAKE', detail, 'pulse' if pulse_take else 'steady')
-    if handover_waiting:
+    if system_state == 'AWAIT_GESTURE' or handover_waiting:
         return ('amber', 'GESTURE', 'Make your gesture', 'steady')
     if asr_listening:
         return ('amber', 'SPEAK', 'Speak now', 'steady')

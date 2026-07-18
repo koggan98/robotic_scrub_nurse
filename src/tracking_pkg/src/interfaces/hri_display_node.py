@@ -40,7 +40,8 @@ from std_msgs.msg import Bool, String
 
 from tracking_msgs.msg import HandState
 
-from hri_display_logic import Debouncer, is_alert_response, resolve_display
+from hri_display_logic import (
+    Debouncer, is_alert_response, resolve_display, wrap_lines)
 
 
 # ── Colour-blind-friendly hues (hex), converted to BGR at load ──────
@@ -55,8 +56,8 @@ class HriDisplayNode(Node):
         super().__init__('hri_display_node')
 
         self.declare_parameter('window_name', 'Scrub Nurse')
-        self.declare_parameter('canvas_width', 640)
-        self.declare_parameter('canvas_height', 400)
+        self.declare_parameter('canvas_width', 960)
+        self.declare_parameter('canvas_height', 600)
         self.declare_parameter('window_x', 40)
         self.declare_parameter('window_y', 40)
         self.declare_parameter('fps', 30.0)
@@ -191,11 +192,24 @@ class HriDisplayNode(Node):
         m = int(self.ch * 0.06)
         cv2.rectangle(img, (m, m), (self.cw - m, self.ch - m), color, -1)
 
+        # Fonts scale with the canvas so the layout holds at any window size.
+        head_scale = self.ch / 170.0
+        detail_scale = self.ch / 460.0
+        head_thick = max(2, int(self.ch / 90))
+        detail_thick = max(1, int(self.ch / 260))
         text_col = (20, 20, 20)  # dark text on the saturated field
-        self._center_text(img, headline, y=int(self.ch * 0.42),
-                          scale=2.4, thickness=6, color=text_col)
-        self._center_text(img, detail, y=int(self.ch * 0.66),
-                          scale=0.95, thickness=2, color=text_col)
+
+        self._center_text(img, headline, y=int(self.ch * 0.38),
+                          scale=head_scale, thickness=head_thick, color=text_col)
+        # Detail wraps over up to 3 centred lines instead of being cut off.
+        max_chars = max(8, int(self.cw / (detail_scale * 19)))
+        lines = wrap_lines(detail, max_chars, max_lines=3)
+        line_h = int(self.ch * 0.09)
+        y0 = int(self.ch * 0.60)
+        for i, line in enumerate(lines):
+            self._center_text(img, line, y=y0 + i * line_h,
+                              scale=detail_scale, thickness=detail_thick,
+                              color=text_col)
 
         cv2.imshow(self.window_name, img)
         cv2.waitKey(1)
@@ -203,7 +217,6 @@ class HriDisplayNode(Node):
     def _center_text(self, img, text, y, scale, thickness, color):
         if not text:
             return
-        text = text if len(text) <= 42 else text[:41] + '…'
         font = cv2.FONT_HERSHEY_SIMPLEX
         (tw, _), _ = cv2.getTextSize(text, font, scale, thickness)
         x = max(6, (self.cw - tw) // 2)

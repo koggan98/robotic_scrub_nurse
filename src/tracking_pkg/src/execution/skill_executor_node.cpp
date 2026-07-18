@@ -248,12 +248,12 @@ public:
         // this many times in total before a failure is treated as real.
         plan_attempts_ = static_cast<int>(
             declare_parameter("plan_attempts", 3));
-        // Straight-up rise before swinging from the reclaim tray across to the
-        // instrument tray while holding a tool: at the upper reclaim pad the
-        // attached held_tool box (tool_box_tip_m toward the tip, on however
-        // short a tool) still sweeps through the reclaim tray's collision
-        // model when the base rotates. 0 disables.
-        transit_clearance_m_ = declare_parameter("transit_clearance_m", 0.10);
+        // Extra height added ONCE to the reclaim-exit rise (exitReclaimToUpper),
+        // so the held_tool box clears the reclaim tray when the base later swings
+        // across — in a single lift, not a separate second hop. Raise if the
+        // transit ever contacts the reclaim tray again.
+        reclaim_exit_clearance_m_ = declare_parameter(
+            "reclaim_exit_clearance_m", 0.05);
         move_group_name_ = declare_parameter("move_group_name", std::string("ur_manipulator"));
         end_effector_link_ = declare_parameter("end_effector_link", std::string("gripper_tip_link"));
         reference_frame_ = declare_parameter("reference_frame", std::string("world"));
@@ -968,6 +968,9 @@ private:
         if (!jointsToTcpPose(reclaim_stage_upper_joints_, upper, err)) {
             err = "upper pad FK: " + err; return false;
         }
+        // Rise a little above the pad in the SAME move, so a held tool clears the
+        // reclaim tray for the later cross-swing without a separate second lift.
+        upper.position.z += reclaim_exit_clearance_m_;
         upper.orientation = move_group_->getCurrentPose(end_effector_link_)
                                 .pose.orientation;
 
@@ -981,22 +984,6 @@ private:
             "Reclaim exit: straight lift not clean (%s), using a planned move that "
             "still holds the grasp orientation.", lin_err.c_str());
         return moveToPoseTarget(upper, err);
-    }
-
-    // Straight-up rise by transit_clearance_m before crossing sides with a tool
-    // in the gripper. Best-effort by design: a partial or failed lift only means
-    // the transit planner starts lower, it never aborts the skill.
-    void liftForTransit() {
-        if (transit_clearance_m_ <= 0.0) return;
-        geometry_msgs::msg::Pose up =
-            move_group_->getCurrentPose(end_effector_link_).pose;
-        up.position.z += transit_clearance_m_;
-        std::string e;
-        if (!moveLinearToPose(up, e)) {
-            RCLCPP_WARN(get_logger(),
-                "Transit clearance lift not clean (%s) — crossing from the "
-                "current height instead.", e.c_str());
-        }
     }
 
     // Best-effort retreat to home after a failed grasp/place. From the reclaim tray
@@ -1501,6 +1488,11 @@ private:
         // A reclaim pick is planned from the lower reclaim pad, so get there first.
         // (The instrument tray is planned directly from home — no staging.)
         if (reclaim) {
+            // Publish a moving state BEFORE driving to the reclaim tray, so the
+            // HRI display turns red during the (long) approach, not only once
+            // the arm descends. tool_id_arg is the class for put-back, empty for
+            // a class-based pick — either way the display shows red.
+            publishState("PICKING", tool_id_arg, "");
             std::string stage_err;
             if (!enterReclaimStaging(stage_err)) {
                 err = "reclaim staging: " + stage_err;
@@ -1789,6 +1781,18 @@ private:
             // while this is true, so stray gestures outside a handover are
             // ignored. Reset to false unconditionally in handoverExecute.
             publishHandoverWaiting(true);
+            // Distinct state so the HRI display shows amber "make your gesture"
+            // instead of the stale TRANSPORTING (red) from the pick. Cleared
+            // implicitly by the HANDOVER/PRESENTING states after the gesture.
+            {
+                std::string tid, tcls;
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    tid = active_tool_id_;
+                    tcls = active_tool_class_;
+                }
+                publishState("AWAIT_GESTURE", tid, tcls);
+            }
             while (rclcpp::ok()) {
                 publishHandoverFeedback(goal_handle, "AWAITING_GESTURE");
                 if (!waitForGesture(goal_handle)) {
@@ -2012,10 +2016,25 @@ private:
             }
         } else {
             const bool right = release_pose.position.x > instrument_right_side_x_;
-            const std::vector<double> &transit =
-                right ? home_joints_ : instrument_left_stage_joints_;
             // Keep the held tool's orientation across the transit — do not snap the
             // wrist to the transit pose and rotate the tool back at the approach.
+            // A LEFT slot is reached directly via the left stage pose. A RIGHT
+            // slot goes via the left stage FIRST and then to home: coming off the
+            // reclaim side, the single big base swing straight to home contorts
+            // the arm, so it is broken into left-then-right base rotations.
+            if (right) {
+                std::string via_err;
+                if (!moveAcrossKeepingOrientation(
+                        instrument_left_stage_joints_, via_err)) {
+                    // Best-effort intermediate: if it will not plan, still try to
+                    // reach home directly rather than aborting the place.
+                    RCLCPP_WARN(get_logger(),
+                        "Place route via left stage not clean (%s) — going to "
+                        "home directly.", via_err.c_str());
+                }
+            }
+            const std::vector<double> &transit =
+                right ? home_joints_ : instrument_left_stage_joints_;
             std::string transit_err;
             if (!moveAcrossKeepingOrientation(transit, transit_err)) {
                 err = freshGripperHoldsTool()
@@ -2318,14 +2337,9 @@ private:
                 release_pose.position.x, release_pose.position.y,
                 release_pose.position.z);
 
-            // Rise clear of the reclaim tray before the big swing across. The
-            // arm sits at the upper reclaim pad, but with the held_tool box
-            // attached the base rotation still swept the box through the
-            // reclaim tray's collision model and aborted the transit plan.
-            // Best-effort: if the lift itself will not plan, the transit's own
-            // retries are still there.
-            liftForTransit();
-
+            // graspToolCore has already exited to the upper reclaim pad, raised
+            // by reclaim_exit_clearance_m so the held tool clears the tray for
+            // the cross-swing below — no separate transit lift needed.
             std::string place_err;
             if (!placeToolAt(kInstrumentLocation, release_pose, place_err)) {
                 // The tool fell out during the transit across: mark it DROPPED
@@ -2694,7 +2708,7 @@ private:
     double tool_box_width_m_;
     double tool_box_height_m_;
     int plan_attempts_;
-    double transit_clearance_m_;
+    double reclaim_exit_clearance_m_;
     std::vector<double> instrument_left_stage_joints_;
     std::vector<double> reclaim_stage_upper_joints_;
     std::vector<double> reclaim_stage_lower_joints_;

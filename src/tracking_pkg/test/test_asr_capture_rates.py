@@ -33,6 +33,7 @@ def _node_for_transcribe(capture_rate, whisper_rate=16000):
     node.sample_rate = whisper_rate
     node.language = 'en'
     node.initial_prompt = None
+    node.no_speech_threshold = 0.6
     node.get_logger = lambda: SimpleNamespace(
         info=lambda *_args: None,
         error=lambda *_args: None,

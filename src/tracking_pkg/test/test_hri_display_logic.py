@@ -13,7 +13,7 @@ _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_PKG, 'src', 'interfaces'))
 
 from hri_display_logic import (  # noqa: E402
-    resolve_display, is_alert_response, pretty_tool, Debouncer)
+    resolve_display, is_alert_response, pretty_tool, Debouncer, wrap_lines)
 
 
 def _r(alert_active=False, alert_text='', system_state='IDLE',
@@ -59,6 +59,14 @@ def test_take_pulse_can_be_disabled():
 
 def test_gesture_wait_is_amber():
     assert _r(handover_waiting=True) == (
+        'amber', 'GESTURE', 'Make your gesture', 'steady')
+
+
+def test_await_gesture_state_is_amber():
+    # The executor's AWAIT_GESTURE state must show amber even though the last
+    # movement state (before it) was red — this is the reported "BUSY while
+    # waiting for the gesture" bug.
+    assert _r(system_state='AWAIT_GESTURE') == (
         'amber', 'GESTURE', 'Make your gesture', 'steady')
 
 
@@ -123,6 +131,34 @@ def test_pretty_tool():
     assert pretty_tool('needle_holder') == 'Needle Holder'
     assert pretty_tool('scissors_long') == 'Scissors Long'
     assert pretty_tool('') == ''
+
+
+# ── Text wrapping (the register response overflow) ──────────────────
+
+def test_wrap_short_text_single_line():
+    assert wrap_lines('Ready', 20) == ['Ready']
+
+
+def test_wrap_empty():
+    assert wrap_lines('', 20) == []
+    assert wrap_lines('   ', 20) == []
+
+
+def test_wrap_register_response_multiline():
+    text = 'Registered 2. Needle Holder, Long Scissors.'
+    lines = wrap_lines(text, 20, max_lines=3)
+    assert len(lines) >= 2
+    assert all(len(ln) <= 21 for ln in lines)          # <= max + ellipsis
+    # No word is lost across the (fitting) wrap.
+    assert 'Needle' in ' '.join(lines)
+    assert 'Scissors' in ' '.join(lines)
+
+
+def test_wrap_overflow_gets_ellipsis():
+    text = 'one two three four five six seven eight nine ten eleven twelve'
+    lines = wrap_lines(text, 12, max_lines=2)
+    assert len(lines) == 2
+    assert lines[-1].endswith('…')
 
 
 # ── Debouncer ───────────────────────────────────────────────────────
