@@ -21,13 +21,11 @@ enum class HomeReturnOrigin
 {
   DIRECT,
   RECLAIM,
-  HANDOVER,
 };
 
 inline constexpr bool homeReturnUsesLeftStage(const HomeReturnOrigin origin)
 {
-  return origin == HomeReturnOrigin::RECLAIM ||
-         origin == HomeReturnOrigin::HANDOVER;
+  return origin == HomeReturnOrigin::RECLAIM;
 }
 
 inline constexpr bool homeReturnUsesInstrumentStage(

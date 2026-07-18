@@ -172,6 +172,12 @@ substitution `awl` → `Oh.`: only an explicitly addressed command whose complet
 the single token `oh` is published as `awl`. Longer phrases containing `oh`, background speech, and
 direct `/user_speech` injection are not rewritten, so `oh` is not a global instrument synonym.
 
+The deterministic command router retains the candidate set whenever it asks `Which one?`. The next
+utterance is resolved only against those offered, currently available tools, so replies such as
+`small`, `the large one`, `hammer`, and Whisper's adjective-reversed `forceps small` complete the
+original request instead of starting the same ambiguous pick again. A bare family name such as
+`forceps` remains ambiguous and is never guessed.
+
 `llm_launch.py` is retained only as an obsolete historical snapshot; do not use it for deployment.
 
 The NUC-side Robotiq grasp check treats `gOBJ=2` as direct object contact. For thin tools that do
@@ -219,9 +225,9 @@ normal `return_tool` routes retain their existing upper-stage behavior.
 Empty Home returns use the same predictable side corridor. After a failed Reclaim pre-flight or
 after placing a returned tool back on Reclaim, the arm travels through
 `instrument_stage_joints`→the full taught Left-Stage pose→the full taught Home pose instead of
-planning directly from Reclaim to Home. After a completed handover, the empty arm first retraces to
-the exact recorded Handover departure/Present joint pose, then uses Left-Stage→Home. This prevents
-both empty return paths from choosing an uncontrolled cross-workspace shortcut.
+planning directly from Reclaim to Home. This side corridor is deliberately limited to Reclaim.
+After a completed handover, the empty arm again plans directly from the hand pose to `home_joints`
+to avoid the additional time of a Present/Left-Stage detour.
 
 A planning failure on the extended right-side pre-flight occurs before the gripper closes, so the
 tool remains on reclaim. If a cached execution or later Home-slot operation nevertheless fails

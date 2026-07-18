@@ -42,6 +42,7 @@ def parser():
     ('mayo', 'scissors_long'),
     ('metzenbaum', 'scissors_short'),
     ('small forceps', 'forceps_short'),
+    ('forceps small', 'forceps_short'),       # Whisper reversed word order
     ('small tweezers', 'forceps_short'),
     ('large forceps', 'forceps_big'),
     ('hammer', 'hammer'),
@@ -82,6 +83,19 @@ def test_garbled_synonym_never_resolves_to_wrong_class(parser):
         assert all(c.startswith('forceps') for c in intent.candidates)
     else:
         assert intent.action == Action.UNKNOWN
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('forceps small', 'forceps_short'),
+    ('small', 'forceps_short'),
+    ('the large one', 'forceps_big'),
+    ('hammer', 'hammer'),
+    ('forceps', None),
+    ('medium', None),  # not among the offered/available choices
+])
+def test_resolve_closed_pick_choice(parser, text, expected):
+    offered = ['forceps_big', 'hammer', 'forceps_short']
+    assert parser.resolve_tool_choice(text, offered) == expected
 
 
 # ── Verbs ───────────────────────────────────────────────────────────

@@ -162,6 +162,57 @@ class IntentParser:
 
         return Intent(Action.UNKNOWN, raw=raw, score=score)
 
+    def resolve_tool_choice(self, text: str,
+                            allowed_classes: List[str]) -> Optional[str]:
+        """Resolve a short answer against an explicitly offered class list.
+
+        This is intentionally narrower than ``parse``: after the router asked
+        "Large Forceps or Hammer or Small Forceps?", answers such as
+        "forceps small", "small", or "hammer" are choices, not new commands.
+        Generic family words (for example just "forceps") remain ambiguous.
+        """
+        norm = normalize(text)
+        allowed = [c for c in allowed_classes if c in self._synonyms]
+        if not norm or not allowed:
+            return None
+
+        tokens = norm.split()
+        token_bag = sorted(tokens)
+        exact = []
+        for cls in allowed:
+            if any(norm == syn or token_bag == sorted(syn.split())
+                   for syn in self._synonyms[cls]):
+                exact.append(cls)
+        if len(exact) == 1:
+            return exact[0]
+
+        # A unique descriptive word is enough inside a closed choice. Remove
+        # conversational fillers and generic instrument-family nouns first, so
+        # "small one" selects Small Forceps while bare "forceps" selects none.
+        generic = {
+            'a', 'an', 'the', 'one', 'please', 'tool', 'instrument',
+            'forceps', 'tweezers', 'pinzette', 'scissors', 'schere',
+        }
+        informative = set(tokens) - generic
+        if informative:
+            matches = []
+            for cls in allowed:
+                vocabulary = {
+                    token
+                    for syn in self._synonyms[cls]
+                    for token in syn.split()
+                }
+                if informative <= vocabulary:
+                    matches.append(cls)
+            if len(matches) == 1:
+                return matches[0]
+
+        # Retain the existing ASR-damage tolerance, but restrict it to choices
+        # the robot actually offered. Never accept another ambiguous result.
+        tool_cls, _score, _cands, _syn = self._match_tool(
+            norm, allowed_classes=allowed)
+        return tool_cls
+
     # ── Verb matching ───────────────────────────────────────────────
 
     def _match_verb(self, norm: str):
@@ -193,7 +244,7 @@ class IntentParser:
 
     # ── Tool matching ───────────────────────────────────────────────
 
-    def _match_tool(self, norm: str):
+    def _match_tool(self, norm: str, allowed_classes=None):
         """Best fuzzy match of the transcript against every synonym.
 
         Returns (confident_class | None, best_score, candidate_classes,
@@ -203,13 +254,21 @@ class IntentParser:
         tokens = norm.split()
         best_per_class = {}   # cls -> (score, synonym)
         for cls, syns in self._synonyms.items():
+            if allowed_classes is not None and cls not in allowed_classes:
+                continue
             cls_best, cls_syn = 0.0, ''
             for syn in syns:
                 n = len(syn.split())
                 for w in range(max(1, n - 1), n + 2):
                     for i in range(max(1, len(tokens) - w + 1)):
                         window = ' '.join(tokens[i:i + w])
-                        s = SequenceMatcher(None, window, syn).ratio()
+                        # Whisper occasionally reverses adjective+noun into
+                        # noun+adjective ("small forceps" -> "forceps small").
+                        # The same complete tokens are still an exact name.
+                        if w == n and sorted(window.split()) == sorted(syn.split()):
+                            s = 1.0
+                        else:
+                            s = SequenceMatcher(None, window, syn).ratio()
                         if s > cls_best:
                             cls_best, cls_syn = s, syn
             if cls_best > 0.0:

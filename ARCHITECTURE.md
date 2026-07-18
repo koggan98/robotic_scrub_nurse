@@ -87,12 +87,15 @@ RViz live only on the NUC.
    ASR waits and rescans; two simultaneous supported inputs are rejected as ambiguous. After the
    wake-word gate, the exact one-token `Oh.` substitution is corrected to `awl`; `oh` inside longer
    phrases, unaddressed speech, and direct topic injection remain untouched.
-2. `llm_orchestrator_node` consumes `/user_speech`, calls `/get_world_model` (JSON scene snapshot),
-   matches the request to a tracked `tool_id` via `config/tool_knowledge_base.yaml` synonyms
-   (multilingual, incl. German), and runs an OpenAI tool-calling loop.
-3. The LLM dispatches skills as tools: `get_world_model`, `pick_and_handover(tool_id)`,
-   `return_tool`, `release_tool`, `return_home`, `abort`. Each returns a JSON result string the
-   model reasons about (retry / disambiguate / stop). Terse status is published on `/system_response`.
+2. `command_router_node` consumes `/user_speech`, parses verbs and tool synonyms deterministically,
+   and checks choices against `/get_world_model`. OpenAI is only a stateless intent fallback when
+   deterministic parsing has no evidence. When the router asks `Which one?`, it retains the closed
+   set of available candidates; the next reply is resolved only within that set. Exact instrument
+   token order is ASR-tolerant (`forceps small` = `small forceps`), while a still-ambiguous family
+   word is not guessed.
+3. The router dispatches `pick_tool`, `handover_tool`, `return_tool_home`, `return_tool`,
+   `release_tool`, and `return_home` with code-level guards and fixed retry limits. Terse status is
+   published on `/system_response`.
 4. `skill_executor_node` (NUC) executes motion. `pick_tool` pre-plans approach→descend→lift for each
    candidate (confidence order) and only commits to a fully-plannable one. Instrument-tray grasp
    pre-flights constrain `elbow_joint >= 0` and independently validate every trajectory point, so an
@@ -115,9 +118,9 @@ RViz live only on the NUC.
    on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
    `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
    red/alert states remain immediate. The unchanged pre-release dwell completes before the executor
-   enables force-guided physical release. After release, the empty arm retraces to the exact joint
-   pose from which it departed for the hand, then returns through Left-Stage→Home rather than
-   free-planning directly from the hand pose.
+   enables force-guided physical release. After release, the empty arm returns directly from the
+   hand pose to `home_joints`; the Left-Stage corridor is intentionally not used for this
+   latency-sensitive return.
 6. `gripper_opener_with_zeroer.py` drives the Robotiq (URCap socket, port 63352) and opens on a
    force tug read from `/force_torque_sensor_broadcaster/wrench`; it publishes `/tool_grasped`
    as both grasp verification and continuous loss monitor. Robotiq `gOBJ=2` is direct grasp

@@ -1303,8 +1303,7 @@ private:
     // truthful DROPPED event, and plan Home from the fresh live state.
     bool recoverAfterConfirmedToolLoss(
         const std::string &reason,
-        std::string &err,
-        HomeReturnOrigin home_origin = HomeReturnOrigin::DIRECT) {
+        std::string &err) {
         RCLCPP_WARN(get_logger(),
             "Confirmed tool-loss recovery (%s): stopping, opening the empty "
             "gripper, then returning home.",
@@ -1320,19 +1319,12 @@ private:
         // believing the robot holds it — mark it unknown and let perception find
         // it again if it landed on a tray.
         publishHeldToolEvent("DROPPED");
-        std::vector<double> handover_present;
         {   // nothing held any more -> no handover to retrace
             std::lock_guard<std::mutex> lock(state_mutex_);
-            if (home_origin == HomeReturnOrigin::HANDOVER &&
-                    have_last_present_) {
-                handover_present = last_present_joints_;
-            }
             have_last_present_ = false;
         }
         std::string home_err;
-        if (!doReturnHomeInternal(
-                home_err, home_origin,
-                handover_present.empty() ? nullptr : &handover_present)) {
+        if (!doReturnHomeInternal(home_err)) {
             recovery_error_.store(true);
             publishState("RECOVERY_ERROR", "", "");
             err = "recovery_failed: dropped tool at current pose after " +
@@ -2305,7 +2297,6 @@ private:
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         geometry_msgs::msg::Pose target;
-        std::vector<double> handover_departure_joints;
 
         if (!goal_pose.header.frame_id.empty()) {
             // Explicit pose bypass (manual testing) — skip the gesture wait.
@@ -2343,8 +2334,7 @@ private:
                     bool have_grasp_data = false;
                     if (!lastToolGrasped(have_grasp_data) && have_grasp_data) {
                         recoverAfterConfirmedToolLoss(
-                            "gripper empty during handover", err,
-                            HomeReturnOrigin::HANDOVER);
+                            "gripper empty during handover", err);
                         return false;
                     }
                     bool preempted = false;
@@ -2420,21 +2410,12 @@ private:
         const bool still_holding = lastToolGrasped(have_grasp_data);
         if (have_grasp_data && !still_holding) {
             recoverAfterConfirmedToolLoss(
-                "gripper empty before handover", err,
-                HomeReturnOrigin::HANDOVER);
+                "gripper empty before handover", err);
             return false;
         }
 
         publishState("HANDOVER", tool_id_snapshot, tool_class_snapshot);
         publishHandoverFeedback(goal_handle, "MOVING_TO_HAND");
-        // Capture the exact pose from which the arm leaves for the hand. This
-        // makes the empty return deterministic even for diagnostic HandoverTool
-        // calls that did not pass through doPick's normal Present setup.
-        handover_departure_joints = move_group_->getCurrentJointValues();
-        if (handover_departure_joints.size() != joint_state_names_.size()) {
-            err = "could not record handover departure pose";
-            return false;
-        }
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             err = "handover execute failed";
             return false;
@@ -2467,12 +2448,8 @@ private:
         // fired on the force-guided release). ONLY now is it his — and from here it
         // is invisible to every camera, which is entirely normal.
         publishHeldToolEvent("HANDED_OVER");
-        std::vector<double> handover_present = handover_departure_joints;
         {   // handover complete -> nothing to retrace any more
             std::lock_guard<std::mutex> lock(state_mutex_);
-            if (handover_present.empty() && have_last_present_) {
-                handover_present = last_present_joints_;
-            }
             have_last_present_ = false;
         }
 
@@ -2485,9 +2462,7 @@ private:
 
         if (return_home_after_handover_) {
             std::string home_err;
-            if (!doReturnHomeInternal(
-                    home_err, HomeReturnOrigin::HANDOVER,
-                    handover_present.empty() ? nullptr : &handover_present)) {
+            if (!doReturnHomeInternal(home_err)) {
                 recovery_error_.store(true);
                 publishState("RECOVERY_ERROR", "", "");
                 err = "return-home after handover failed: " + home_err;
@@ -2557,8 +2532,8 @@ private:
         return true;
     }
 
-    // The final Left-Stage -> Home leg is shared by empty reclaim returns,
-    // post-handover returns, and the tool-carrying ReturnToolHome pre-flight.
+    // The final Left-Stage -> Home leg is shared by empty reclaim returns and
+    // the tool-carrying ReturnToolHome pre-flight.
     // Require the complete full-pose Cartesian path and never replace it with a
     // stochastic detour.
     bool moveLeftStageToHome(std::string &err) {
@@ -2586,27 +2561,11 @@ private:
 
     bool doReturnHomeInternal(
         std::string &err,
-        HomeReturnOrigin origin = HomeReturnOrigin::DIRECT,
-        const std::vector<double> *handover_present = nullptr) {
+        HomeReturnOrigin origin = HomeReturnOrigin::DIRECT) {
         publishState("RETURNING", "", "");
         if (home_joints_.size() != 6) {
             err = "home_joints must have 6 values";
             return false;
-        }
-
-        if (origin == HomeReturnOrigin::HANDOVER) {
-            if (!handover_present ||
-                    handover_present->size() != joint_state_names_.size()) {
-                err = "handover return requires the recorded Present pose";
-                return false;
-            }
-            RCLCPP_INFO(get_logger(),
-                "Handover -> Home: retracting to recorded Present pose before "
-                "the Left-Stage corridor.");
-            if (!moveToJointPositions(*handover_present, err)) {
-                err = "handover -> Present retract: " + err;
-                return false;
-            }
         }
 
         if (tracking_pkg::execution::homeReturnUsesInstrumentStage(origin)) {

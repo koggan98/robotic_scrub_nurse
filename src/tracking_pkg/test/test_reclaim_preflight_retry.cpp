@@ -146,18 +146,16 @@ TEST(ReturnHomeRoute, KeepsClosedOnPostGraspMotionFailure) {
     PostGraspFailureDisposition::KEEP_HOLDING);
 }
 
-TEST(ReturnHomeRoute, EmptyReclaimAndHandoverReturnsUseLeftStage) {
+TEST(ReturnHomeRoute, OnlyEmptyReclaimReturnUsesLeftStage) {
   using tracking_pkg::execution::HomeReturnOrigin;
   using tracking_pkg::execution::homeReturnUsesInstrumentStage;
   using tracking_pkg::execution::homeReturnUsesLeftStage;
 
   EXPECT_FALSE(homeReturnUsesLeftStage(HomeReturnOrigin::DIRECT));
   EXPECT_TRUE(homeReturnUsesLeftStage(HomeReturnOrigin::RECLAIM));
-  EXPECT_TRUE(homeReturnUsesLeftStage(HomeReturnOrigin::HANDOVER));
 
   EXPECT_FALSE(homeReturnUsesInstrumentStage(HomeReturnOrigin::DIRECT));
   EXPECT_TRUE(homeReturnUsesInstrumentStage(HomeReturnOrigin::RECLAIM));
-  EXPECT_FALSE(homeReturnUsesInstrumentStage(HomeReturnOrigin::HANDOVER));
 }
 
 TEST(InstrumentElbowUpGuard, AcceptsPositiveTrajectoryIncludingZero) {

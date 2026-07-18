@@ -122,6 +122,10 @@ class CommandRouterNode(Node):
         self._max_handover_retries = 1
         # Pick-stage retries within one command (executor missed the grasp).
         self._max_pick_retries = 1
+        # Closed candidate set from the last "Which one?" pick question. The
+        # next utterance is resolved inside this set instead of being parsed as
+        # a brand-new broad request.
+        self._pending_pick_candidates = []
 
         # ── ROS interfaces (same seam as the LLM orchestrator) ───
         cb = ReentrantCallbackGroup()
@@ -197,6 +201,21 @@ class CommandRouterNode(Node):
 
     def _handle_text(self, text):
         intent = self.parser.parse(text)
+        if self._pending_pick_candidates:
+            # Safety/control verbs still retain their normal meaning. Otherwise
+            # interpret the utterance as the answer to our outstanding choice.
+            if intent.action in (Action.PICK, Action.UNKNOWN):
+                selected = self.parser.resolve_tool_choice(
+                    text, self._pending_pick_candidates)
+                if selected:
+                    self.get_logger().info(
+                        f'Pick clarification resolved: "{text}" -> {selected}')
+                    self._pending_pick_candidates = []
+                    intent = Intent(
+                        Action.PICK, tool_class=selected, raw=text,
+                        score=1.0, source='deterministic')
+            else:
+                self._pending_pick_candidates = []
         if intent.action == Action.UNKNOWN and not intent.candidates \
                 and self._llm is not None:
             res = self._llm.classify(text)
@@ -264,6 +283,7 @@ class CommandRouterNode(Node):
             tool_class = self._disambiguate_pick(wm, intent.candidates)
             if tool_class is None:
                 return  # _disambiguate_pick already answered
+        self._pending_pick_candidates = []
 
         name = self._display_name(tool_class)
         tool_id = self._resolve_tool_id(wm, tool_class)
@@ -295,6 +315,7 @@ class CommandRouterNode(Node):
             return present[0]
         if len(present) > 1:
             names = [self._display_name(c) for c in present]
+            self._pending_pick_candidates = list(present)
             self._publish_response(f'Which one? {" or ".join(names)}?')
             return None
         # None on the instrument tray: the reclaim tray or the surgeon has it.
