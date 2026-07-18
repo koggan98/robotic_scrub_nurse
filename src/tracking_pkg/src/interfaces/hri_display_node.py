@@ -64,7 +64,10 @@ class HriDisplayNode(Node):
         self.declare_parameter('alert_flash_sec', 2.5)
         self.declare_parameter('blink_hz', 2.0)
         self.declare_parameter('pulse_take_tool', True)
-        self.declare_parameter('debounce_sec', 0.35)
+        # Executor state changes are deliberate transitions. Keep only a short
+        # debounce against visual flicker so amber/green feedback stays prompt;
+        # safety-relevant red states and alerts remain immediate in Debouncer.
+        self.declare_parameter('debounce_sec', 0.1)
         self.declare_parameter('color_red', '#E03B24')
         self.declare_parameter('color_amber', '#F5A623')
         self.declare_parameter('color_green', '#2FB170')

@@ -95,7 +95,10 @@ RViz live only on the NUC.
    candidate (confidence order) and only commits to a fully-plannable one; on grasp it attaches a
    `held_tool` collision box to the TCP, then presents the tool.
 5. `handover_tool` sets `/handover_waiting=true`, waits for the surgeon's `double_open_close` gesture
-   on `/hand_gesture`, plans to `hand_pose + hand_offset`, dwells, then enables force-guided release.
+   on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
+   `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
+   red/alert states remain immediate. The unchanged pre-release dwell completes before the executor
+   enables force-guided physical release.
 6. `gripper_opener_with_zeroer.py` drives the Robotiq (URCap socket, port 63352) and opens on a
    force tug read from `/force_torque_sensor_broadcaster/wrench`; it publishes `/tool_grasped`
    as both grasp verification and continuous loss monitor. Robotiq `gOBJ=2` is direct grasp

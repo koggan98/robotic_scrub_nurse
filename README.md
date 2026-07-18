@@ -177,6 +177,11 @@ the observed empty-close value. If an empty gripper is ever logged as a thin-too
 `grasp_check.rescue_max_pos` in `nuc_launch.py` and restart the NUC launch; a false positive can
 cause the holding guard to block subsequent picks.
 
+The surgeon-facing HRI display changes to green `TAKE` as soon as the executor reaches the hand.
+Non-red display transitions use a short `0.1 s` debounce; red motion/error states and alerts remain
+immediate. The executor still observes `pre_release_dwell_seconds` before enabling force-guided
+physical release, so the faster visual transition does not shorten the release safety dwell.
+
 The perception pipelines use separate YOLO-OBB weights by default:
 `ros_unrelated_scripts/instrument_tray_detector.pt` for the instrument tray and
 `ros_unrelated_scripts/reclaim_tray_detector.pt` for the reclaim tray. Override them when needed

@@ -1885,13 +1885,15 @@ private:
             return false;
         }
 
+        // The arm has reached the hand and is stationary: show green "take it"
+        // immediately. Keep the dwell below before enabling the physical release.
+        publishState("PRESENTING", tool_id_snapshot, tool_class_snapshot);
+
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, pre_release_dwell_seconds_))));
 
-        // Tool is presented and held still; the force-guided release now waits
-        // for the surgeon to pull it. PRESENTING (not RELEASING) so the HRI
-        // display shows green "take it" rather than red "moving".
-        publishState("PRESENTING", tool_id_snapshot, tool_class_snapshot);
+        // The tool remained still for the configured dwell; the force-guided
+        // release may now wait for the surgeon to pull it.
         publishGripperZeroer(true);
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, post_zeroer_settle_seconds_))));
