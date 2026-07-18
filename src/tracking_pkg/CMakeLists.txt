@@ -129,6 +129,7 @@ if(BUILD_EXECUTION_NODES)
 
   # Skill executor: ROS Action wrapper around MoveIt pick / handover / release / return_home
   add_executable(skill_executor_node src/execution/skill_executor_node.cpp)
+  target_include_directories(skill_executor_node PRIVATE include)
   ament_target_dependencies(skill_executor_node
     rclcpp rclcpp_action action_msgs geometry_msgs sensor_msgs std_msgs
     moveit_msgs moveit_ros_planning_interface tracking_msgs)
@@ -156,6 +157,10 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_reclaim_preflight_retry
+    test/test_reclaim_preflight_retry.cpp)
+  target_include_directories(test_reclaim_preflight_retry PRIVATE include)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)

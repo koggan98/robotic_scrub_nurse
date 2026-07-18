@@ -24,10 +24,27 @@ from typing import List, Optional
 _FILLERS = {'hey', 'ok', 'okay', 'so', 'hi', 'hello', 'oh', 'ey', 'and',
             'now', 'ähm', 'uh', 'um'}
 
+# Narrow corrections for stable, observed Whisper substitutions. These are
+# applied only AFTER an explicit wake word has addressed the robot and only when
+# the complete command consists of that single token. In particular, "oh" must
+# not become a global synonym for awl: it is a common conversational filler.
+_ADDRESSED_COMMAND_CORRECTIONS = {
+    'oh': 'awl',
+}
+
 
 def _norm_token(token: str) -> str:
     """Lowercase and strip punctuation ("Robot," -> "robot")."""
     return re.sub(r"[^\w']", '', token.lower(), flags=re.UNICODE)
+
+
+def correct_addressed_command(text: str) -> str:
+    """Correct an exact one-token ASR substitution after the wake gate."""
+    tokens = [_norm_token(token) for token in text.split()]
+    tokens = [token for token in tokens if token]
+    if len(tokens) == 1 and tokens[0] in _ADDRESSED_COMMAND_CORRECTIONS:
+        return _ADDRESSED_COMMAND_CORRECTIONS[tokens[0]]
+    return text
 
 
 def strip_wake_word(text: str, wake_words: List[str],
@@ -75,7 +92,8 @@ def plan_wake_segment(phase, text, wake_words, fuzzy_threshold=0.75,
             return ('disarm', None)
         # They may have re-said the wake word; keep the command part if so.
         stripped = strip_wake_word(text, wake_words, fuzzy_threshold)
-        return ('command', stripped if stripped else text)
+        command = stripped if stripped else text
+        return ('command', correct_addressed_command(command))
 
     # phase == 'wait_wake'
     if not text:
@@ -84,6 +102,8 @@ def plan_wake_segment(phase, text, wake_words, fuzzy_threshold=0.75,
     if command is None:
         return ('ignore', None)          # no wake word
     if command:
-        return ('command', command)      # "robot needle holder" in one breath
+        # "robot needle holder" in one breath. Correct only the already
+        # addressed command portion, never arbitrary background speech.
+        return ('command', correct_addressed_command(command))
     # Wake word only.
     return ('arm',) if two_stage else ('ignore', None)

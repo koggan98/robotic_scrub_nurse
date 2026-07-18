@@ -162,6 +162,9 @@ def generate_launch_description():
                         'reclaim_z_offset':                  0.001,
                         'approach_height_m':                 0.04,
                         'tool_yaw_offset_rad':               1.57079632679,
+                        # One local re-plan from the unchanged lower reclaim
+                        # stage before a failed pre-flight retreats to Home.
+                        'reclaim_preflight_attempts':        2,
                         # Speed tuning 2026-07: 0.6 -> 0.8 (~25% faster
                         # motions). Handover scales stay 0.6 on purpose —
                         # that leg moves toward the surgeon's hand.
@@ -196,6 +199,12 @@ def generate_launch_description():
                         'instrument_left_stage_joints':
                             [2.1318871975, -1.1601789457, 1.1124246756,
                              -1.5276912202, -1.5967219512, 2.1804935932],
+                        # ReturnToolHome-only deterministic post-lift pose. The
+                        # complete lift -> this pose -> left-stage corridor is
+                        # planned before the gripper closes.
+                        'instrument_stage_joints':
+                            [4.8766698837, -1.1527752441, 1.1332219283,
+                             -1.5510326673, -1.5708482901, -2.9439778964],
                         'present_shoulder_pan_rad':          3.36332313,
                         'present_wrist1_rad':               -1.5248240244,
                         'present_wrist2_rad':               -1.2305892150,
@@ -246,6 +255,9 @@ def generate_launch_description():
                     # been observed at gPO=227; empty close is approximately 230.
                     'grasp_check.rescue_min_pos': 180,
                     'grasp_check.rescue_max_pos': 228,
+                    # Require two conclusive negative monitor samples 100 ms
+                    # apart before stopping a tool-carrying trajectory.
+                    'grasp_check.loss_confirm_delay_sec': 0.1,
                 },
             ],
         ),

@@ -84,7 +84,9 @@ RViz live only on the NUC.
    selects the single connected supported USB microphone, transcribes a spoken command, and
    publishes it on `/user_speech`. Samson Q2U is captured directly at 16 kHz; the Jieli receiver is
    captured at its native 48 kHz and decoded/resampled to Whisper's 16 kHz. With no supported input
-   ASR waits and rescans; two simultaneous supported inputs are rejected as ambiguous.
+   ASR waits and rescans; two simultaneous supported inputs are rejected as ambiguous. After the
+   wake-word gate, the exact one-token `Oh.` substitution is corrected to `awl`; `oh` inside longer
+   phrases, unaddressed speech, and direct topic injection remain untouched.
 2. `llm_orchestrator_node` consumes `/user_speech`, calls `/get_world_model` (JSON scene snapshot),
    matches the request to a tracked `tool_id` via `config/tool_knowledge_base.yaml` synonyms
    (multilingual, incl. German), and runs an OpenAI tool-calling loop.
@@ -92,11 +94,17 @@ RViz live only on the NUC.
    `return_tool`, `release_tool`, `return_home`, `abort`. Each returns a JSON result string the
    model reasons about (retry / disambiguate / stop). Terse status is published on `/system_response`.
 4. `skill_executor_node` (NUC) executes motion. `pick_tool` pre-plans approach→descend→lift for each
-   candidate (confidence order) and only commits to a fully-plannable one; on grasp it attaches a
-   `held_tool` collision box to the TCP, then presents the tool. `ReturnToolHome` routes a used tool
-   from the raised reclaim exit through `instrument_left_stage`; for a right-side home slot it then
-   requires a complete Cartesian left-stage→Home transit with fixed tool orientation and no isolated
-   Home shoulder-pan rotation or RRT fallback. Failure returns the still-held tool to reclaim.
+   candidate (confidence order) and only commits to a fully-plannable one. Reclaim picks run up to
+   two complete pre-flight rounds from the unchanged lower staging pose; a failed first round causes
+   no motion, perception refresh, or Home retreat. Physical grasp/execution/loss failures are not
+   retried locally. Generic picks attach a `held_tool` collision box after clearing their tray.
+   `ReturnToolHome` instead extends each pre-flight through approach→descent→4 cm lift→the fixed
+   `instrument_stage_joints` pose→a controlled `instrument_left_stage` transit. All legs use chained
+   future start states and execute from the cached plans after grasping. Its hardware-validated
+   reclaim-to-Left-Stage corridor intentionally has no hypothetical tool box; the real box is
+   attached at Left-Stage, before the collision-checked Home/slot plans. Right-side slots require a
+   complete Cartesian Left-Stage→Home leg with fixed orientation and no pan/RRT fallback; left slots
+   start locally from Left-Stage. Other reclaim routes retain `exitReclaimToUpper`.
 5. `handover_tool` sets `/handover_waiting=true`, waits for the surgeon's `double_open_close` gesture
    on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
    `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
@@ -109,9 +117,16 @@ RViz live only on the NUC.
    `[180, 228)`. Thus `gPO=227` is accepted but `gPO=228` is not. The fixed NUC launch setting
    leaves two counts below the approximate empty-close value `230`; lower the maximum and restart
    the NUC launch if empty-gripper false positives occur, because they activate the holding guard.
+   The loss monitor applies that same evaluation, so `gOBJ=3/gPO=225` remains held; `OBJ=None` and
+   moving `OBJ=0` are inconclusive. It confirms a negative indication with a second sample after
+   `grasp_check.loss_confirm_delay_sec=0.1` and reports loss only if both are negative.
 7. The executor broadcasts `STATE:tool_id:tool_class` on `/system_state_update`; `world_model_node`
    folds this back into the world model (`gripper_holds_tool`, active tool, state).
-8. On a dropped/lost tool the executor surfaces `tool_lost`/`grasp_failed`; the orchestrator can
+8. On a post-grasp `ReturnToolHome` execution/place failure, the executor stops, waits 0.25 s,
+   detaches the planning box, opens at the current pose, publishes `DROPPED`, and replans Home from
+   the live state. It does not attempt to carry the tool back to reclaim. If Home fails it publishes
+   `RECOVERY_ERROR` and rejects new pick-like goals until `return_home` succeeds; it does not publish
+   a false `IDLE`. On other dropped/lost tools the executor surfaces `tool_lost`/`grasp_failed`; the router can
    start an **autonomous** LLM turn (no human command) to re-pick by class, capped at 2 retries.
 9. `handover_sound_publisher` plays canned WAV cues for `gesture_detected` and unreachable events
    via the first available backend (`paplay`, `pw-play`, then `aplay`).

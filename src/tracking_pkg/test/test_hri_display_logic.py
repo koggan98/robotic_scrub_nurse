@@ -84,6 +84,11 @@ def test_alert_blinks_red_over_everything():
     assert detail == 'Gesture out of reach' and anim == 'blink'
 
 
+def test_recovery_error_is_a_persistent_red_recovery_prompt():
+    assert _r(system_state='RECOVERY_ERROR') == (
+        'red', 'RECOVERY', 'Send robot home', 'blink')
+
+
 # ── Priority ordering ───────────────────────────────────────────────
 
 def test_moving_beats_gesture_and_listening():

@@ -8,6 +8,7 @@ The node in hri_display_node.py is a thin ROS+OpenCV shell around this.
 # State groups from /system_state_update ("state:tool_id:tool_class").
 _MOVING = {'PICKING', 'TRANSPORTING', 'RETURNING', 'RELEASING', 'HANDOVER'}
 _TAKE = {'PRESENTING'}
+_RECOVERY_ERROR = {'RECOVERY_ERROR'}
 
 # /system_response substrings that warrant a transient red alert. Kept tight:
 # plain "no tool on tray" / "which one?" are info, not alarms.
@@ -66,6 +67,8 @@ def resolve_display(alert_active, alert_text, system_state, active_tool_class,
     """
     if alert_active:
         return ('red', 'ALERT', alert_text, 'blink')
+    if system_state in _RECOVERY_ERROR:
+        return ('red', 'RECOVERY', 'Send robot home', 'blink')
     if system_state in _MOVING:
         tool = pretty_tool(active_tool_class)
         if system_state == 'RETURNING':

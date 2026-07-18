@@ -87,6 +87,22 @@ def test_plan_command_phase_strips_repeated_wake():
         ('command', 'scissors'))
 
 
+@pytest.mark.parametrize('phase,text', [
+    ('wait_wake', 'Robot, Oh.'),
+    ('command', 'Oh.'),
+    ('command', 'robot oh'),
+])
+def test_addressed_exact_oh_is_corrected_to_awl(phase, text):
+    assert plan_wake_segment(phase, text, WAKE) == ('command', 'awl')
+
+
+def test_oh_correction_is_narrow_and_requires_wake_gate():
+    assert plan_wake_segment('command', 'oh please', WAKE) == (
+        'command', 'oh please')
+    assert plan_wake_segment('wait_wake', 'Oh.', WAKE) == ('ignore', None)
+    assert plan_wake_segment('wait_wake', 'Oh.', []) == ('command', 'Oh.')
+
+
 def test_plan_command_phase_timeout_disarms():
     assert plan_wake_segment('command', None, WAKE) == ('disarm', None)
 

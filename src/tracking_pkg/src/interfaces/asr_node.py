@@ -152,7 +152,8 @@ class ASRNode(Node):
             'Robot commands in an operating room: robot, end surgery, '
             'finish surgery, start surgery, count the instruments, '
             'needle holder, forceps, tweezers, scissors, retractor, awl, '
-            'hammer, put it back, wrong tool, release, stop.'))
+            'pick up the awl, return the awl, hammer, put it back, wrong tool, '
+            'release, stop.'))
 
         self.whisper_model_size = self.get_parameter('whisper_model').value
         self.language = self.get_parameter('language').value or None

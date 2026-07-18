@@ -167,6 +167,11 @@ to 16 kHz. If neither microphone is present, ASR waits and rescans every five se
 connected, ASR rejects the ambiguous setup until one is disconnected. Numeric ALSA device indices
 are rediscovered automatically after reconnecting USB hardware.
 
+The wake-word gate also contains a deliberately narrow correction for the observed `tiny.en`
+substitution `awl` → `Oh.`: only an explicitly addressed command whose complete post-wake text is
+the single token `oh` is published as `awl`. Longer phrases containing `oh`, background speech, and
+direct `/user_speech` injection are not rewritten, so `oh` is not a global instrument synonym.
+
 `llm_launch.py` is retained only as an obsolete historical snapshot; do not use it for deployment.
 
 The NUC-side Robotiq grasp check treats `gOBJ=2` as direct object contact. For thin tools that do
@@ -177,18 +182,40 @@ the observed empty-close value. If an empty gripper is ever logged as a thin-too
 `grasp_check.rescue_max_pos` in `nuc_launch.py` and restart the NUC launch; a false positive can
 cause the holding guard to block subsequent picks.
 
+Reclaim picks pre-plan the complete approach, straight descent, and straight lift before moving
+from the lower reclaim staging pose. If that complete pre-flight fails, the active NUC setting
+`reclaim_preflight_attempts=2` immediately rebuilds the whole sequence once from the unchanged
+lower stage, without moving Home or refreshing the untouched perception candidates. Only after the
+second failed planning round does the executor retreat through the upper reclaim stage to Home.
+This local retry does not apply after a real empty grasp, an execution error, or a tool slipping
+during the lift; those cases retain their existing safe recovery behavior.
+
 The surgeon-facing HRI display changes to green `TAKE` as soon as the executor reaches the hand.
 Non-red display transitions use a short `0.1 s` debounce; red motion/error states and alerts remain
 immediate. The executor still observes `pre_release_dwell_seconds` before enabling force-guided
 physical release, so the faster visual transition does not shorten the release safety dwell.
 
-When `ReturnToolHome` carries a used tool from the reclaim tray to a right-side instrument home
-slot (`world-x > 0`), it exits through the raised reclaim stage, transits through
-`instrument_left_stage`, and then moves the TCP in one complete collision-checked Cartesian leg to
-the Home position while preserving the held-tool orientation. There is no isolated Home
-shoulder-pan rotation or RRT fallback on that left-stage-to-Home leg. If the complete straight path
-is unavailable, the existing safety fallback returns the still-held tool to the reclaim tray.
-Left-side home slots and normal `return_tool` routes retain their existing behavior.
+`ReturnToolHome` validates its complete reclaim exit before closing the gripper: approach, straight
+descent, straight 4 cm lift, the fixed `instrument_stage_joints` pose, and the controlled transit to
+`instrument_left_stage` are planned from chained future start states. After a successful grasp,
+those cached plans execute unchanged in exactly that order. The generic Cartesian reclaim-upper
+exit is not used on this path. The intentionally hardware-validated corridor carries no
+hypothetical `held_tool` collision box; the real box is attached only after Left-Stage is reached.
+From there, a right-side slot (`world-x > 0`) uses the complete Cartesian Left-Stage→Home leg with
+stable orientation and no shoulder-pan/RRT fallback; a left slot starts its local approach directly.
+Other reclaim picks and normal `return_tool` routes retain their existing upper-stage behavior.
+
+If a cached exit or later Home-slot operation fails after the grasp, the executor stops, waits
+0.25 s for joint standstill, removes the collision box, opens at the current pose, publishes
+`DROPPED`, and plans Home freshly. It no longer attempts the unreliable fallback trip back to the
+reclaim tray. A failed Home recovery leaves the executor in `RECOVERY_ERROR`; pick/grasp/put-back
+goals are rejected until an explicit `return_home` succeeds. Consequently `IDLE` never masks a
+failed recovery.
+
+The continuous Robotiq loss monitor uses the same `[180, 228)` rescue as the initial grasp check,
+so `gOBJ=3, gPO=225` remains held. `OBJ=None` and moving state `OBJ=0` are inconclusive. A conclusive
+negative sample is re-read after the fixed NUC setting
+`grasp_check.loss_confirm_delay_sec=0.1`; only two negative samples publish a confirmed loss.
 
 The perception pipelines use separate YOLO-OBB weights by default:
 `ros_unrelated_scripts/instrument_tray_detector.pt` for the instrument tray and

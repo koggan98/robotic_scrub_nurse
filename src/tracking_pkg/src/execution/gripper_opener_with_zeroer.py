@@ -34,6 +34,32 @@ def is_tool_grasped(obj, pos, rescue_min_pos, rescue_max_pos):
     )
 
 
+def validate_loss_confirm_delay(delay_sec):
+    """Reject unsafe/invalid monitor confirmation delays at startup."""
+    if delay_sec < 0.0:
+        raise ValueError(
+            f'loss_confirm_delay_sec must be >= 0, got {delay_sec}'
+        )
+
+
+def classify_loss_monitor_sample(
+        obj, pos, rescue_min_pos, rescue_max_pos):
+    """Return True=held, False=lost, None=inconclusive for one live sample.
+
+    OBJ=None is a communication failure and OBJ=0 means the fingers are still
+    moving. Neither is evidence of loss, even if the position happens to be
+    outside the thin-tool rescue window.
+    """
+    if obj is None or obj == 0:
+        return None
+    return is_tool_grasped(obj, pos, rescue_min_pos, rescue_max_pos)
+
+
+def is_confirmed_tool_loss(first_state, second_state):
+    """Only two consecutive, conclusive negative samples confirm a loss."""
+    return first_state is False and second_state is False
+
+
 class URCommand:
     def __init__(self, robot_ip, robot_command_port, gripper_port):
         self.robot_ip = robot_ip
@@ -185,6 +211,19 @@ class SocketControllerNode(Node):
         self.grasp_rescue_max_pos = int(
             self.get_parameter("grasp_check.rescue_max_pos").value
         )
+        self.declare_parameter("grasp_check.monitor_enabled", True)
+        self.declare_parameter("grasp_check.monitor_period", 0.5)
+        self.declare_parameter("grasp_check.loss_confirm_delay_sec", 0.1)
+        self.grasp_monitor_enabled = bool(
+            self.get_parameter("grasp_check.monitor_enabled").value
+        )
+        self.grasp_monitor_period = float(
+            self.get_parameter("grasp_check.monitor_period").value
+        )
+        self.grasp_loss_confirm_delay_sec = float(
+            self.get_parameter(
+                "grasp_check.loss_confirm_delay_sec").value
+        )
 
         try:
             validate_rescue_window(
@@ -192,8 +231,9 @@ class SocketControllerNode(Node):
                 self.grasp_rescue_max_pos,
                 self.grasp_empty_close_pos,
             )
+            validate_loss_confirm_delay(self.grasp_loss_confirm_delay_sec)
         except ValueError as exc:
-            self.get_logger().error(f"Invalid grasp rescue window: {exc}")
+            self.get_logger().error(f"Invalid grasp-check configuration: {exc}")
             raise
 
         empty_gap = self.grasp_empty_close_pos - self.grasp_rescue_max_pos
@@ -216,12 +256,8 @@ class SocketControllerNode(Node):
         )
         self.get_logger().info("Socket Mover Node initialized")
 
-        # Kontinuierliche Überwachung: pollt gOBJ, solange ein Werkzeug gehalten
-        # wird, und meldet, wenn es verloren geht (gOBJ 2 -> 3).
-        self.declare_parameter("grasp_check.monitor_enabled", True)
-        self.declare_parameter("grasp_check.monitor_period", 0.5)
-        self.grasp_monitor_enabled = bool(self.get_parameter("grasp_check.monitor_enabled").value)
-        self.grasp_monitor_period = float(self.get_parameter("grasp_check.monitor_period").value)
+        # Kontinuierliche Überwachung: dieselbe gOBJ/gPO-Bewertung wie beim
+        # initialen Greifcheck, mit einer zweiten Messung vor einem Verlustsignal.
         self.monitoring_active = False
 
         # publisher für gripper-status
@@ -347,24 +383,57 @@ class SocketControllerNode(Node):
 
 
     def _monitor_grasp(self):
-        """Pollt gOBJ, solange ein Werkzeug gehalten wird. Kippt gOBJ von 2 (Objekt
-        gehalten) auf 3 (leer durchgeschlossen), gilt das Werkzeug als verloren."""
+        """Poll gOBJ/gPO and confirm a conclusive loss with a second sample."""
         if not self.monitoring_active:
             return
 
         obj = self.ur_node.query_gripper_var("OBJ")
-        if obj is None:
-            return  # Keine Antwort -> nicht fälschlich Verlust melden
+        pos = self.ur_node.query_gripper_var("POS")
+        first = classify_loss_monitor_sample(
+            obj, pos, self.grasp_rescue_min_pos, self.grasp_rescue_max_pos)
+        if first is None:
+            return
+        if first:
+            if obj != 2:
+                self.get_logger().info(
+                    "thin-tool rescue still held: "
+                    f"gOBJ={obj}, gPO={pos} in "
+                    f"[{self.grasp_rescue_min_pos}, "
+                    f"{self.grasp_rescue_max_pos})"
+                )
+            return
 
-        if obj == 3:
-            pos = self.ur_node.query_gripper_var("POS")
-            self.get_logger().warn(
-                f"Werkzeug verloren! gOBJ={obj}, gPO={pos}"
+        time.sleep(self.grasp_loss_confirm_delay_sec)
+        confirm_obj = self.ur_node.query_gripper_var("OBJ")
+        confirm_pos = self.ur_node.query_gripper_var("POS")
+        second = classify_loss_monitor_sample(
+            confirm_obj,
+            confirm_pos,
+            self.grasp_rescue_min_pos,
+            self.grasp_rescue_max_pos,
+        )
+        if not is_confirmed_tool_loss(first, second):
+            self.get_logger().info(
+                "transient loss indication ignored: "
+                f"first gOBJ={obj}, gPO={pos}; "
+                f"confirmation gOBJ={confirm_obj}, gPO={confirm_pos}"
             )
-            msg = Bool()
-            msg.data = False
-            self.tool_grasped_publisher.publish(msg)
-            self.monitoring_active = False
+            if second is True and confirm_obj != 2:
+                self.get_logger().info(
+                    "thin-tool rescue still held after confirmation: "
+                    f"gOBJ={confirm_obj}, gPO={confirm_pos}"
+                )
+            return
+
+        self.get_logger().warn(
+            "confirmed tool loss: "
+            f"first gOBJ={obj}, gPO={pos}; "
+            f"confirmation gOBJ={confirm_obj}, gPO={confirm_pos}"
+        )
+        msg = Bool()
+        msg.data = False
+        self.tool_grasped_publisher.publish(msg)
+        self.monitoring_active = False
 
 
     def gripper_zeroer_callback(self, bool_msg):
