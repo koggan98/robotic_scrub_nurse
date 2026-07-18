@@ -36,6 +36,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import Bool, String
 
 from tracking_msgs.msg import HandState
@@ -71,8 +72,13 @@ class HriDisplayNode(Node):
         self.declare_parameter('color_red', '#E03B24')
         self.declare_parameter('color_amber', '#F5A623')
         self.declare_parameter('color_green', '#2FB170')
+        self.declare_parameter('color_boot', '#6E7681')   # neutral grey
         self.declare_parameter('color_bg', '#141414')
         self.declare_parameter('hand_conf_threshold', 0.3)
+        # Show "starting up" (grey) instead of green "ready" until the ASR node
+        # reports it is listening. The fallback timeout lets the display go ready
+        # anyway if ASR never comes up (e.g. topic-injection testing, no mic).
+        self.declare_parameter('boot_timeout_sec', 60.0)
 
         self.window_name = self.get_parameter('window_name').value
         self.cw = int(self.get_parameter('canvas_width').value)
@@ -85,9 +91,14 @@ class HriDisplayNode(Node):
         self.col_red = _bgr(self.get_parameter('color_red').value)
         self.col_amber = _bgr(self.get_parameter('color_amber').value)
         self.col_green = _bgr(self.get_parameter('color_green').value)
+        self.col_boot = _bgr(self.get_parameter('color_boot').value)
         self.col_bg = _bgr(self.get_parameter('color_bg').value)
         self.hand_conf_threshold = float(
             self.get_parameter('hand_conf_threshold').value)
+        self.boot_timeout_sec = float(
+            self.get_parameter('boot_timeout_sec').value)
+        self._asr_ready = False
+        self._start_time = time.time()
 
         # ── Live inputs ──
         self.system_state = 'IDLE'
@@ -111,8 +122,11 @@ class HriDisplayNode(Node):
             HandState, '/hand_state', self._hand_cb, 10)
         self.create_subscription(
             String, '/handover_event', self._event_cb, 10)
+        # Latched, to match the ASR node — receive the last status (incl. the
+        # initial 'ready') even if the display resubscribes after ASR is up.
         self.create_subscription(
-            String, '/asr_status', self._asr_cb, 10)
+            String, '/asr_status', self._asr_cb,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.window_name, self.cw, self.ch)
@@ -151,6 +165,8 @@ class HriDisplayNode(Node):
             self._raise_alert('Gesture out of reach')
 
     def _asr_cb(self, msg):
+        # Any status from the ASR node means it is up and listening.
+        self._asr_ready = True
         self.asr_listening = (msg.data == 'listening')
 
     def _raise_alert(self, text):
@@ -158,6 +174,8 @@ class HriDisplayNode(Node):
         self._alert_text = text
 
     def _resolve(self):
+        booted = self._asr_ready or (
+            (time.time() - self._start_time) > self.boot_timeout_sec)
         return resolve_display(
             alert_active=time.time() < self._alert_until,
             alert_text=self._alert_text,
@@ -166,7 +184,8 @@ class HriDisplayNode(Node):
             last_response=self.last_response,
             handover_waiting=self.handover_waiting,
             asr_listening=self.asr_listening,
-            pulse_take=self.pulse_take)
+            pulse_take=self.pulse_take,
+            booted=booted)
 
     # ── Render ──────────────────────────────────────────────────────
 
@@ -176,7 +195,7 @@ class HriDisplayNode(Node):
             resolved, time.time())
 
         base = {'red': self.col_red, 'amber': self.col_amber,
-                'green': self.col_green}[color_key]
+                'green': self.col_green, 'boot': self.col_boot}[color_key]
         now = time.time()
         if anim == 'blink':
             # Alternate full/dim at blink_hz; the dim half stays clearly the
@@ -197,22 +216,30 @@ class HriDisplayNode(Node):
 
         # Fonts scale with the canvas so the layout holds at any window size.
         head_scale = self.ch / 170.0
-        detail_scale = self.ch / 460.0
         head_thick = max(2, int(self.ch / 90))
-        detail_thick = max(1, int(self.ch / 260))
+        base_detail_scale = self.ch / 460.0
         text_col = (20, 20, 20)  # dark text on the saturated field
 
         self._center_text(img, headline, y=int(self.ch * 0.38),
                           scale=head_scale, thickness=head_thick, color=text_col)
-        # Detail wraps over up to 3 centred lines instead of being cut off.
-        max_chars = max(8, int(self.cw / (detail_scale * 19)))
-        lines = wrap_lines(detail, max_chars, max_lines=3)
-        line_h = int(self.ch * 0.09)
-        y0 = int(self.ch * 0.60)
-        for i, line in enumerate(lines):
-            self._center_text(img, line, y=y0 + i * line_h,
-                              scale=detail_scale, thickness=detail_thick,
-                              color=text_col)
+
+        # Detail: wrap over as many lines as needed, then shrink to fit the band
+        # below the headline — a long register read-back shows in full instead of
+        # being cut off (the "…" that used to render as "???").
+        max_chars = max(8, int(self.cw / (base_detail_scale * 19)))
+        lines = wrap_lines(detail, max_chars, max_lines=6)
+        if lines:
+            band_top, band_bot = int(self.ch * 0.50), int(self.ch * 0.93)
+            n = len(lines)
+            line_h = min((band_bot - band_top) / n, self.ch * 0.12)
+            detail_scale = min(base_detail_scale, line_h / 34.0)
+            detail_thick = max(1, int(detail_scale * 2))
+            y_start = band_top + (band_bot - band_top - line_h * n) / 2.0
+            for i, line in enumerate(lines):
+                self._center_text(img, line,
+                                  y=int(y_start + line_h * (i + 0.72)),
+                                  scale=detail_scale, thickness=detail_thick,
+                                  color=text_col)
 
         cv2.imshow(self.window_name, img)
         cv2.waitKey(1)

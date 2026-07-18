@@ -18,10 +18,10 @@ from hri_display_logic import (  # noqa: E402
 
 def _r(alert_active=False, alert_text='', system_state='IDLE',
        active_tool_class='', last_response='', handover_waiting=False,
-       asr_listening=False, pulse_take=True):
+       asr_listening=False, pulse_take=True, booted=True):
     return resolve_display(alert_active, alert_text, system_state,
                            active_tool_class, last_response, handover_waiting,
-                           asr_listening, pulse_take)
+                           asr_listening, pulse_take, booted)
 
 
 # ── Colour mapping per state ────────────────────────────────────────
@@ -35,6 +35,28 @@ def test_idle_shows_last_response():
                                 last_response='No needle holder on tray.')
     assert color == 'green'
     assert detail == 'No needle holder on tray.'
+
+
+# ── Boot gating (grey "starting" until ASR is up) ───────────────────
+
+def test_not_booted_idle_is_grey_starting_not_green():
+    color, head, _, _ = _r(system_state='IDLE', booted=False)
+    assert color == 'boot' and head == 'STARTING'
+
+
+def test_not_booted_still_shows_red_for_moving():
+    # Safety: real activity must show its own colour even before boot completes.
+    color, _, _, _ = _r(system_state='PICKING', booted=False)
+    assert color == 'red'
+
+
+def test_not_booted_still_shows_amber_for_gesture():
+    color, _, _, _ = _r(system_state='AWAIT_GESTURE', booted=False)
+    assert color == 'amber'
+
+
+def test_booted_idle_is_green():
+    assert _r(system_state='IDLE', booted=True)[0] == 'green'
 
 
 @pytest.mark.parametrize('state', ['PICKING', 'TRANSPORTING', 'RETURNING',
@@ -159,17 +181,29 @@ def test_wrap_register_response_multiline():
     text = 'Registered 2. Needle Holder, Long Scissors.'
     lines = wrap_lines(text, 20, max_lines=3)
     assert len(lines) >= 2
-    assert all(len(ln) <= 21 for ln in lines)          # <= max + ellipsis
+    assert all(len(ln) <= 23 for ln in lines)          # <= max + "..."
     # No word is lost across the (fitting) wrap.
     assert 'Needle' in ' '.join(lines)
     assert 'Scissors' in ' '.join(lines)
 
 
-def test_wrap_overflow_gets_ellipsis():
+def test_wrap_overflow_gets_ascii_ellipsis():
+    # ASCII "..." not "…": the OpenCV Hershey font renders U+2026 as "???".
     text = 'one two three four five six seven eight nine ten eleven twelve'
     lines = wrap_lines(text, 12, max_lines=2)
     assert len(lines) == 2
-    assert lines[-1].endswith('…')
+    assert lines[-1].endswith('...')
+    assert '…' not in ''.join(lines)
+
+
+def test_wrap_more_lines_shows_full_list():
+    # A long register read-back must fit in 6 lines without truncation.
+    text = ('Registered 8. Awl, Large Forceps, Small Forceps, Hammer, '
+            'Needle Holder, Retractor, Long Scissors, Short Scissors.')
+    lines = wrap_lines(text, 34, max_lines=6)
+    joined = ' '.join(lines)
+    assert 'Short Scissors' in joined      # last tool not cut off
+    assert '...' not in joined             # nothing dropped
 
 
 # ── Debouncer ───────────────────────────────────────────────────────

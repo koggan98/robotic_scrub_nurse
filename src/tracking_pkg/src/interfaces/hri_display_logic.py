@@ -41,13 +41,14 @@ def wrap_lines(text, max_chars, max_lines=3):
             break
     if cur and len(lines) < max_lines:
         lines.append(cur)
-    # Anything left over -> ellipsis on the last line.
+    # Anything left over -> ellipsis on the last line. ASCII "..." not "…":
+    # the OpenCV Hershey font has no glyph for U+2026 and draws it as "???".
     packed = ' '.join(lines)
     if len(packed) < len(text):
         last = lines[-1]
-        if len(last) >= max_chars:
-            last = last[:max_chars - 1].rstrip()
-        lines[-1] = last + '…'
+        if len(last) >= max_chars - 2:
+            last = last[:max_chars - 3].rstrip()
+        lines[-1] = last + '...'
     return lines
 
 
@@ -58,12 +59,15 @@ def is_alert_response(text):
 
 
 def resolve_display(alert_active, alert_text, system_state, active_tool_class,
-                    last_response, handover_waiting, asr_listening, pulse_take):
+                    last_response, handover_waiting, asr_listening, pulse_take,
+                    booted=True):
     """Priority resolution -> (color_key, headline, detail, anim).
 
-    color_key ∈ {red, amber, green}; anim ∈ {steady, blink, pulse}.
+    color_key ∈ {red, amber, green, boot}; anim ∈ {steady, blink, pulse}.
     Priority: transient alert > arm moving > present/take > your-turn
-    (gesture/listening) > idle.
+    (gesture/listening) > idle. `booted` gates ONLY the idle→green fallback:
+    until speech recognition is up, idle shows a neutral "starting" state
+    instead of green "ready" — but any real activity still shows its own colour.
     """
     if alert_active:
         return ('red', 'ALERT', alert_text, 'blink')
@@ -88,6 +92,8 @@ def resolve_display(alert_active, alert_text, system_state, active_tool_class,
         return ('amber', 'GESTURE', 'Make your gesture', 'steady')
     if asr_listening:
         return ('amber', 'SPEAK', 'Speak now', 'steady')
+    if not booted:
+        return ('boot', 'STARTING', 'Waiting for speech recognition', 'steady')
     return ('green', 'READY', last_response or 'Ready', 'steady')
 
 

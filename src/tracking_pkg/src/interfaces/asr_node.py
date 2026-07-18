@@ -40,6 +40,7 @@ from threading import Thread
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 
 from wake_word import plan_wake_segment
@@ -209,7 +210,12 @@ class ASRNode(Node):
         self.publisher = self.create_publisher(String, 'user_speech', 10)
         # HRI status for the visual display: 'listening' (armed, waiting for the
         # command -> amber "speak now") or '' (idle). A pure feedback channel.
-        self.status_publisher = self.create_publisher(String, 'asr_status', 10)
+        # Latched: the HRI display (which boots faster than the Whisper model
+        # loads) still gets the last status — including the initial 'ready' —
+        # whenever it (re)subscribes.
+        self.status_publisher = self.create_publisher(
+            String, 'asr_status',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # Two-stage wake FSM state (only used when two_stage_wake and wake_words).
         self._phase = 'wait_wake'      # 'wait_wake' | 'command'
@@ -303,6 +309,10 @@ class ASRNode(Node):
 
         if not self._load_model():
             return
+
+        # Model loaded and a mic is open: the node is now genuinely listening.
+        # This flips the HRI display from "starting up" to ready.
+        self._publish_status('ready')
 
         chunk_duration = 0.1  # 100ms chunks
 
