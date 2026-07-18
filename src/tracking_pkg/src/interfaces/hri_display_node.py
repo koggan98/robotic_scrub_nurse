@@ -183,7 +183,6 @@ class HriDisplayNode(Node):
             active_tool_class=self.active_tool_class,
             last_response=self.last_response,
             handover_waiting=self.handover_waiting,
-            asr_listening=self.asr_listening,
             pulse_take=self.pulse_take,
             booted=booted)
 
@@ -241,8 +240,38 @@ class HriDisplayNode(Node):
                                   scale=detail_scale, thickness=detail_thick,
                                   color=text_col)
 
+        # Listening badge: drawn ON TOP of any state so the wake-word feedback
+        # is visible even while a red RECOVERY/BUSY field owns the main colour —
+        # the surgeon can still see that "robot" was heard.
+        if self.asr_listening:
+            self._draw_listening_badge(img)
+
         cv2.imshow(self.window_name, img)
         cv2.waitKey(1)
+
+    def _draw_listening_badge(self, img):
+        """A small amber 'SPEAK' chip in the top-right corner, overlaid on top
+        of whatever the main field shows."""
+        bh = max(24, int(self.ch * 0.11))          # badge height
+        pad = int(self.ch * 0.03)
+        scale = bh / 34.0
+        thick = max(1, int(scale * 2))
+        label = 'SPEAK'
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+        dot_r = bh // 4
+        inner_pad = int(bh * 0.35)
+        bw = inner_pad + 2 * dot_r + inner_pad // 2 + tw + inner_pad
+        x1, y1 = self.cw - pad - bw, pad
+        x2, y2 = self.cw - pad, pad + bh
+        cv2.rectangle(img, (x1, y1), (x2, y2), self.col_amber, -1)
+        dark = (20, 20, 20)
+        cx = x1 + inner_pad + dot_r
+        cy = (y1 + y2) // 2
+        cv2.circle(img, (cx, cy), dot_r, dark, -1)
+        cv2.putText(img, label,
+                    (cx + dot_r + inner_pad // 2, cy + th // 2),
+                    font, scale, dark, thick, cv2.LINE_AA)
 
     def _center_text(self, img, text, y, scale, thickness, color):
         if not text:

@@ -59,21 +59,23 @@ def is_alert_response(text):
 
 
 def resolve_display(alert_active, alert_text, system_state, active_tool_class,
-                    last_response, handover_waiting, asr_listening, pulse_take,
+                    last_response, handover_waiting, pulse_take,
                     booted=True):
     """Priority resolution -> (color_key, headline, detail, anim).
 
     color_key ∈ {red, amber, green, boot}; anim ∈ {steady, blink, pulse}.
-    Priority: transient alert > arm moving > present/take > your-turn
-    (gesture/listening) > idle. `booted` gates ONLY the idle→green fallback:
-    until speech recognition is up, idle shows a neutral "starting" state
-    instead of green "ready" — but any real activity still shows its own colour.
+    Priority: transient alert > arm moving > present/take > gesture > idle.
+    Wake-word listening is deliberately NOT a main-field state — it is shown by
+    a small always-on-top badge in the node, so idle stays green while "robot"
+    is being heard. `booted` gates ONLY the idle→green fallback: until speech
+    recognition is up, idle shows a neutral "starting" state instead of green.
     """
     if alert_active:
         return ('red', 'ALERT', alert_text, 'blink')
     if system_state in _RECOVERY_ERROR:
         tool = pretty_tool(active_tool_class)
-        detail = f'{tool} held — return tool' if tool else 'Send robot home'
+        # ASCII only: the OpenCV Hershey font draws "—"/"…" as "???".
+        detail = f'{tool} held, say return' if tool else 'Send robot home'
         return ('red', 'RECOVERY', detail, 'blink')
     if system_state in _MOVING:
         tool = pretty_tool(active_tool_class)
@@ -90,8 +92,6 @@ def resolve_display(alert_active, alert_text, system_state, active_tool_class,
         return ('green', 'TAKE', detail, 'pulse' if pulse_take else 'steady')
     if system_state == 'AWAIT_GESTURE' or handover_waiting:
         return ('amber', 'GESTURE', 'Make your gesture', 'steady')
-    if asr_listening:
-        return ('amber', 'SPEAK', 'Speak now', 'steady')
     if not booted:
         return ('boot', 'STARTING', 'Waiting for speech recognition', 'steady')
     return ('green', 'READY', last_response or 'Ready', 'steady')

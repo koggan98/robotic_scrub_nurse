@@ -307,6 +307,14 @@ public:
         // grip can relax in the first moment after lifting).
         post_lift_settle_sec_ = declare_parameter("post_lift_settle_sec", 0.5);
         cartesian_min_fraction_ = declare_parameter("cartesian_min_fraction", 0.95);
+        // The straight-up lift after a grasp only has to raise the tool clear of
+        // the tray, not reach the exact approach pose. A thin tool near a rail
+        // can graze the gripper in the last few mm (e.g. 89 % of a 4 cm lift);
+        // accepting a shorter-but-still-clearing straight lift lets the pick
+        // proceed instead of rejecting an obviously graspable tool. It stops
+        // safely before the graze; the present/transit is planned fresh after.
+        // Approach and descend stay strict (they must reach the tool exactly).
+        lift_min_fraction_ = declare_parameter("lift_min_fraction", 0.6);
         // Handover waits for the surgeon's double_open_close gesture before
         // moving to the hand. 0.0 = wait indefinitely.
         gesture_wait_timeout_sec_ = declare_parameter("gesture_wait_timeout_sec", 0.0);
@@ -1663,16 +1671,35 @@ private:
             return false;
         }
 
+        // Transit target = the Left-Stage LAUNCH POSITION. For a RIGHT slot we
+        // must reach the full taught pose (orientation included), because it is
+        // the start point of the home_transit that follows. For a LEFT slot the
+        // arm places from here directly, so snapping the wrist to the taught
+        // orientation only to rotate it back for the placement is a redundant,
+        // visible double-rotation — keep the current (shoulder-pan) orientation
+        // instead, a pure translation, and let the local place approach do the
+        // one and only wrist rotation.
+        geometry_msgs::msg::Pose left_transit_target = left_target;
+        if (!plan_home_transit) {
+            geometry_msgs::msg::Pose pan_pose;
+            if (!jointsToTcpPose(left_pan, pan_pose, err)) {
+                err = "left-stage pan FK: " + err;
+                return false;
+            }
+            left_transit_target.orientation = pan_pose.orientation;
+        }
+
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.left_stage_pan));
         std::string linear_err;
-        if (!planLinearPose(left_target, legs.left_stage_transit, linear_err)) {
+        if (!planLinearPose(
+                left_transit_target, legs.left_stage_transit, linear_err)) {
             // The fixed Left-Stage pose may need a joint-space solution from the
             // taught shoulder-pan waypoint. It is planned now and cached; nothing
             // is re-planned after the grasp.
             move_group_->setStartState(
                 makeStartStateFromPlanEnd(legs.left_stage_pan));
             if (!planPoseTarget(
-                    left_target, legs.left_stage_transit, err)) {
+                    left_transit_target, legs.left_stage_transit, err)) {
                 err = "left-stage transit failed (linear: " + linear_err +
                       "; planned: " + err + ")";
                 return false;
@@ -1765,7 +1792,7 @@ private:
         }
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.descend));
         if (!planLinearPose(
-                approach_pose_out, legs.lift, err, -1.0,
+                approach_pose_out, legs.lift, err, lift_min_fraction_,
                 elbow_constraints_ptr)) {
             err = "lift plan: " + err;
             return false;
@@ -2698,12 +2725,34 @@ private:
             err = "place approach plan: " + err; return false;
         }
         move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
-        if (!planLinearPose(release_pose, descend_plan, err)) {
-            err = "place descend plan: " + err; return false;
+        std::string descend_err;
+        if (!planLinearPose(release_pose, descend_plan, descend_err)) {
+            // The straight cartesian descend is blocked (e.g. the big held_tool
+            // box grazes a tray rail near the slot), even though the release pose
+            // itself is reachable — the tool lay there at registration. Fall back
+            // to a full motion plan to the same pose: RRT can route around the
+            // graze. planPoseTarget already retries (plan_attempts).
+            RCLCPP_WARN(get_logger(),
+                "Place descend cartesian low (%s) — falling back to a planned "
+                "descend to the release pose.", descend_err.c_str());
+            move_group_->setStartState(makeStartStateFromPlanEnd(approach_plan));
+            if (!planPoseTarget(release_pose, descend_plan, err)) {
+                err = "place descend plan (cartesian and planned both failed): "
+                      + err;
+                return false;
+            }
         }
         move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
-        if (!planLinearPose(approach_pose, lift_plan, err)) {
-            err = "place lift plan: " + err; return false;
+        std::string lift_err;
+        if (!planLinearPose(approach_pose, lift_plan, lift_err)) {
+            RCLCPP_WARN(get_logger(),
+                "Place lift cartesian low (%s) — falling back to a planned lift.",
+                lift_err.c_str());
+            move_group_->setStartState(makeStartStateFromPlanEnd(descend_plan));
+            if (!planPoseTarget(approach_pose, lift_plan, err)) {
+                err = "place lift plan (cartesian and planned both failed): " + err;
+                return false;
+            }
         }
 
         RCLCPP_INFO(get_logger(), "Placing at (%.3f, %.3f, %.3f) on the %s tray.",
@@ -3481,6 +3530,7 @@ private:
     double grasp_check_timeout_sec_;
     double post_lift_settle_sec_;
     double cartesian_min_fraction_;
+    double lift_min_fraction_;
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;
     double return_release_height_m_;

@@ -18,10 +18,10 @@ from hri_display_logic import (  # noqa: E402
 
 def _r(alert_active=False, alert_text='', system_state='IDLE',
        active_tool_class='', last_response='', handover_waiting=False,
-       asr_listening=False, pulse_take=True, booted=True):
+       pulse_take=True, booted=True):
     return resolve_display(alert_active, alert_text, system_state,
                            active_tool_class, last_response, handover_waiting,
-                           asr_listening, pulse_take, booted)
+                           pulse_take, booted)
 
 
 # ── Colour mapping per state ────────────────────────────────────────
@@ -92,9 +92,10 @@ def test_await_gesture_state_is_amber():
         'amber', 'GESTURE', 'Make your gesture', 'steady')
 
 
-def test_listening_is_amber():
-    assert _r(asr_listening=True) == (
-        'amber', 'SPEAK', 'Speak now', 'steady')
+def test_listening_does_not_take_over_the_main_field():
+    # Wake-word listening is shown by the badge only; the idle field stays green
+    # (the badge is drawn separately in the node, on top of any state).
+    assert _r(system_state='IDLE')[0] == 'green'
 
 
 def test_alert_blinks_red_over_everything():
@@ -112,23 +113,19 @@ def test_recovery_error_is_a_persistent_red_recovery_prompt():
 
 
 def test_holding_recovery_prompts_operator_to_return_tool():
-    assert _r(
-        system_state='RECOVERY_ERROR', active_tool_class='hammer') == (
-        'red', 'RECOVERY', 'Hammer held — return tool', 'blink')
+    color, head, detail, anim = _r(
+        system_state='RECOVERY_ERROR', active_tool_class='hammer')
+    assert (color, head, anim) == ('red', 'RECOVERY', 'blink')
+    assert 'Hammer' in detail and 'return' in detail
+    assert detail.isascii()      # no "—"/"…" that render as "???"
 
 
 # ── Priority ordering ───────────────────────────────────────────────
 
-def test_moving_beats_gesture_and_listening():
-    # If somehow both are set, arm motion (hazard) must win.
-    color, head, _, _ = _r(system_state='PICKING', handover_waiting=True,
-                           asr_listening=True)
+def test_moving_beats_gesture():
+    # If both are set, arm motion (hazard) must win.
+    color, _, _, _ = _r(system_state='PICKING', handover_waiting=True)
     assert color == 'red'
-
-
-def test_gesture_beats_listening():
-    _, head, _, _ = _r(handover_waiting=True, asr_listening=True)
-    assert head == 'GESTURE'
 
 
 def test_returning_detail():
@@ -209,7 +206,7 @@ def test_wrap_more_lines_shows_full_list():
 # ── Debouncer ───────────────────────────────────────────────────────
 
 GREEN = ('green', 'READY', 'Ready', 'steady')
-AMBER = ('amber', 'SPEAK', 'Speak now', 'steady')
+AMBER = ('amber', 'GESTURE', 'Make your gesture', 'steady')
 RED = ('red', 'BUSY', 'Fetching Awl', 'steady')
 ALERT = ('red', 'ALERT', 'Dropped', 'blink')
 
