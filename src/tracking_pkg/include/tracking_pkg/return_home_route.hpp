@@ -17,6 +17,25 @@ enum class ReturnHomeExitPhase
   LEFT_STAGE_TRANSIT,
 };
 
+enum class HomeReturnOrigin
+{
+  DIRECT,
+  RECLAIM,
+  HANDOVER,
+};
+
+inline constexpr bool homeReturnUsesLeftStage(const HomeReturnOrigin origin)
+{
+  return origin == HomeReturnOrigin::RECLAIM ||
+         origin == HomeReturnOrigin::HANDOVER;
+}
+
+inline constexpr bool homeReturnUsesInstrumentStage(
+  const HomeReturnOrigin origin)
+{
+  return origin == HomeReturnOrigin::RECLAIM;
+}
+
 // The post-lift route is deliberately fixed. Keeping this list pure makes the
 // safety-relevant order independently testable without MoveIt or robot hardware.
 inline constexpr std::array<ReturnHomeExitPhase, 3> returnHomePostLiftPhases()

@@ -216,6 +216,13 @@ hardware-validated fixed corridor carries no hypothetical `held_tool` box; the r
 is attached at Left-Stage for a left slot or at Home for a right slot. Other reclaim picks and
 normal `return_tool` routes retain their existing upper-stage behavior.
 
+Empty Home returns use the same predictable side corridor. After a failed Reclaim pre-flight or
+after placing a returned tool back on Reclaim, the arm travels through
+`instrument_stage_joints`→the full taught Left-Stage pose→the full taught Home pose instead of
+planning directly from Reclaim to Home. After a completed handover, the empty arm first retraces to
+the exact recorded Handover departure/Present joint pose, then uses Left-Stage→Home. This prevents
+both empty return paths from choosing an uncontrolled cross-workspace shortcut.
+
 A planning failure on the extended right-side pre-flight occurs before the gripper closes, so the
 tool remains on reclaim. If a cached execution or later Home-slot operation nevertheless fails
 after a confirmed grasp, the executor stops, waits 0.25 s for joint standstill, keeps the gripper

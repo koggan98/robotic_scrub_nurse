@@ -109,12 +109,15 @@ RViz live only on the NUC.
    right-corridor planning failure leaves the tool untouched on reclaim. This hardware-validated
    fixed corridor intentionally has no hypothetical tool box; the real box is attached at
    Left-Stage for left slots or Home for right slots, before the collision-checked local slot plan.
-   Other reclaim routes retain `exitReclaimToUpper`.
+   Empty returns from Reclaim also use instrument-stage→Left-Stage→Home; other reclaim routes retain
+   `exitReclaimToUpper` while carrying a tool.
 5. `handover_tool` sets `/handover_waiting=true`, waits for the surgeon's `double_open_close` gesture
    on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
    `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
    red/alert states remain immediate. The unchanged pre-release dwell completes before the executor
-   enables force-guided physical release.
+   enables force-guided physical release. After release, the empty arm retraces to the exact joint
+   pose from which it departed for the hand, then returns through Left-Stage→Home rather than
+   free-planning directly from the hand pose.
 6. `gripper_opener_with_zeroer.py` drives the Robotiq (URCap socket, port 63352) and opens on a
    force tug read from `/force_torque_sensor_broadcaster/wrench`; it publishes `/tool_grasped`
    as both grasp verification and continuous loss monitor. Robotiq `gOBJ=2` is direct grasp

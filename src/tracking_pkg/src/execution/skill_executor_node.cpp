@@ -83,6 +83,7 @@ using ReleaseTool = tracking_msgs::action::ReleaseTool;
 using ReturnHome = tracking_msgs::action::ReturnHome;
 using ReturnTool = tracking_msgs::action::ReturnTool;
 using ReturnToolHome = tracking_msgs::action::ReturnToolHome;
+using HomeReturnOrigin = tracking_pkg::execution::HomeReturnOrigin;
 
 using GoalHandlePick = rclcpp_action::ServerGoalHandle<PickTool>;
 using GoalHandleGrasp = rclcpp_action::ServerGoalHandle<GraspTool>;
@@ -1101,9 +1102,10 @@ private:
         return moveToPoseTarget(upper, err);
     }
 
-    // Best-effort retreat to home after a failed grasp/place. From the reclaim tray
-    // that means rising to the upper pad first, to clear the camera post before the
-    // big swing back. From the instrument tray, straight home.
+    // Best-effort retreat to home after a failed grasp/place. From the reclaim
+    // tray that means rising to the upper pad first, then following the same
+    // instrument-stage -> Left-Stage -> Home corridor used by ReturnToolHome.
+    // From the instrument tray, go straight Home.
     bool retreatToHome(const std::string &location) {
         std::string stage_err;
         if (location == kReclaimLocation) {
@@ -1115,7 +1117,10 @@ private:
             }
         }
         std::string home_err;
-        if (!doReturnHomeInternal(home_err)) {
+        const HomeReturnOrigin origin = location == kReclaimLocation
+            ? HomeReturnOrigin::RECLAIM
+            : HomeReturnOrigin::DIRECT;
+        if (!doReturnHomeInternal(home_err, origin)) {
             recovery_error_.store(true);
             publishState("RECOVERY_ERROR", "", "");
             RCLCPP_ERROR(get_logger(),
@@ -1297,7 +1302,9 @@ private:
     // held. Stop, clean up the now-stale collision representation, publish a
     // truthful DROPPED event, and plan Home from the fresh live state.
     bool recoverAfterConfirmedToolLoss(
-        const std::string &reason, std::string &err) {
+        const std::string &reason,
+        std::string &err,
+        HomeReturnOrigin home_origin = HomeReturnOrigin::DIRECT) {
         RCLCPP_WARN(get_logger(),
             "Confirmed tool-loss recovery (%s): stopping, opening the empty "
             "gripper, then returning home.",
@@ -1313,12 +1320,19 @@ private:
         // believing the robot holds it — mark it unknown and let perception find
         // it again if it landed on a tray.
         publishHeldToolEvent("DROPPED");
+        std::vector<double> handover_present;
         {   // nothing held any more -> no handover to retrace
             std::lock_guard<std::mutex> lock(state_mutex_);
+            if (home_origin == HomeReturnOrigin::HANDOVER &&
+                    have_last_present_) {
+                handover_present = last_present_joints_;
+            }
             have_last_present_ = false;
         }
         std::string home_err;
-        if (!doReturnHomeInternal(home_err)) {
+        if (!doReturnHomeInternal(
+                home_err, home_origin,
+                handover_present.empty() ? nullptr : &handover_present)) {
             recovery_error_.store(true);
             publishState("RECOVERY_ERROR", "", "");
             err = "recovery_failed: dropped tool at current pose after " +
@@ -2291,6 +2305,7 @@ private:
 
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         geometry_msgs::msg::Pose target;
+        std::vector<double> handover_departure_joints;
 
         if (!goal_pose.header.frame_id.empty()) {
             // Explicit pose bypass (manual testing) — skip the gesture wait.
@@ -2328,7 +2343,8 @@ private:
                     bool have_grasp_data = false;
                     if (!lastToolGrasped(have_grasp_data) && have_grasp_data) {
                         recoverAfterConfirmedToolLoss(
-                            "gripper empty during handover", err);
+                            "gripper empty during handover", err,
+                            HomeReturnOrigin::HANDOVER);
                         return false;
                     }
                     bool preempted = false;
@@ -2404,12 +2420,21 @@ private:
         const bool still_holding = lastToolGrasped(have_grasp_data);
         if (have_grasp_data && !still_holding) {
             recoverAfterConfirmedToolLoss(
-                "gripper empty before handover", err);
+                "gripper empty before handover", err,
+                HomeReturnOrigin::HANDOVER);
             return false;
         }
 
         publishState("HANDOVER", tool_id_snapshot, tool_class_snapshot);
         publishHandoverFeedback(goal_handle, "MOVING_TO_HAND");
+        // Capture the exact pose from which the arm leaves for the hand. This
+        // makes the empty return deterministic even for diagnostic HandoverTool
+        // calls that did not pass through doPick's normal Present setup.
+        handover_departure_joints = move_group_->getCurrentJointValues();
+        if (handover_departure_joints.size() != joint_state_names_.size()) {
+            err = "could not record handover departure pose";
+            return false;
+        }
         if (move_group_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
             err = "handover execute failed";
             return false;
@@ -2442,8 +2467,12 @@ private:
         // fired on the force-guided release). ONLY now is it his — and from here it
         // is invisible to every camera, which is entirely normal.
         publishHeldToolEvent("HANDED_OVER");
+        std::vector<double> handover_present = handover_departure_joints;
         {   // handover complete -> nothing to retrace any more
             std::lock_guard<std::mutex> lock(state_mutex_);
+            if (handover_present.empty() && have_last_present_) {
+                handover_present = last_present_joints_;
+            }
             have_last_present_ = false;
         }
 
@@ -2456,7 +2485,11 @@ private:
 
         if (return_home_after_handover_) {
             std::string home_err;
-            if (!doReturnHomeInternal(home_err)) {
+            if (!doReturnHomeInternal(
+                    home_err, HomeReturnOrigin::HANDOVER,
+                    handover_present.empty() ? nullptr : &handover_present)) {
+                recovery_error_.store(true);
+                publishState("RECOVERY_ERROR", "", "");
                 err = "return-home after handover failed: " + home_err;
                 return false;
             }
@@ -2488,11 +2521,106 @@ private:
 
     // ── Skill: ReturnHome ────────────────────────────────────────────
 
-    bool doReturnHomeInternal(std::string &err) {
+    // Reach the complete taught Left-Stage pose through the same controlled
+    // shoulder-pan-first transition as the cached ReturnToolHome exit. The
+    // gripper is empty on the reclaim/handover returns that use this helper.
+    bool moveToInstrumentLeftStage(std::string &err) {
+        RCLCPP_INFO(get_logger(),
+            "Home return via Left-Stage: controlled shoulder-pan transition.");
+        if (!rotateShoulderPanTo(instrument_left_stage_joints_[0], err)) {
+            err = "left-stage shoulder pan: " + err;
+            return false;
+        }
+
+        geometry_msgs::msg::Pose left_target;
+        if (!jointsToTcpPose(
+                instrument_left_stage_joints_, left_target, err)) {
+            err = "left-stage target FK: " + err;
+            return false;
+        }
+
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        move_group_->setStartStateToCurrentState();
+        std::string linear_err;
+        if (planLinearPose(left_target, plan, linear_err) &&
+                executePlan(plan, linear_err)) {
+            return true;
+        }
+        RCLCPP_WARN(get_logger(),
+            "Home return: linear Left-Stage transit not clean (%s); using "
+            "the same full-pose planned fallback as ReturnToolHome.",
+            linear_err.c_str());
+        if (!moveToPoseTarget(left_target, err)) {
+            err = "left-stage full-pose transit: " + err;
+            return false;
+        }
+        return true;
+    }
+
+    // The final Left-Stage -> Home leg is shared by empty reclaim returns,
+    // post-handover returns, and the tool-carrying ReturnToolHome pre-flight.
+    // Require the complete full-pose Cartesian path and never replace it with a
+    // stochastic detour.
+    bool moveLeftStageToHome(std::string &err) {
+        geometry_msgs::msg::Pose home_target;
+        if (!jointsToTcpPose(home_joints_, home_target, err)) {
+            err = "home target FK: " + err;
+            return false;
+        }
+        moveit::planning_interface::MoveGroupInterface::Plan home_plan;
+        move_group_->setStartStateToCurrentState();
+        constexpr double kCompletePathFraction = 1.0 - 1e-6;
+        if (!planLinearPose(
+                home_target, home_plan, err, kCompletePathFraction)) {
+            err = "left-stage -> home full-pose plan: " + err;
+            return false;
+        }
+        RCLCPP_INFO(get_logger(),
+            "Home return via Left-Stage: full-pose Cartesian transit to Home.");
+        if (!executePlan(home_plan, err)) {
+            err = "left-stage -> home execute: " + err;
+            return false;
+        }
+        return true;
+    }
+
+    bool doReturnHomeInternal(
+        std::string &err,
+        HomeReturnOrigin origin = HomeReturnOrigin::DIRECT,
+        const std::vector<double> *handover_present = nullptr) {
         publishState("RETURNING", "", "");
         if (home_joints_.size() != 6) {
             err = "home_joints must have 6 values";
             return false;
+        }
+
+        if (origin == HomeReturnOrigin::HANDOVER) {
+            if (!handover_present ||
+                    handover_present->size() != joint_state_names_.size()) {
+                err = "handover return requires the recorded Present pose";
+                return false;
+            }
+            RCLCPP_INFO(get_logger(),
+                "Handover -> Home: retracting to recorded Present pose before "
+                "the Left-Stage corridor.");
+            if (!moveToJointPositions(*handover_present, err)) {
+                err = "handover -> Present retract: " + err;
+                return false;
+            }
+        }
+
+        if (tracking_pkg::execution::homeReturnUsesInstrumentStage(origin)) {
+            RCLCPP_INFO(get_logger(),
+                "Reclaim -> Home empty return: reclaim -> instrument stage.");
+            if (!moveToJointPositions(instrument_stage_joints_, err)) {
+                err = "reclaim -> instrument stage: " + err;
+                return false;
+            }
+        }
+
+        if (tracking_pkg::execution::homeReturnUsesLeftStage(origin)) {
+            if (!moveToInstrumentLeftStage(err)) return false;
+            return moveLeftStageToHome(err);
         }
         return moveToJointPositions(home_joints_, err);
     }
@@ -2718,7 +2846,10 @@ private:
         }
 
         std::string home_err;
-        if (!doReturnHomeInternal(home_err)) {
+        const HomeReturnOrigin home_origin = location == kReclaimLocation
+            ? HomeReturnOrigin::RECLAIM
+            : HomeReturnOrigin::DIRECT;
+        if (!doReturnHomeInternal(home_err, home_origin)) {
             err = "return-home after return-tool failed: " + home_err;
             return false;
         }
