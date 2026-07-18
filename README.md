@@ -152,21 +152,20 @@ The runtime is distributed across two machines that share a `ROS_DOMAIN_ID` over
 `192.168.12.0/24` link (per-machine CycloneDDS configs `cyclone_dds_nuc.xml` / `cyclone_dds_jetson.xml`):
 
 ```bash
-# On the Jetson Orin Nano (perception + AI); Samson Q2U is the default.
+# On the Jetson Orin Nano (perception + AI)
 # Export OPENAI_API_KEY first when the LLM fallback should be available.
 ros2 launch tracking_pkg jetson_launch.py
-
-# Alternatively, use the Jieli USB microphone receiver
-ros2 launch tracking_pkg jetson_launch.py microphone:=jieli
 
 # On the Intel NUC (robot control); start the UR driver separately first
 ros2 launch tracking_pkg nuc_launch.py ur_type:=ur3e
 ```
 
-The available Jetson microphone profiles are `samson`, `jieli`, and `default`. `default` uses the
-PortAudio system default. The `jieli` profile opens `USB Composite Device` at its native 48 kHz and
-lets faster-whisper decode/resample the captured WAV buffer to 16 kHz. This avoids numeric ALSA
-device indices, which can change after a reboot or after reconnecting USB hardware.
+Connect either the Samson Q2U or the Jieli-based `USB Composite Device` receiver to the Jetson;
+`asr_node` detects the single connected supported microphone automatically. Samson is captured at
+16 kHz. Jieli is captured at its native 48 kHz and faster-whisper decodes/resamples the WAV buffer
+to 16 kHz. If neither microphone is present, ASR waits and rescans every five seconds. If both are
+connected, ASR rejects the ambiguous setup until one is disconnected. Numeric ALSA device indices
+are rediscovered automatically after reconnecting USB hardware.
 
 `llm_launch.py` is retained only as an obsolete historical snapshot; do not use it for deployment.
 

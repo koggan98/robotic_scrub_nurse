@@ -80,10 +80,11 @@ RViz live only on the NUC.
   camera rate, ~63% CPU + ~1.6 GB, for no production consumer).
 
 ## High-Level Active ROS Flow
-1. `asr_node` (faster-whisper `tiny.en`, local, energy-based VAD) runs on the Jetson, transcribes a
-   spoken command, and publishes it on `/user_speech`. `jetson_launch.py` selects either the
-   `samson` profile (Samson Q2U, direct 16 kHz) or the `jieli` profile (Jieli USB receiver, native
-   48 kHz decoded/resampled to Whisper's 16 kHz); `default` delegates selection to PortAudio.
+1. `asr_node` (faster-whisper `tiny.en`, local, energy-based VAD) runs on the Jetson, automatically
+   selects the single connected supported USB microphone, transcribes a spoken command, and
+   publishes it on `/user_speech`. Samson Q2U is captured directly at 16 kHz; the Jieli receiver is
+   captured at its native 48 kHz and decoded/resampled to Whisper's 16 kHz. With no supported input
+   ASR waits and rescans; two simultaneous supported inputs are rejected as ambiguous.
 2. `llm_orchestrator_node` consumes `/user_speech`, calls `/get_world_model` (JSON scene snapshot),
    matches the request to a tracked `tool_id` via `config/tool_knowledge_base.yaml` synonyms
    (multilingual, incl. German), and runs an OpenAI tool-calling loop.

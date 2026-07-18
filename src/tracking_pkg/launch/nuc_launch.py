@@ -4,10 +4,9 @@ NUC Launch File — Robot Control Layer
 Runs on the Intel NUC (Humble, x86_64).
 Handles UR driver, MoveIt, skill execution, and gripper.
 
-Perception / AI nodes, including ASR and microphone capture, run separately on
-the Jetson via jetson_launch.py. Select the microphone on that launch; the NUC
-does not open an audio input. Both machines must share the same ROS_DOMAIN_ID
-and use CycloneDDS.
+Perception / AI nodes, including ASR and automatic microphone selection, run
+separately on the Jetson via jetson_launch.py. The NUC does not open an audio
+input. Both machines must share the same ROS_DOMAIN_ID and use CycloneDDS.
 
 Env vars:
   UR_ROBOT_IP   IP of the UR controller (default: 192.168.0.100)

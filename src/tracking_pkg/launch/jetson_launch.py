@@ -7,10 +7,6 @@ Handles cameras, detection, hand tracking, grasp reasoning, world model, ASR and
 Robot control (UR driver, MoveIt, skill execution) runs separately on the NUC via
 nuc_launch.py. Both machines must share the same ROS_DOMAIN_ID and use CycloneDDS.
 
-Launch args:
-  microphone          ASR microphone profile: samson, jieli, or default
-                      (default: samson)
-
 Env vars:
   RECLAIM_TRAY_CAM_SERIAL   Serial of the reclaim tray camera  (default: 239222300719)
   TRAY_CAM_SERIAL    Serial of the tray camera   (default: 239222302690)
@@ -26,7 +22,6 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
-    OpaqueFunction,
     SetEnvironmentVariable,
     TimerAction,
 )
@@ -46,65 +41,6 @@ def _default_model_path(filename):
         os.path.join(home, 'robotic_scrub_nurse_ws', 'ros_unrelated_scripts', filename),
     ]
     return next((path for path in candidates if os.path.isfile(path)), candidates[0])
-
-
-_MICROPHONE_PROFILES = {
-    # PortAudio name substring, native capture rate. Device-name substrings are
-    # stable across ALSA card-index changes, unlike numeric sounddevice indices.
-    'samson': ('Samson', 16000),
-    'jieli': ('USB Composite Device', 48000),
-    # Let PortAudio use the host's default input. This is useful for another
-    # microphone, provided the OS default supports Whisper's native 16 kHz.
-    'default': ('', 16000),
-}
-
-
-def _resolve_microphone_profile(profile):
-    """Return ``(PortAudio name substring, native rate)`` for a launch profile."""
-    normalized = str(profile).strip().lower()
-    try:
-        return _MICROPHONE_PROFILES[normalized]
-    except KeyError as exc:
-        choices = ', '.join(_MICROPHONE_PROFILES)
-        raise ValueError(
-            f'Unknown microphone profile {profile!r}; choose one of: {choices}'
-        ) from exc
-
-
-def _launch_asr(context):
-    """Create ASR after resolving the selected microphone launch profile."""
-    profile = LaunchConfiguration('microphone').perform(context)
-    audio_device, capture_sample_rate = _resolve_microphone_profile(profile)
-
-    return [TimerAction(
-        period=13.0,
-        actions=[
-            Node(
-                package='tracking_pkg',
-                executable='asr_node.py',
-                name='asr_node',
-                output='screen',
-                parameters=[{
-                    # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU.
-                    # The deterministic NLU (fuzzy verbs/tools) plus the
-                    # initial_prompt vocabulary bias absorb its rougher
-                    # raw accuracy. Revert to 'base.en' if mishearings
-                    # get worse in practice.
-                    'whisper_model':               'tiny.en',
-                    'language':                    'en',
-                    'silence_threshold_seconds':   0.35,
-                    'cpu_threads':                 3,
-                    'audio_device':                audio_device,
-                    'capture_sample_rate':         capture_sample_rate,
-                    # Only utterances addressed to the robot pass; the wake
-                    # word is stripped before /user_speech. Direct topic
-                    # injection bypasses the gate (no mic involved).
-                    'wake_words': ['robot', 'robo', 'rob', 'robi',
-                                   'robbie', 'robert'],
-                }],
-            ),
-        ],
-    )]
 
 
 def generate_launch_description():
@@ -135,11 +71,6 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument('ur_type',       default_value='ur3e'),
-        DeclareLaunchArgument(
-            'microphone',
-            default_value='samson',
-            description='ASR microphone profile: samson, jieli, or default',
-        ),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
 
         # ── Static TFs (ArUco marker world-poses) ─────────────────
@@ -428,9 +359,40 @@ def generate_launch_description():
 
         # ── ASR (Whisper — CPU on the Jetson, ctranslate2 has no CUDA build) ──
         # Loaded last (13 s) and thread-capped so it doesn't peg all 6 cores /
-        # starve sshd during startup. The profile selects a stable PortAudio
-        # name and the microphone's native rate (Samson 16 kHz, Jieli 48 kHz).
-        OpaqueFunction(function=_launch_asr),
+        # starve sshd during startup. The node automatically selects the one
+        # connected supported microphone and uses its native capture rate.
+        TimerAction(
+            period=13.0,
+            actions=[
+                Node(
+                    package='tracking_pkg',
+                    executable='asr_node.py',
+                    name='asr_node',
+                    output='screen',
+                    parameters=[{
+                        # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU.
+                        # The deterministic NLU (fuzzy verbs/tools) plus the
+                        # initial_prompt vocabulary bias absorb its rougher
+                        # raw accuracy. Revert to 'base.en' if mishearings
+                        # get worse in practice.
+                        'whisper_model':               'tiny.en',
+                        'language':                    'en',
+                        'silence_threshold_seconds':   0.35,
+                        'cpu_threads':                 3,
+                        # PortAudio name substrings paired with native capture
+                        # rates. Exactly one is expected to be connected.
+                        'audio_device_candidates':
+                            ['Samson', 'USB Composite Device'],
+                        'audio_device_candidate_rates': [16000, 48000],
+                        # Only utterances addressed to the robot pass; the wake
+                        # word is stripped before /user_speech. Direct topic
+                        # injection bypasses the gate (no mic involved).
+                        'wake_words': ['robot', 'robo', 'rob', 'robi',
+                                       'robbie', 'robert'],
+                    }],
+                ),
+            ],
+        ),
 
         # ── Command router (deterministic, replaces the LLM orchestrator) ──
         # Verb lexicon + fuzzy synonym match, guards against the live world

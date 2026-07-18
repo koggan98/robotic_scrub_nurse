@@ -24,8 +24,8 @@ The system has moved from a single-host, numeric `/tool_selection` MoveIt loop t
 
 ### WS-2: Speech + LLM orchestration
 - Local speech-to-text (`asr_node`, faster-whisper, energy VAD, `/user_speech`).
-- Jetson launch profiles for the Samson Q2U and Jieli USB receiver, including native-rate capture
-  and 48 kHz → 16 kHz decoding for the Jieli device.
+- Automatic Jetson-side selection of the single connected Samson Q2U or Jieli USB receiver,
+  including reconnect detection, native-rate capture, and 48 kHz → 16 kHz decoding for Jieli.
 - OpenAI function-calling orchestrator (`llm_orchestrator_node`) exposing robot skills as tools
   (`get_world_model`, `pick_and_handover`, `return_tool`, `release_tool`, `return_home`, `abort`).
 - Terse status feedback on `/system_response`; audio cues via `handover_sound_publisher`.
