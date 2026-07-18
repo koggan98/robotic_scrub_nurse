@@ -598,7 +598,11 @@ class CommandRouterNode(Node):
             self._publish_response('No operation registered.')
             return
         if resp.all_accounted_for:
-            self._publish_response(f'All {resp.expected} accounted for.')
+            # Everything is physically located: on a tray or in the gripper.
+            extra = ''
+            if resp.on_reclaim:
+                extra = f' {len(resp.on_reclaim)} on reclaim tray.'
+            self._publish_response(f'All {resp.expected} accounted for.{extra}')
             return
         # The ones that matter: nowhere visible — possibly inside the patient.
         missing = list(resp.in_use) + list(resp.unknown)

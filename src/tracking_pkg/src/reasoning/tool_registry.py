@@ -286,6 +286,32 @@ class ToolRegistry:
         pool = away or cands
         return min(pool, key=lambda s: s.last_state_change_sec)
 
+    def reconcile(self, freshness_sec, now=None):
+        """Demote tools that should be visible but have not been seen recently.
+
+        `observe()` deliberately never demotes on absence — during the operation a
+        briefly-occluded tool must keep its state. At COUNT time the opposite is
+        true: a tool believed to be on a tray but not seen there any more has been
+        taken away, and the count must say so. `last_seen_sec` is refreshed on every
+        positive observation, so a tool physically present stays fresh and one
+        removed by hand goes stale past `freshness_sec` -> UNKNOWN.
+
+        Only AT_HOME and ON_RECLAIM are visual claims that can be checked this way.
+        IN_GRIPPER (the robot holds it), IN_USE (handed over, correctly invisible)
+        and UNKNOWN are left untouched. Returns the list of demoted slot_ids.
+
+        The caller must confirm perception is actually live before trusting this —
+        a dead camera makes every tool look stale, which would falsely flag them.
+        """
+        now = time.time() if now is None else now
+        demoted = []
+        for s in self.slots.values():
+            if s.state in (AT_HOME, ON_RECLAIM) and \
+                    (now - s.last_seen_sec) > freshness_sec:
+                s.set_state(UNKNOWN, now)
+                demoted.append(s.slot_id)
+        return demoted
+
     def count(self):
         """The instrument count: the registered inventory against what we see now."""
         buckets = {AT_HOME: [], IN_GRIPPER: [], IN_USE: [], ON_RECLAIM: [],
@@ -295,12 +321,18 @@ class ToolRegistry:
 
         expected = len(self.slots)
         at_home = len(buckets[AT_HOME])
+        # Accounted for = physically located right now: on the instrument tray, on
+        # the reclaim tray, or in the gripper. A tool parked on the reclaim tray is
+        # just as safely accounted for as one at home.
+        accounted = (len(buckets[AT_HOME]) + len(buckets[ON_RECLAIM])
+                     + len(buckets[IN_GRIPPER]))
         unaccounted = (buckets[IN_USE] + buckets[UNKNOWN])
         return {
             'registered': self.is_registered,
             'expected': expected,
             'at_home': at_home,
-            'all_accounted_for': expected > 0 and at_home == expected,
+            'accounted_for': accounted,
+            'all_accounted_for': expected > 0 and accounted == expected,
             'in_gripper': sorted(buckets[IN_GRIPPER]),
             'on_reclaim': sorted(buckets[ON_RECLAIM]),
             # The critical ones: nowhere visible.

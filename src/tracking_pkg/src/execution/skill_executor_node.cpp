@@ -235,11 +235,6 @@ public:
         // not the instrument tray's. 5 mm shallower than the instrument tray.
         reclaim_z_offset_m_ = declare_parameter("reclaim_z_offset", 0.009);
         approach_height_m_ = declare_parameter("approach_height_m", 0.04);
-        // Fast local re-grasp: on a failed/slipped grasp, retry at the tray with
-        // an escalating pose nudge instead of present→home→re-perceive.
-        max_regrasp_retries_ = declare_parameter("max_regrasp_retries", 2);
-        regrasp_deeper_step_m_ = declare_parameter("regrasp_deeper_step_m", 0.0015);
-        regrasp_center_step_m_ = declare_parameter("regrasp_center_step_m", 0.005);
         tool_yaw_offset_rad_ = declare_parameter("tool_yaw_offset_rad", 1.57079632679);
         // The held tool's collision box, measured FROM THE JAWS along the tool —
         // not from its middle. See attachToolBox().
@@ -1552,105 +1547,49 @@ private:
         publishGripper(true);   // open
         sleepForGripper();
 
-        // Two failure modes are handled differently:
-        //  - gripper closes on nothing (empty at close): the tool isn't where we
-        //    expected -> go home and let the LLM re-perceive and retry. We do
-        //    NOT keep stabbing at the tray blindly.
-        //  - tool grasped but slips while lifting: the grasp was just marginal
-        //    -> re-grasp locally with an escalating pose nudge (deeper + toward
-        //    the tool centre along functional_end_dir), up to
-        //    max_regrasp_retries_ times, without the slow present→home cycle.
-        bool secured = false;
-        // The grasp the gripper actually CLOSED on. The re-grasp nudges shift
-        // the grip point up to regrasp-steps × attempts along the tool, and
-        // return_tool / return_tool_home place the tool relative to this TCP
-        // pose — recording the pre-flight pose instead displaced every
-        // re-grasped tool by exactly the nudge on its way back.
-        geometry_msgs::msg::Pose secured_grasp_pose = grasp_pose;
-        for (int attempt = 0; attempt <= max_regrasp_retries_ && !secured; ++attempt) {
-            moveit::planning_interface::MoveGroupInterface::Plan descend_try = legs.descend;
-            moveit::planning_interface::MoveGroupInterface::Plan lift_try = legs.lift;
+        // Single grasp attempt — no local re-grasp. Two failure modes, both
+        // resolved by going home and letting the router re-perceive and retry
+        // the class rather than stabbing at the tray again from a guessed pose:
+        //  - gripper closes on nothing (empty at close): the tool isn't where
+        //    we expected  -> grasp_failed.
+        //  - tool grasped but slips while lifting                 -> tool_lost.
+        const geometry_msgs::msg::Pose secured_grasp_pose = grasp_pose;
 
-            if (attempt > 0) {
-                geometry_msgs::msg::Pose grasp_try = grasp_pose;
-                grasp_try.position.z -= attempt * regrasp_deeper_step_m_;
-                const double fx = chosen.functional_end_dir.x;
-                const double fy = chosen.functional_end_dir.y;
-                const double fn = std::hypot(fx, fy);
-                if (fn > 1e-6) {
-                    grasp_try.position.x += attempt * regrasp_center_step_m_ * fx / fn;
-                    grasp_try.position.y += attempt * regrasp_center_step_m_ * fy / fn;
-                }
-                RCLCPP_INFO(get_logger(),
-                    "Re-grasp attempt %d for %s: %.1f mm deeper, %.1f mm toward center.",
-                    attempt, chosen.tool_id.c_str(),
-                    attempt * regrasp_deeper_step_m_ * 1000.0,
-                    attempt * regrasp_center_step_m_ * 1000.0);
-
-                std::string perr;
-                move_group_->setStartStateToCurrentState();
-                if (!planLinearPose(grasp_try, descend_try, perr)) {
-                    RCLCPP_WARN(get_logger(), "Re-grasp descend plan failed: %s", perr.c_str());
-                    continue;
-                }
-                move_group_->setStartState(makeStartStateFromPlanEnd(descend_try));
-                if (!planLinearPose(approach_pose, lift_try, perr)) {
-                    RCLCPP_WARN(get_logger(), "Re-grasp lift plan failed: %s", perr.c_str());
-                    continue;
-                }
-                secured_grasp_pose = grasp_try;
-            }
-
-            if (!executePlan(descend_try, err)) { err = "descend exec: " + err; return false; }
-            publishGripper(false);  // close
-            const bool grasped = waitForFreshToolGrasped(grasp_check_timeout_sec_);
-
-            if (!grasped) {
-                // Empty at close -> re-perceive instead of re-grasping blindly.
-                RCLCPP_WARN(get_logger(),
-                    "Grasp check failed (gripper empty at close). Returning home.");
-                publishGripper(true);
-                std::string lift_err;
-                executePlan(lift_try, lift_err);   // raise empty gripper off the tray
-                retreatToHome(location_filter);
-                err = "grasp_failed: no tool in gripper after close";
-                return false;
-            }
-
-            // Grasped -> lift, briefly settle, then force a fresh check. The
-            // settle lets a marginal grip relax before we commit, and the fresh
-            // check avoids the async monitor's ~0.5 s lag.
-            if (!executePlan(lift_try, err)) { err = "lift exec: " + err; return false; }
-            rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::duration<double>(std::max(0.0, post_lift_settle_sec_))));
-            if (verifyGraspAfterLift()) {
-                secured = true;
-                break;
-            }
-
-            // Slipped during the lift -> open and re-grasp locally with a bigger
-            // nudge. No present rotation, no home.
+        if (!executePlan(legs.descend, err)) { err = "descend exec: " + err; return false; }
+        publishGripper(false);  // close
+        if (!waitForFreshToolGrasped(grasp_check_timeout_sec_)) {
+            // Empty at close -> re-perceive instead of re-grasping blindly.
             RCLCPP_WARN(get_logger(),
-                "Tool slipped during lift on attempt %d. Re-grasping.", attempt);
+                "Grasp check failed (gripper empty at close). Returning home.");
             publishGripper(true);
-            sleepForGripper();
+            std::string lift_err;
+            executePlan(legs.lift, lift_err);   // raise empty gripper off the tray
+            retreatToHome(location_filter);
+            err = "grasp_failed: no tool in gripper after close";
+            return false;
         }
 
-        if (!secured) {
+        // Grasped -> lift, briefly settle, then force a fresh check. The settle
+        // lets a marginal grip relax before we commit, and the fresh check
+        // avoids the async monitor's ~0.5 s lag.
+        if (!executePlan(legs.lift, err)) { err = "lift exec: " + err; return false; }
+        rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<double>(std::max(0.0, post_lift_settle_sec_))));
+        if (!verifyGraspAfterLift()) {
+            // Slipped during the lift -> home, let the router retry the class.
+            RCLCPP_WARN(get_logger(), "Tool slipped during lift. Returning home.");
             publishGripper(true);
             retreatToHome(location_filter);   // best-effort: free the tray camera
-            err = "grasp_failed: tool slips during lift after " +
-                  std::to_string(max_regrasp_retries_ + 1) + " attempts";
+            err = "tool_lost: tool slipped during lift";
             return false;
         }
 
         // The tool is in the gripper. Record where it came from BEFORE moving it,
         // so that any failure from here on can still be undone with return_tool —
         // putting it back where it was found is the only safe way out of a failure
-        // while holding something. The SECURED pose (after any re-grasp nudges),
-        // not the pre-flight one: the tool goes back to where the jaws really
-        // held it. The caller's grasp_pose_out follows suit — return_tool_home
-        // derives its grip depth d from it.
+        // while holding something. This is the pose the jaws actually closed on;
+        // the caller's grasp_pose_out follows suit — return_tool_home derives its
+        // grip depth d from it.
         grasp_pose_out = secured_grasp_pose;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
@@ -2024,11 +1963,34 @@ private:
                      std::string &err) {
         const bool reclaim = (location == kReclaimLocation);
 
+        // A tool can slip out anywhere on the way to the tray. Arm transporting_
+        // so a /tool_grasped=false stops the running motion at once (toolGraspedCb),
+        // and clear it on every exit. A motion that failed WHILE the gripper went
+        // empty is retagged tool_lost so the caller marks the tool DROPPED instead
+        // of trying to place nothing; a motion that failed while still holding is a
+        // genuine planning/exec failure and keeps its message.
+        transporting_.store(true);
+        struct TransportGuard {
+            std::atomic<bool> &flag;
+            ~TransportGuard() { flag.store(false); }
+        } transport_guard{transporting_};
+        auto exec_or_lost = [&](moveit::planning_interface::MoveGroupInterface::Plan
+                                    &plan, const std::string &where) {
+            if (executePlan(plan, err)) return true;
+            err = freshGripperHoldsTool()
+                      ? (where + ": " + err)
+                      : ("tool_lost: gripper empty during " + where);
+            return false;
+        };
+
         // Get the arm to the launch point the place is planned from.
         if (reclaim) {
             std::string stage_err;
             if (!enterReclaimStaging(stage_err)) {
-                err = "place reclaim staging: " + stage_err; return false;
+                err = freshGripperHoldsTool()
+                          ? ("place reclaim staging: " + stage_err)
+                          : "tool_lost: gripper empty during reclaim staging";
+                return false;
             }
         } else {
             const bool right = release_pose.position.x > instrument_right_side_x_;
@@ -2038,8 +2000,10 @@ private:
             // wrist to the transit pose and rotate the tool back at the approach.
             std::string transit_err;
             if (!moveAcrossKeepingOrientation(transit, transit_err)) {
-                err = std::string("place route via ") +
-                      (right ? "home" : "left stage") + ": " + transit_err;
+                err = freshGripperHoldsTool()
+                          ? (std::string("place route via ") +
+                             (right ? "home" : "left stage") + ": " + transit_err)
+                          : "tool_lost: gripper empty during place transit";
                 return false;
             }
         }
@@ -2066,8 +2030,18 @@ private:
             release_pose.position.x, release_pose.position.y,
             release_pose.position.z, location.c_str());
 
-        if (!executePlan(approach_plan, err)) { err = "place approach exec: " + err; return false; }
-        if (!executePlan(descend_plan, err))  { err = "place descend exec: "  + err; return false; }
+        if (!exec_or_lost(approach_plan, "place approach exec")) return false;
+        if (!exec_or_lost(descend_plan,  "place descend exec"))  return false;
+
+        // Last check before we let go: if the tool is already gone, do not open
+        // on an empty gripper and claim a place — report the loss. Clear the
+        // transport flag first so the intentional open below does not trip the
+        // loss monitor and stop the lift.
+        transporting_.store(false);
+        if (!freshGripperHoldsTool()) {
+            err = "tool_lost: gripper empty before release";
+            return false;
+        }
         publishGripper(true);  // open — release the tool
         sleepForGripper();
         detachToolBox();
@@ -2131,7 +2105,15 @@ private:
         release_pose.position.z += return_release_height_m_;
 
         // Back down the same tray it came from, so the corridor is the right one.
-        if (!placeToolAt(location, release_pose, err)) return false;
+        if (!placeToolAt(location, release_pose, err)) {
+            // The tool fell out on the way back: mark it DROPPED (registry ->
+            // UNKNOWN) and go home, rather than reporting it neatly placed.
+            if (err.rfind("tool_lost", 0) == 0) {
+                std::string lost_err;
+                abortHoldingAndGoHome("return_tool: " + err, lost_err);
+            }
+            return false;
+        }
 
         // Back where it was picked from — for the instrument tray, that is its home.
         publishHeldToolEvent("PLACED_HOME");
@@ -2328,10 +2310,29 @@ private:
 
             std::string place_err;
             if (!placeToolAt(kInstrumentLocation, release_pose, place_err)) {
+                // The tool fell out during the transit across: mark it DROPPED
+                // (registry -> UNKNOWN) and go home. There is nothing to put
+                // back, so skip the reclaim fallback below.
+                if (place_err.rfind("tool_lost", 0) == 0) {
+                    std::string lost_err;
+                    abortHoldingAndGoHome(
+                        "return_tool_home: " + place_err, lost_err);
+                    err = "tool_lost while returning " + chosen.tool_class
+                          + " to its home: " + place_err;
+                    return false;
+                }
                 // Still holding it. Do NOT drop it here — put it back on the reclaim
                 // tray, where it at least stays findable.
                 std::string back_err;
                 if (!placeToolAt(kReclaimLocation, grasp_pose, back_err)) {
+                    if (back_err.rfind("tool_lost", 0) == 0) {
+                        std::string lost_err;
+                        abortHoldingAndGoHome(
+                            "return_tool_home fallback: " + back_err, lost_err);
+                        err = "tool_lost while putting " + chosen.tool_class
+                              + " back on the reclaim tray: " + back_err;
+                        return false;
+                    }
                     err = "could not place " + chosen.tool_id + " at its home ("
                           + place_err + ") and could not put it back either ("
                           + back_err + ") — the tool is still in the gripper";
@@ -2697,9 +2698,6 @@ private:
     double gripper_done_timeout_seconds_;
     double grasp_check_timeout_sec_;
     double post_lift_settle_sec_;
-    int max_regrasp_retries_;
-    double regrasp_deeper_step_m_;
-    double regrasp_center_step_m_;
     double cartesian_min_fraction_;
     double gesture_wait_timeout_sec_;
     double post_gesture_settle_sec_;

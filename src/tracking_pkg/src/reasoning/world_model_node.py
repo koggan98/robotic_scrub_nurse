@@ -149,6 +149,11 @@ class WorldModelNode(Node):
         # refuses rather than bind slots that will silently jump.
         self.declare_parameter('min_same_class_gap_m', 0.08)
         self.declare_parameter('home_match_radius_m', 0.12)
+        # At count time, a registered tool not seen on its tray within this many
+        # seconds is treated as gone (taken away / possibly in the patient).
+        # Long enough to survive a brief occlusion, short enough to notice a tool
+        # that was actually removed. Only consulted by /count_instruments.
+        self.declare_parameter('count_freshness_sec', 2.0)
 
         threshold = float(self.get_parameter('track_distance_threshold_m').value)
         max_age = float(self.get_parameter('track_max_age_sec').value)
@@ -160,6 +165,8 @@ class WorldModelNode(Node):
         self.hand_confidence_threshold = float(
             self.get_parameter('hand_confidence_threshold').value
         )
+        self.count_freshness_sec = float(
+            self.get_parameter('count_freshness_sec').value)
 
         self._tracker = ToolTracker(threshold, max_age, id_prefix='tool')
         self._reclaim_tracker = ToolTracker(
@@ -192,6 +199,10 @@ class WorldModelNode(Node):
         # Ground truth from the gripper (robotiq object register). None = unknown
         # (no message yet), True = a tool is physically held, False = empty.
         self._gripper_holds_tool = None
+        # When the instrument-tray perception last delivered a frame. The count
+        # reconcile only trusts "not seen = gone" while this stream is live; a
+        # dead camera would otherwise make every tool look missing.
+        self._last_cand_msg_sec = 0.0
 
         self.create_subscription(
             GraspCandidateArray, candidates_topic, self._cand_cb, 10
@@ -256,6 +267,7 @@ class WorldModelNode(Node):
         cands = self._tracker.update(cands, now_s)
         with self._lock:
             self._latest_candidates = cands
+            self._last_cand_msg_sec = now_s
             self._registry.observe(
                 INSTRUMENT_TRAY, self._to_observations(cands), now_s)
 
@@ -564,8 +576,28 @@ class WorldModelNode(Node):
 
     def _count_instruments_cb(self, request, response):
         del request
+        now_s = self.get_clock().now().nanoseconds * 1e-9
         with self._lock:
+            # Re-check the cameras before computing the difference: a tool
+            # believed at home but no longer seen there was taken away. Only
+            # trust "not seen = gone" while perception is actually live —
+            # otherwise a stalled camera would flag every tool as missing.
+            perception_live = (
+                (now_s - self._last_cand_msg_sec) <= self.count_freshness_sec)
+            if perception_live:
+                demoted = self._registry.reconcile(
+                    self.count_freshness_sec, now_s)
+                if demoted:
+                    self.get_logger().info(
+                        f'Count reconcile: {len(demoted)} not seen on a tray '
+                        f'-> UNKNOWN: {demoted}')
+            else:
+                self.get_logger().warn(
+                    'Count: instrument perception is stale — counting on the '
+                    'last known states without a fresh re-check.')
             c = self._registry.count()
+        if perception_live:
+            self._persist_registry()
         response.registered = c['registered']
         response.all_accounted_for = c['all_accounted_for']
         response.expected = c['expected']
