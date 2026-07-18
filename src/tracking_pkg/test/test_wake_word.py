@@ -12,7 +12,7 @@ import pytest
 _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_PKG, 'src', 'interfaces'))
 
-from wake_word import strip_wake_word  # noqa: E402
+from wake_word import strip_wake_word, plan_wake_segment  # noqa: E402
 
 WAKE = ['robot', 'robo', 'rob', 'robi', 'robbie', 'robert']
 
@@ -54,3 +54,43 @@ def test_no_wake_word_blocks(text):
 
 def test_empty_wake_list_disables_gate():
     assert strip_wake_word('needle holder', []) == 'needle holder'
+
+
+# ── Two-stage wake FSM planner ──────────────────────────────────────
+
+def test_plan_wake_only_arms():
+    assert plan_wake_segment('wait_wake', 'Robot.', WAKE) == ('arm',)
+
+
+def test_plan_wake_only_ignored_when_single_stage():
+    assert plan_wake_segment('wait_wake', 'Robot.', WAKE,
+                             two_stage=False) == ('ignore', None)
+
+
+def test_plan_one_breath_publishes_command():
+    assert plan_wake_segment('wait_wake', 'robot needle holder', WAKE) == (
+        ('command', 'needle holder'))
+
+
+def test_plan_no_wake_word_ignored():
+    assert plan_wake_segment('wait_wake', 'needle holder', WAKE) == (
+        ('ignore', None))
+
+
+def test_plan_command_phase_publishes_segment():
+    assert plan_wake_segment('command', 'needle holder', WAKE) == (
+        ('command', 'needle holder'))
+
+
+def test_plan_command_phase_strips_repeated_wake():
+    assert plan_wake_segment('command', 'robot scissors', WAKE) == (
+        ('command', 'scissors'))
+
+
+def test_plan_command_phase_timeout_disarms():
+    assert plan_wake_segment('command', None, WAKE) == ('disarm', None)
+
+
+def test_plan_gate_disabled_passes_everything():
+    assert plan_wake_segment('wait_wake', 'needle holder', []) == (
+        ('command', 'needle holder'))

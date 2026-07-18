@@ -51,3 +51,39 @@ def strip_wake_word(text: str, wake_words: List[str],
         if norm not in _FILLERS:
             return None  # a real word before any wake word: not addressed to us
     return None
+
+
+def plan_wake_segment(phase, text, wake_words, fuzzy_threshold=0.75,
+                      two_stage=True):
+    """Decide what a transcribed segment means in the two-stage wake FSM.
+
+    Pure — no ROS, no side effects — so the branching is unit-testable. Returns
+    one of:
+      ('command', <cmd>)  publish <cmd> as /user_speech; stay in wait_wake
+      ('arm',)            wake word only -> enter the command phase (armed)
+      ('disarm', None)    command window ended with nothing usable -> idle
+      ('ignore', None)    no wake word / nothing to do
+
+    `text` is the transcript or None (empty/short/timed-out segment).
+    """
+    # Wake gate disabled: every segment is a command.
+    if not wake_words:
+        return ('command', text) if text else ('ignore', None)
+
+    if phase == 'command':
+        if not text:
+            return ('disarm', None)
+        # They may have re-said the wake word; keep the command part if so.
+        stripped = strip_wake_word(text, wake_words, fuzzy_threshold)
+        return ('command', stripped if stripped else text)
+
+    # phase == 'wait_wake'
+    if not text:
+        return ('ignore', None)
+    command = strip_wake_word(text, wake_words, fuzzy_threshold)
+    if command is None:
+        return ('ignore', None)          # no wake word
+    if command:
+        return ('command', command)      # "robot needle holder" in one breath
+    # Wake word only.
+    return ('arm',) if two_stage else ('ignore', None)

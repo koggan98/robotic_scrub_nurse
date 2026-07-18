@@ -584,6 +584,15 @@ def generate_launch_description():
             actions=[rviz_node],
         ),
 
+        # ── HRI traffic-light display (surgeon-facing) ────────────
+        # Standalone window (drag in front of RViz). Pure subscriber.
+        Node(
+            package='tracking_pkg',
+            executable='hri_display_node.py',
+            name='hri_display_node',
+            output='screen',
+        ),
+
         # Suppress move_group planning_scene_monitor INFO spam after it starts.
         # "Published update collision object" fires on every collision update —
         # harmless but noisy. Set to WARN so only real problems appear.

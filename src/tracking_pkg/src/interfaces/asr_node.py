@@ -42,7 +42,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from wake_word import strip_wake_word
+from wake_word import plan_wake_segment
 
 
 class AudioDeviceSelectionError(RuntimeError):
@@ -133,6 +133,14 @@ class ASRNode(Node):
             'robot', 'robo', 'rob', 'robi', 'robbie', 'robert'])
         # Fuzzy acceptance for Whisper re-spellings ("Roby", "Robots").
         self.declare_parameter('wake_word_fuzzy', 0.75)
+        # Two-stage wake word: say "robot" alone -> the display shows "speak
+        # now" -> then say the command. Solves the wake word getting lost inside
+        # a fast "robot needle holder". A one-breath "robot needle holder" still
+        # works (published directly). False -> old single-segment behaviour.
+        self.declare_parameter('two_stage_wake', True)
+        # After the wake word, how long to wait for the command to START before
+        # disarming back to idle.
+        self.declare_parameter('command_window_sec', 6.0)
         # Domain bias for Whisper's decoder: fed as initial_prompt, it pulls
         # the transcription toward this vocabulary — "end surgery" instead of
         # "and surgery", "finish" instead of "Finnish". Practically free
@@ -187,9 +195,19 @@ class ASRNode(Node):
         self.wake_words = list(self.get_parameter('wake_words').value or [])
         self.wake_word_fuzzy = float(self.get_parameter('wake_word_fuzzy').value)
         self.initial_prompt = self.get_parameter('initial_prompt').value or None
+        self.two_stage_wake = bool(self.get_parameter('two_stage_wake').value)
+        self.command_window_sec = float(
+            self.get_parameter('command_window_sec').value)
 
-        # Publisher
+        # Publishers
         self.publisher = self.create_publisher(String, 'user_speech', 10)
+        # HRI status for the visual display: 'listening' (armed, waiting for the
+        # command -> amber "speak now") or '' (idle). A pure feedback channel.
+        self.status_publisher = self.create_publisher(String, 'asr_status', 10)
+
+        # Two-stage wake FSM state (only used when two_stage_wake and wake_words).
+        self._phase = 'wait_wake'      # 'wait_wake' | 'command'
+        self._command_deadline = 0.0
 
         # Audio state
         self._audio_queue = queue.Queue()
@@ -285,7 +303,13 @@ class ASRNode(Node):
         _no_mic_warned = False
         while self._running and rclpy.ok():
             try:
-                self._capture_and_transcribe(sd, chunk_duration)
+                # In the command phase, cap how long we wait for the command to
+                # begin so a wake word with no follow-up disarms on its own.
+                max_wait = None
+                if self._phase == 'command':
+                    max_wait = max(0.0, self._command_deadline - time.time())
+                text = self._capture_and_transcribe(sd, chunk_duration, max_wait)
+                self._handle_segment(text)
                 _no_mic_warned = False
             except sd.PortAudioError as e:
                 if self._auto_select_audio:
@@ -386,15 +410,21 @@ class ASRNode(Node):
             should_refresh = True
         return False
 
-    def _capture_and_transcribe(self, sd, chunk_duration):
+    def _capture_and_transcribe(self, sd, chunk_duration,
+                                max_wait_for_speech=None):
         """
-        Capture one speech segment and transcribe it.
+        Capture one speech segment and transcribe it. Returns the transcript
+        (str) or None (nothing usable / timed out before speech began).
 
         Uses a simple energy-based VAD:
         1. Wait for energy above threshold (speech start)
         2. Accumulate audio while energy stays above threshold
         3. When silence exceeds silence_threshold → segment complete
         4. Transcribe if long enough
+
+        max_wait_for_speech: if set, return None when no speech has STARTED
+        within this many seconds (used to disarm the command window). Once
+        speech begins it is always captured to completion.
         """
         speech_buffer = []
         is_speaking = False
@@ -407,6 +437,7 @@ class ASRNode(Node):
         chunk_samples = audio_capture_block_size(
             self.capture_sample_rate, chunk_duration)
 
+        wait_start = time.time()
         with sd.InputStream(
             samplerate=self.capture_sample_rate,
             channels=1,
@@ -437,9 +468,13 @@ class ASRNode(Node):
                     elif time.time() - silence_start >= self.silence_threshold:
                         # Silence long enough → end of speech segment
                         break
+                elif (max_wait_for_speech is not None
+                      and (time.time() - wait_start) >= max_wait_for_speech):
+                    # Armed for a command but nobody spoke in time.
+                    return None
 
         if not speech_buffer:
-            return
+            return None
 
         # Concatenate speech buffer
         audio_data = np.concatenate(speech_buffer, axis=0).flatten()
@@ -449,31 +484,48 @@ class ASRNode(Node):
             self.get_logger().debug(
                 f'Speech too short ({duration:.2f}s < {self.min_speech_seconds}s), skipping'
             )
-            return
+            return None
 
         self.get_logger().info(f'Captured {duration:.1f}s of speech, transcribing...')
+        return self._transcribe(audio_data)
 
-        # Transcribe
-        text = self._transcribe(audio_data)
-        if not text:
-            return
+    # ── Two-stage wake FSM ──────────────────────────────────────────
 
-        # Wake-word gate: only utterances addressed to the robot go through.
-        if self.wake_words:
-            command = strip_wake_word(text, self.wake_words,
-                                      self.wake_word_fuzzy)
-            if command is None:
-                self.get_logger().info(f'No wake word — ignored: "{text}"')
-                return
-            if not command:
-                self.get_logger().info('Wake word only — no command, ignored.')
-                return
-            text = command
+    def _publish_status(self, status):
+        msg = String()
+        msg.data = status
+        self.status_publisher.publish(msg)
 
+    def _publish_command(self, text):
         msg = String()
         msg.data = text
         self.publisher.publish(msg)
         self.get_logger().info(f'Published: "{text}"')
+
+    def _handle_segment(self, text):
+        """Apply the two-stage wake decision (pure planner) + its side effects."""
+        was_command_phase = (self._phase == 'command')
+        action = plan_wake_segment(
+            self._phase, text, self.wake_words, self.wake_word_fuzzy,
+            self.two_stage_wake)
+
+        # Leaving the command phase always disarms the listening feedback first.
+        if was_command_phase:
+            self._phase = 'wait_wake'
+            self._publish_status('')
+
+        kind = action[0]
+        if kind == 'command':
+            self._publish_command(action[1])
+        elif kind == 'arm':
+            self.get_logger().info('Wake word detected — speak your command.')
+            self._phase = 'command'
+            self._command_deadline = time.time() + self.command_window_sec
+            self._publish_status('listening')
+        elif kind == 'disarm':
+            self.get_logger().info('Command window expired — disarmed.')
+        elif kind == 'ignore' and text and not was_command_phase:
+            self.get_logger().info(f'Ignored (no command): "{text}"')
 
     def _transcribe(self, audio_data):
         """Transcribe audio buffer using faster-whisper."""

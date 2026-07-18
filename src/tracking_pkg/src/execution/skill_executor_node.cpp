@@ -391,6 +391,9 @@ public:
             "/handover_waiting",
             rclcpp::QoS(1).transient_local());
         publishHandoverWaiting(false);
+        // Handover events for the HRI display + (dormant) audio feedback.
+        handover_event_pub_ = create_publisher<std_msgs::msg::String>(
+            "/handover_event", 10);
 
         // ── Subscribers ──────────────────────────────────────────────
         hand_state_sub_ = create_subscription<tracking_msgs::msg::HandState>(
@@ -646,7 +649,7 @@ private:
             current_state_ = state;
             if (state == "PICKING" || state == "TRANSPORTING"
                 || state == "HANDOVER" || state == "RELEASING"
-                || state == "HOLDING") {
+                || state == "PRESENTING" || state == "HOLDING") {
                 active_tool_id_ = tool_id;
                 active_tool_class_ = tool_class;
             } else if (state == "IDLE") {
@@ -1212,6 +1215,15 @@ private:
         std_msgs::msg::Bool m;
         m.data = waiting;
         handover_waiting_pub_->publish(m);
+    }
+
+    // Discrete handover events for feedback nodes (HRI display, audio). Purely
+    // informational — no control-flow effect. Mirrors the legacy loop_mover
+    // event names so the existing sound publisher reacts to them too.
+    void publishHandoverEvent(const std::string &event) {
+        std_msgs::msg::String m;
+        m.data = event;
+        handover_event_pub_->publish(m);
     }
 
     void sleepForGripper() {
@@ -1832,9 +1844,12 @@ private:
                     RCLCPP_WARN(get_logger(), "Reachability decision: unreachable.");
                     RCLCPP_WARN(get_logger(),
                         "Action rejected: handover target unreachable; ignoring gesture and waiting for next gesture.");
+                    // Tell the surgeon (display flashes red, audio buzzes).
+                    publishHandoverEvent("reachability:unreachable");
                     continue;
                 }
                 RCLCPP_INFO(get_logger(), "Reachability decision: reachable.");
+                publishHandoverEvent("gesture_detected");
                 break;
             }
             if (!rclcpp::ok()) {
@@ -1869,7 +1884,10 @@ private:
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, pre_release_dwell_seconds_))));
 
-        publishState("RELEASING", tool_id_snapshot, tool_class_snapshot);
+        // Tool is presented and held still; the force-guided release now waits
+        // for the surgeon to pull it. PRESENTING (not RELEASING) so the HRI
+        // display shows green "take it" rather than red "moving".
+        publishState("PRESENTING", tool_id_snapshot, tool_class_snapshot);
         publishGripperZeroer(true);
         rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(std::max(0.0, post_zeroer_settle_seconds_))));
@@ -2716,6 +2734,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr gripper_zeroer_pub_;
     rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr verify_grasp_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr handover_waiting_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_event_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
     rclcpp::Publisher<tracking_msgs::msg::ToolEvent>::SharedPtr tool_event_pub_;
     rclcpp::Client<tracking_msgs::srv::GetToolHome>::SharedPtr tool_home_client_;

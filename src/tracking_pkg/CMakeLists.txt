@@ -40,6 +40,7 @@ install(
     src/interfaces/asr_node.py
     src/interfaces/handover_sound_publisher.py
     src/interfaces/annotated_image_viewer.py
+    src/interfaces/hri_display_node.py
     src/interfaces/scrub_nurse_logger.py
     src/interfaces/scrub_nurse_cli.py
     # Scene / visualization helpers
@@ -62,6 +63,7 @@ install(
     src/llm/intent_parser.py
     src/llm/llm_intent_backend.py
     src/interfaces/wake_word.py
+    src/interfaces/hri_display_logic.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
