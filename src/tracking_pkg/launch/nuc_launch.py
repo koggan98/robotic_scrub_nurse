@@ -239,7 +239,15 @@ def generate_launch_description():
             executable='gripper_opener_with_zeroer.py',
             name='gripper_opener_with_zeroer',
             output='screen',
-            parameters=[profile_config],
+            parameters=[
+                profile_config,
+                {
+                    # Exclusive thin-tool rescue window. Retractor grasps have
+                    # been observed at gPO=227; empty close is approximately 230.
+                    'grasp_check.rescue_min_pos': 180,
+                    'grasp_check.rescue_max_pos': 228,
+                },
+            ],
         ),
         Node(
             package='tracking_pkg',

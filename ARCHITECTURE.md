@@ -98,7 +98,11 @@ RViz live only on the NUC.
    on `/hand_gesture`, plans to `hand_pose + hand_offset`, dwells, then enables force-guided release.
 6. `gripper_opener_with_zeroer.py` drives the Robotiq (URCap socket, port 63352) and opens on a
    force tug read from `/force_torque_sensor_broadcaster/wrench`; it publishes `/tool_grasped`
-   (Robotiq object-detect ground truth) as both grasp verification and continuous loss monitor.
+   as both grasp verification and continuous loss monitor. Robotiq `gOBJ=2` is direct grasp
+   evidence; thin tools that do not set it are rescued only in the exclusive gPO interval
+   `[180, 228)`. Thus `gPO=227` is accepted but `gPO=228` is not. The fixed NUC launch setting
+   leaves two counts below the approximate empty-close value `230`; lower the maximum and restart
+   the NUC launch if empty-gripper false positives occur, because they activate the holding guard.
 7. The executor broadcasts `STATE:tool_id:tool_class` on `/system_state_update`; `world_model_node`
    folds this back into the world model (`gripper_holds_tool`, active tool, state).
 8. On a dropped/lost tool the executor surfaces `tool_lost`/`grasp_failed`; the orchestrator can

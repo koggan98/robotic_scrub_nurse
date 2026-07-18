@@ -17,6 +17,23 @@ from geometry_msgs.msg import WrenchStamped
 from std_msgs.msg import Bool, Empty, Int32
 
 
+def validate_rescue_window(rescue_min_pos, rescue_max_pos, empty_close_pos):
+    """Validate the exclusive gPO interval used for thin-tool rescue."""
+    if not 0 <= rescue_min_pos < rescue_max_pos < empty_close_pos <= 255:
+        raise ValueError(
+            'expected 0 <= rescue_min_pos < rescue_max_pos < '
+            f'empty_close_pos <= 255, got {rescue_min_pos}, '
+            f'{rescue_max_pos}, {empty_close_pos}'
+        )
+
+
+def is_tool_grasped(obj, pos, rescue_min_pos, rescue_max_pos):
+    """Combine Robotiq object detection with the exclusive thin-tool window."""
+    return obj == 2 or (
+        pos is not None and rescue_min_pos <= pos < rescue_max_pos
+    )
+
+
 class URCommand:
     def __init__(self, robot_ip, robot_command_port, gripper_port):
         self.robot_ip = robot_ip
@@ -134,8 +151,6 @@ class SocketControllerNode(Node):
         #self.robot_ip = "mirur_ur3e_eth"
         self.robot_command_port = 30002
         self.gripper_port = 63352
-        self.ur_node = URCommand(self.robot_ip, self.robot_command_port, self.gripper_port)
-        self.get_logger().info("Socket Mover Node initialized")
         self.declare_parameter("reclaim.close_speed", 255)
         self.declare_parameter("reclaim.close_force", 1)
         self.reclaim_close_speed = int(self.get_parameter("reclaim.close_speed").value)
@@ -154,10 +169,52 @@ class SocketControllerNode(Node):
         # this bound keeps the rescue from ever calling an open/idle gripper
         # "grasped" — which would make the holding-guard block every pick.
         self.declare_parameter("grasp_check.rescue_min_pos", 180)
-        self.grasp_empty_close_pos = int(self.get_parameter("grasp_check.empty_close_pos").value)
+        # Exclusive upper bound, deliberately independent of empty_close_pos and
+        # pos_margin. Retractor measurements reach gPO=227; gPO=228 is not rescued.
+        self.declare_parameter("grasp_check.rescue_max_pos", 228)
+        self.grasp_empty_close_pos = int(
+            self.get_parameter("grasp_check.empty_close_pos").value
+        )
         self.grasp_pos_margin = int(self.get_parameter("grasp_check.pos_margin").value)
-        self.grasp_use_pos_crosscheck = bool(self.get_parameter("grasp_check.use_position_crosscheck").value)
-        self.grasp_rescue_min_pos = int(self.get_parameter("grasp_check.rescue_min_pos").value)
+        self.grasp_use_pos_crosscheck = bool(
+            self.get_parameter("grasp_check.use_position_crosscheck").value
+        )
+        self.grasp_rescue_min_pos = int(
+            self.get_parameter("grasp_check.rescue_min_pos").value
+        )
+        self.grasp_rescue_max_pos = int(
+            self.get_parameter("grasp_check.rescue_max_pos").value
+        )
+
+        try:
+            validate_rescue_window(
+                self.grasp_rescue_min_pos,
+                self.grasp_rescue_max_pos,
+                self.grasp_empty_close_pos,
+            )
+        except ValueError as exc:
+            self.get_logger().error(f"Invalid grasp rescue window: {exc}")
+            raise
+
+        empty_gap = self.grasp_empty_close_pos - self.grasp_rescue_max_pos
+        if empty_gap <= 2:
+            self.get_logger().warn(
+                "Thin-tool rescue window "
+                f"[{self.grasp_rescue_min_pos}, {self.grasp_rescue_max_pos}) "
+                f"ends only {empty_gap} gPO counts below empty_close_pos="
+                f"{self.grasp_empty_close_pos}. Monitor logs for false-positive "
+                "rescues with an empty gripper; lower rescue_max_pos if observed."
+            )
+
+        # Only connect to the robot after all safety-critical parameters have
+        # passed validation. An invalid rescue window therefore fails startup
+        # without leaving freshly opened robot sockets behind.
+        self.ur_node = URCommand(
+            self.robot_ip,
+            self.robot_command_port,
+            self.gripper_port,
+        )
+        self.get_logger().info("Socket Mover Node initialized")
 
         # Kontinuierliche Überwachung: pollt gOBJ, solange ein Werkzeug gehalten
         # wird, und meldet, wenn es verloren geht (gOBJ 2 -> 3).
@@ -242,19 +299,21 @@ class SocketControllerNode(Node):
     def _evaluate_and_publish_grasp(self, obj, pos):
         """Bewertet gOBJ/gPO, publiziert /tool_grasped und (de)aktiviert den
         Verlust-Monitor entsprechend."""
-        grasped = (obj == 2)
+        rescue_lo = self.grasp_rescue_min_pos
+        rescue_hi = self.grasp_rescue_max_pos
+        grasped = is_tool_grasped(obj, pos, rescue_lo, rescue_hi)
         # Thin-tool rescue. A flat tool (the retractor lying on its side) can be
         # held firmly yet give the Robotiq too little resistance to flag contact,
         # so gOBJ reads 3 ("closed through to target, no object"). Catch it by
-        # position — BUT only in the narrow band just below the empty full close:
-        # the fingers CLOSED and stopped a little short. The lower bound is critical:
-        # an open/idle gripper (pos ~100) also sits below empty_close_pos, and
-        # without the bound the rescue would call it "grasped" and the holding-guard
-        # would then block every pick.
-        rescue_lo = self.grasp_rescue_min_pos
-        rescue_hi = self.grasp_empty_close_pos - self.grasp_pos_margin
-        if not grasped and pos is not None and rescue_lo <= pos < rescue_hi:
-            grasped = True
+        # position — BUT only in the explicit narrow interval ending below the
+        # empty full close: the fingers CLOSED and stopped a little short. The
+        # lower bound is critical: an open/idle gripper (pos ~100) also lies below
+        # rescue_max_pos, and without the lower bound the rescue would call it
+        # "grasped" and the holding-guard would then block every pick.
+        rescue_applied = (
+            obj != 2 and pos is not None and rescue_lo <= pos < rescue_hi
+        )
+        if rescue_applied:
             self.get_logger().info(
                 f"Duennes-Tool-Rescue: gOBJ={obj}, Finger bei gPO={pos} in "
                 f"[{rescue_lo}, {rescue_hi}) -> gegriffen.")

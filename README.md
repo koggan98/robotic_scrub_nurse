@@ -169,6 +169,14 @@ are rediscovered automatically after reconnecting USB hardware.
 
 `llm_launch.py` is retained only as an obsolete historical snapshot; do not use it for deployment.
 
+The NUC-side Robotiq grasp check treats `gOBJ=2` as direct object contact. For thin tools that do
+not trigger that contact state reliably, it additionally uses the exclusive gPO rescue window
+`[180, 228)`: `gPO=227` is accepted, while `gPO=228` and the approximate empty-close position
+`gPO=230` are not. The upper limit is fixed in `nuc_launch.py` and leaves only two gPO counts to
+the observed empty-close value. If an empty gripper is ever logged as a thin-tool rescue, lower
+`grasp_check.rescue_max_pos` in `nuc_launch.py` and restart the NUC launch; a false positive can
+cause the holding guard to block subsequent picks.
+
 The perception pipelines use separate YOLO-OBB weights by default:
 `ros_unrelated_scripts/instrument_tray_detector.pt` for the instrument tray and
 `ros_unrelated_scripts/reclaim_tray_detector.pt` for the reclaim tray. Override them when needed
