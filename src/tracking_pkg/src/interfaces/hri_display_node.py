@@ -57,8 +57,10 @@ class HriDisplayNode(Node):
         super().__init__('hri_display_node')
 
         self.declare_parameter('window_name', 'Scrub Nurse')
-        self.declare_parameter('canvas_width', 960)
-        self.declare_parameter('canvas_height', 600)
+        # Large enough to remain clearly visible next to RViz on a Full-HD
+        # display. Text and badges scale from these canvas dimensions.
+        self.declare_parameter('canvas_width', 2560)
+        self.declare_parameter('canvas_height', 1440)
         self.declare_parameter('window_x', 40)
         self.declare_parameter('window_y', 40)
         self.declare_parameter('fps', 30.0)

@@ -208,6 +208,9 @@ The surgeon-facing HRI display changes to green `TAKE` as soon as the executor r
 Non-red display transitions use a short `0.1 s` debounce; red motion/error states and alerts remain
 immediate. The executor still observes `pre_release_dwell_seconds` before enabling force-guided
 physical release, so the faster visual transition does not shorten the release safety dwell.
+The active NUC launch opens the colour display at `1600 x 1000` pixels. Its text, colour field, and
+listening badge scale with the canvas; the node parameters `canvas_width` and `canvas_height` can
+still override the size when the display is started separately.
 
 `ReturnToolHome` validates its complete destination-dependent reclaim exit before closing the
 gripper. Every route pre-plans approach, straight descent, straight 4 cm lift, the fixed

@@ -313,7 +313,7 @@ def generate_launch_description():
         ),
 
         # ── HRI traffic-light display (surgeon-facing) ────────────
-        # A small standalone window; drag it in front of RViz. Pure subscriber,
+        # A large standalone window; drag it in front of RViz. Pure subscriber,
         # no effect on the control path. /asr_status arrives over DDS from the
         # Jetson's asr_node.
         Node(
@@ -321,6 +321,10 @@ def generate_launch_description():
             executable='hri_display_node.py',
             name='hri_display_node',
             output='screen',
+            parameters=[{
+                'canvas_width': 2560,
+                'canvas_height': 1440,
+            }],
         ),
 
         # ── Suppress move_group planning_scene_monitor INFO spam ──

@@ -119,7 +119,8 @@ RViz live only on the NUC.
 5. `handover_tool` sets `/handover_waiting=true`, waits for the surgeon's `double_open_close` gesture
    on `/hand_gesture`, and plans to `hand_pose + hand_offset`. On arrival it immediately publishes
    `PRESENTING`, which becomes green `TAKE` on the HRI display after its `0.1 s` non-red debounce;
-   red/alert states remain immediate. The unchanged pre-release dwell completes before the executor
+   red/alert states remain immediate. The active NUC launch renders the surgeon-facing display at
+   `1600 x 1000` pixels. The unchanged pre-release dwell completes before the executor
    enables force-guided physical release. After release, the empty arm returns directly from the
    hand pose to `home_joints`; the Left-Stage corridor is intentionally not used for this
    latency-sensitive return.
