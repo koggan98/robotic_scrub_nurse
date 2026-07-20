@@ -122,6 +122,35 @@ TEST(ReturnHomeRoute, ValidatesSixFiniteStageJoints) {
       std::numeric_limits<double>::quiet_NaN()}));
 }
 
+TEST(ReturnHomeRoute, InstrumentStagePreservesLiftEndWristThree) {
+  using tracking_pkg::execution::jointTargetPreserving;
+  const std::vector<std::string> names{
+    "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+    "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"};
+  const std::vector<double> taught{1.0, 2.0, 3.0, 4.0, 5.0, -2.94};
+  const std::vector<double> lift_end{9.0, 8.0, 7.0, 6.0, 5.5, 1.57};
+
+  const auto target = jointTargetPreserving(
+    names, taught, lift_end, "wrist_3_joint");
+  ASSERT_TRUE(target.has_value());
+  EXPECT_EQ(target->size(), taught.size());
+  for (std::size_t i = 0; i < 5; ++i) {
+    EXPECT_DOUBLE_EQ((*target)[i], taught[i]);
+  }
+  EXPECT_DOUBLE_EQ((*target)[5], lift_end[5]);
+}
+
+TEST(ReturnHomeRoute, RejectsInvalidPreservedJointTarget) {
+  using tracking_pkg::execution::jointTargetPreserving;
+  const std::vector<std::string> names{"a", "wrist_3_joint"};
+  EXPECT_FALSE(
+    jointTargetPreserving(
+      names, {1.0}, {2.0, 3.0}, "wrist_3_joint").has_value());
+  EXPECT_FALSE(
+    jointTargetPreserving(
+      names, {1.0, 2.0}, {3.0, 4.0}, "missing_joint").has_value());
+}
+
 TEST(ReturnHomeRoute, AddsCachedHomeTransitOnlyForRightSlots) {
   using tracking_pkg::execution::returnHomeNeedsHomeTransit;
   EXPECT_TRUE(returnHomeNeedsHomeTransit(0.01, 0.0));

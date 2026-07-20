@@ -211,7 +211,7 @@ physical release, so the faster visual transition does not shorten the release s
 
 `ReturnToolHome` validates its complete destination-dependent reclaim exit before closing the
 gripper. Every route pre-plans approach, straight descent, straight 4 cm lift, the fixed
-`instrument_stage_joints` pose, and the controlled transit to the complete taught
+`instrument_stage_joints` arm posture, and the controlled transit to the complete taught
 `instrument_left_stage` TCP pose from chained future start states. For a right-side slot
 (`world-x > 0`), that same pre-flight also includes a complete Cartesian interpolation to the full
 taught Home TCP pose, including its orientation. This avoids the former artificial constraint that
@@ -221,6 +221,12 @@ planned afterward. The generic reclaim-upper exit is not used on this path. The 
 hardware-validated fixed corridor carries no hypothetical `held_tool` box; the real collision box
 is attached at Left-Stage for a left slot or at Home for a right slot. Other reclaim picks and
 normal `return_tool` routes retain their existing upper-stage behavior.
+
+At the post-lift `instrument_stage_joints` clearance point, shoulder through `wrist_2_joint`
+retain their taught values, while `wrist_3_joint` is copied from the planned lift endpoint. This
+keeps the arbitrary ±90° tool roll produced by the Reclaim grasp instead of visibly resetting to
+the taught −168.7° value. The gripper position and collision-clear arm posture are unchanged; any
+orientation actually required for Left-Stage/Home placement is still planned in the later legs.
 
 Empty Home returns use the same predictable side corridor. After a failed Reclaim pre-flight or
 after placing a returned tool back on Reclaim, the arm travels through

@@ -203,9 +203,10 @@ def generate_launch_description():
                         'instrument_left_stage_joints':
                             [2.1318871975, -1.1601789457, 1.1124246756,
                              -1.5276912202, -1.5967219512, 2.1804935932],
-                        # ReturnToolHome-only deterministic post-lift pose. The
-                        # complete lift -> this pose -> left-stage corridor is
-                        # planned before the gripper closes.
+                        # ReturnToolHome-only deterministic post-lift arm pose.
+                        # shoulder through wrist_2 remain fixed; wrist_3 keeps
+                        # the planned lift-end value because tool roll is
+                        # irrelevant here. The complete corridor is pre-planned.
                         'instrument_stage_joints':
                             [4.8766698837, -1.1527752441, 1.1332219283,
                              -1.5510326673, -1.5708482901, -2.9439778964],

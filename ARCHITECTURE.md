@@ -105,7 +105,9 @@ RViz live only on the NUC.
    no motion, perception refresh, or Home retreat. Physical grasp/execution/loss failures are not
    retried locally. Generic picks attach a `held_tool` collision box after clearing their tray.
    `ReturnToolHome` instead extends each pre-flight through approach→descent→4 cm lift→the fixed
-   `instrument_stage_joints` pose→the complete taught `instrument_left_stage` TCP pose. For a
+   `instrument_stage_joints` arm posture→the complete taught `instrument_left_stage` TCP pose.
+   At the instrument-stage clearance point, `wrist_3_joint` retains the lift-end value instead of
+   resetting an irrelevant tool roll; the other five taught joints remain fixed. For a
    right-side slot, the pre-flight continues through a complete Cartesian interpolation to the full
    taught Home TCP pose, including its orientation; it does not freeze the Left-Stage orientation.
    All legs use chained future start states and execute from cached plans after grasping, so a

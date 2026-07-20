@@ -1625,18 +1625,45 @@ private:
     };
 
     // Complete the ReturnToolHome-only pre-flight after the normal 4 cm lift.
-    // The first leg reaches the hardware-taught joint pose exactly. The second
-    // rotates only shoulder_pan toward the left side. The final leg reaches the
-    // complete hardware-taught Left-Stage TCP pose. For a right-hand slot, an
-    // additional full-pose Cartesian leg reaches Home. Every start state is the
-    // previous plan's future end state.
+    // The first leg reaches the hardware-taught arm posture while preserving
+    // wrist_3 from the lift end; its roll around the tool axis is irrelevant at
+    // this clearance point and must not cause a separate reset rotation. The
+    // second leg rotates only shoulder_pan toward the left side. The final leg
+    // reaches the complete hardware-taught Left-Stage TCP pose. For a right-hand
+    // slot, an additional full-pose Cartesian leg reaches Home. Every start
+    // state is the previous plan's future end state.
     bool tryPlanReturnHomeExit(
         PickLegs &legs,
         bool plan_home_transit,
         std::string &err) {
+        std::vector<double> lift_end;
+        if (!jointValuesFromPlanEnd(legs.lift, lift_end, err)) {
+            err = "lift end state for instrument stage: " + err;
+            return false;
+        }
+        const auto stage_target = tracking_pkg::execution::jointTargetPreserving(
+            joint_state_names_, instrument_stage_joints_, lift_end,
+            "wrist_3_joint");
+        if (!stage_target.has_value()) {
+            err = "cannot preserve wrist_3_joint for instrument stage: joint "
+                  "names or target sizes are invalid";
+            return false;
+        }
+        const auto wrist3_it = std::find(
+            joint_state_names_.begin(), joint_state_names_.end(),
+            "wrist_3_joint");
+        const size_t wrist3_index = static_cast<size_t>(
+            std::distance(joint_state_names_.begin(), wrist3_it));
+        constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+        RCLCPP_INFO(get_logger(),
+            "ReturnToolHome pre-flight: instrument stage preserves wrist_3 "
+            "at %.1f deg (taught value %.1f deg); no redundant tool-roll reset.",
+            (*stage_target)[wrist3_index] * kRadToDeg,
+            instrument_stage_joints_[wrist3_index] * kRadToDeg);
+
         move_group_->setStartState(makeStartStateFromPlanEnd(legs.lift));
         if (!planJointPositions(
-                instrument_stage_joints_, legs.instrument_stage, err, false)) {
+                *stage_target, legs.instrument_stage, err, false)) {
             err = "instrument stage plan: " + err;
             return false;
         }
@@ -2083,7 +2110,8 @@ private:
         }
 
         // ReturnToolHome executes the already-validated exit exactly as planned:
-        // lift -> fixed instrument stage -> controlled full-pose left-stage
+        // lift -> fixed arm posture with preserved wrist_3 -> controlled
+        // full-pose left-stage
         // transit -> (right slot only) full-pose Home transit. No held_tool box
         // exists on this hardware-validated corridor, and no plan is recomputed
         // after the gripper closes.
@@ -2112,7 +2140,7 @@ private:
                         label = "instrument stage";
                         RCLCPP_INFO(get_logger(),
                             "ReturnToolHome cached exit: lift -> "
-                            "instrument_stage_joints.");
+                            "instrument stage (wrist_3 preserved).");
                         break;
                     case tracking_pkg::execution::ReturnHomeExitPhase::
                             LEFT_STAGE_PAN:

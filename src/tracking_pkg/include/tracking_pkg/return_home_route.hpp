@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace tracking_pkg
@@ -84,6 +86,32 @@ inline bool isValidSixJointPose(const std::vector<double> & joints)
     }
   }
   return true;
+}
+
+// Build a fixed transit target while retaining one rotation from the preceding
+// planned state. For the Reclaim exit this is wrist_3: rotating it changes only
+// the gripper/tool roll, not the taught collision-clear arm posture.
+inline std::optional<std::vector<double>> jointTargetPreserving(
+  const std::vector<std::string> & joint_names,
+  const std::vector<double> & fixed_target,
+  const std::vector<double> & previous_state,
+  const std::string & preserved_joint)
+{
+  if (joint_names.size() != fixed_target.size() ||
+    joint_names.size() != previous_state.size())
+  {
+    return std::nullopt;
+  }
+  const auto it = std::find(
+    joint_names.begin(), joint_names.end(), preserved_joint);
+  if (it == joint_names.end()) {
+    return std::nullopt;
+  }
+  const auto index = static_cast<std::size_t>(
+    std::distance(joint_names.begin(), it));
+  std::vector<double> target = fixed_target;
+  target[index] = previous_state[index];
+  return target;
 }
 
 }  // namespace execution
