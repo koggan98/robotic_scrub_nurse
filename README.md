@@ -270,6 +270,24 @@ order), see **[Deployment Guide](deployment_guide.md)**.
 
 ## Standalone YOLO Test
 
+For a reproducible visual check of the two custom OBB detectors on the three manual-validation
+image sets, run:
+
+```bash
+python3 ros_unrelated_scripts/annotate_manual_validation.py
+```
+
+The script automatically finds the sibling
+`instrument_detection_model/data/manual_val` directory when the repository layout matches the
+development workspace. Alternatively, pass `--manual-val-dir /path/to/data/manual_val`. It uses
+the live-system settings by default: confidence `0.35`, image size `1024` for `instrument_tray`,
+and image size `640` for both reclaim-tray sets. Each input directory receives an `annotated`
+subfolder. `manual_review.csv` provides blank manual-scoring columns, while `detections.csv`
+contains every predicted OBB, class, confidence, and coordinate. Run with `--help` to override
+the weights, thresholds, image sizes, output subfolder, or inference device.
+
+### RealSense YOLO Test
+
 To quickly test whether a stock YOLO11 model detects anything plausible around the robot end effector on the connected RealSense camera, run:
 
 ```bash

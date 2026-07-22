@@ -1,4 +1,3 @@
-cat > .gitignore <<'EOF'
 # ROS 2 / colcon
 build/
 install/
@@ -18,12 +17,12 @@ __pycache__/
 
 # OS
 .DS_Store
-EOF
 
 # personal documents
 files/
 *.csv
 
-
+# Personal thesis drafts (kept locally only)
+/thesis_*.md
 
 
