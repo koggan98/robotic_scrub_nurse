@@ -188,6 +188,12 @@ the observed empty-close value. If an empty gripper is ever logged as a thin-too
 `grasp_check.rescue_max_pos` in `nuc_launch.py` and restart the NUC launch; a false positive can
 cause the holding guard to block subsequent picks.
 
+Robotiq position commands use `0 = fully open` and `255 = fully closed`, so a lower value opens the
+fingers farther. The active `gripper_opener_with_zeroer` profile sets `gripper.open_position=90`
+(the standalone default remains `100`). This shared target is used for pre-pick opening, explicit
+release, placement and recovery opening, and the force-triggered handover release. The close target
+remains `250`.
+
 Reclaim picks pre-plan the complete approach, straight descent, and straight lift before moving
 from the lower reclaim staging pose. If that complete pre-flight fails, the active NUC setting
 `reclaim_preflight_attempts=2` immediately rebuilds the whole sequence once from the unchanged

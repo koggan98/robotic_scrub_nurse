@@ -174,5 +174,6 @@ reclaim_controller:
 
 gripper_opener_with_zeroer:
   ros__parameters:
+    "gripper.open_position": 90
     "reclaim.close_speed": 200
     "reclaim.close_force": 1

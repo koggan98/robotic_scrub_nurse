@@ -42,6 +42,14 @@ def validate_loss_confirm_delay(delay_sec):
         )
 
 
+def validate_gripper_position(position, parameter_name):
+    """Reject Robotiq position commands outside the supported byte range."""
+    if not 0 <= position <= 255:
+        raise ValueError(
+            f'{parameter_name} must be between 0 and 255, got {position}'
+        )
+
+
 def classify_loss_monitor_sample(
         obj, pos, rescue_min_pos, rescue_max_pos):
     """Return True=held, False=lost, None=inconclusive for one live sample.
@@ -83,7 +91,7 @@ class URCommand:
 
     def gripper_command(self, command):
         self.socket_gripper.sendall(command.encode('utf-8'))
-        #print(f'Sent Gripper command: {command}')
+        # print(f'Sent Gripper command: {command}')
         # Jeder SET-/GTO-Befehl beantwortet der Robotiq-URCap-Socket mit "ack".
         # Diese Antwort konsumieren, damit der TCP-Puffer nicht mit alten Acks
         # vollläuft und spätere GET-Antworten nicht verfälscht werden.
@@ -173,12 +181,16 @@ class SocketControllerNode(Node):
     def __init__(self):
         super().__init__('socket_controller')
         self.robot_ip = "192.168.12.10"
-        #self.robot_ip = "192.168.12.21"
-        #self.robot_ip = "mirur_ur3e_eth"
+        # self.robot_ip = "192.168.12.21"
+        # self.robot_ip = "mirur_ur3e_eth"
         self.robot_command_port = 30002
         self.gripper_port = 63352
+        self.declare_parameter("gripper.open_position", 100)
         self.declare_parameter("reclaim.close_speed", 255)
         self.declare_parameter("reclaim.close_force", 1)
+        self.gripper_open_position = int(
+            self.get_parameter("gripper.open_position").value
+        )
         self.reclaim_close_speed = int(self.get_parameter("reclaim.close_speed").value)
         self.reclaim_close_force = int(self.get_parameter("reclaim.close_force").value)
 
@@ -191,9 +203,10 @@ class SocketControllerNode(Node):
         self.declare_parameter("grasp_check.use_position_crosscheck", False)
         # Lower bound for the thin-tool position rescue. The rescue only applies
         # when the fingers are actually CLOSED and stopped just short of the empty
-        # full close. An OPEN gripper sits well below this (open command = ~100), so
-        # this bound keeps the rescue from ever calling an open/idle gripper
-        # "grasped" — which would make the holding-guard block every pick.
+        # full close. An OPEN gripper sits well below this (active command = 90;
+        # default = 100), so this bound keeps the rescue from ever calling an
+        # open/idle gripper "grasped" — which would make the holding-guard block
+        # every pick.
         self.declare_parameter("grasp_check.rescue_min_pos", 180)
         # Exclusive upper bound, deliberately independent of empty_close_pos and
         # pos_margin. Retractor measurements reach gPO=227; gPO=228 is not rescued.
@@ -226,6 +239,10 @@ class SocketControllerNode(Node):
         )
 
         try:
+            validate_gripper_position(
+                self.gripper_open_position,
+                "gripper.open_position",
+            )
             validate_rescue_window(
                 self.grasp_rescue_min_pos,
                 self.grasp_rescue_max_pos,
@@ -233,7 +250,7 @@ class SocketControllerNode(Node):
             )
             validate_loss_confirm_delay(self.grasp_loss_confirm_delay_sec)
         except ValueError as exc:
-            self.get_logger().error(f"Invalid grasp-check configuration: {exc}")
+            self.get_logger().error(f"Invalid gripper configuration: {exc}")
             raise
 
         empty_gap = self.grasp_empty_close_pos - self.grasp_rescue_max_pos
@@ -247,8 +264,8 @@ class SocketControllerNode(Node):
             )
 
         # Only connect to the robot after all safety-critical parameters have
-        # passed validation. An invalid rescue window therefore fails startup
-        # without leaving freshly opened robot sockets behind.
+        # passed validation. Invalid motion or grasp-check settings therefore fail
+        # startup without leaving freshly opened robot sockets behind.
         self.ur_node = URCommand(
             self.robot_ip,
             self.robot_command_port,
@@ -262,7 +279,8 @@ class SocketControllerNode(Node):
 
         # publisher für gripper-status
         self.status_publisher = self.create_publisher(Bool, '/gripper_done', 10)
-        self.gripper_position_done_publisher = self.create_publisher(Bool, '/gripper_position_done', 10)
+        self.gripper_position_done_publisher = self.create_publisher(
+            Bool, '/gripper_position_done', 10)
         # Publisher für das Ergebnis der Werkzeug-Greif-Erkennung
         self.tool_grasped_publisher = self.create_publisher(Bool, '/tool_grasped', 10)
 
@@ -274,17 +292,30 @@ class SocketControllerNode(Node):
         self.zeroer_active_ = False
 
         # Subscriber für die Kraftsensor-Daten
-        self.subscription = self.create_subscription(WrenchStamped,'/force_torque_sensor_broadcaster/wrench', self.force_callback, 10)
+        self.subscription = self.create_subscription(
+            WrenchStamped,
+            '/force_torque_sensor_broadcaster/wrench',
+            self.force_callback,
+            10,
+        )
 
         # Subscriber für den Gripper-Befehl
-        self.subscription2 = self.create_subscription(Bool, '/gripper_mover', self.gripper_mover_callback, 10)
+        self.subscription2 = self.create_subscription(
+            Bool, '/gripper_mover', self.gripper_mover_callback, 10)
 
         # Subscriber für den Gripper-Zeroer
-        self.subscription3 = self.create_subscription(Bool, '/gripper_zeroer', self.gripper_zeroer_callback, 10)
+        self.subscription3 = self.create_subscription(
+            Bool, '/gripper_zeroer', self.gripper_zeroer_callback, 10)
         # Subscriber für explizite Positionskommandos
-        self.subscription4 = self.create_subscription(Int32, '/gripper_position_command', self.gripper_position_callback, 10)
+        self.subscription4 = self.create_subscription(
+            Int32,
+            '/gripper_position_command',
+            self.gripper_position_callback,
+            10,
+        )
         # Subscriber für On-Demand-Frischprüfung des Greifzustands (z. B. nach Lift)
-        self.subscription5 = self.create_subscription(Empty, '/verify_grasp', self.verify_grasp_callback, 10)
+        self.subscription5 = self.create_subscription(
+            Empty, '/verify_grasp', self.verify_grasp_callback, 10)
 
         # Timer für die kontinuierliche Werkzeug-Überwachung
         if self.grasp_monitor_enabled:
@@ -294,14 +325,25 @@ class SocketControllerNode(Node):
         # Extrahiere bool aus nachricht
         gripper_state = bool_msg.data
         if gripper_state:
-            self.get_logger().info(f"Opening gripper")
-            self.ur_node.command_gripper(100, speed=255, force=1)
-            self._publish_released()  # bewusstes Öffnen: nichts mehr gehalten
+            self._open_gripper()
         else:
-            self.get_logger().info(f"Closing gripper")
+            self.get_logger().info("Closing gripper")
             self.ur_node.command_gripper(250, speed=255, force=255)
             self.check_tool_grasped()
 
+    def _open_gripper(self):
+        """Open to the configured target and publish the released ground truth."""
+        self.get_logger().info(
+            "Opening gripper to position "
+            f"{self.gripper_open_position} "
+            "(0 = fully open, 255 = fully closed)."
+        )
+        self.ur_node.command_gripper(
+            self.gripper_open_position,
+            speed=255,
+            force=1,
+        )
+        self._publish_released()
 
     def check_tool_grasped(self):
         """Prüft nach dem Schließen über das Robotiq-Objekterkennungsregister,
@@ -320,7 +362,6 @@ class SocketControllerNode(Node):
         pos = self.ur_node.query_gripper_var("POS")
         return self._evaluate_and_publish_grasp(obj, pos)
 
-
     def verify_grasp_callback(self, _msg):
         """On-Demand-Frischprüfung (z. B. direkt nach einem Lift). Der Greifer
         steht still, daher direkt gOBJ/gPO abfragen — ohne den Bewegungs-Settle
@@ -330,7 +371,6 @@ class SocketControllerNode(Node):
         pos = self.ur_node.query_gripper_var("POS")
         self.get_logger().info("On-demand Greif-Frischprüfung angefordert.")
         self._evaluate_and_publish_grasp(obj, pos)
-
 
     def _evaluate_and_publish_grasp(self, obj, pos):
         """Bewertet gOBJ/gPO, publiziert /tool_grasped und (de)aktiviert den
@@ -343,9 +383,10 @@ class SocketControllerNode(Node):
         # so gOBJ reads 3 ("closed through to target, no object"). Catch it by
         # position — BUT only in the explicit narrow interval ending below the
         # empty full close: the fingers CLOSED and stopped a little short. The
-        # lower bound is critical: an open/idle gripper (pos ~100) also lies below
-        # rescue_max_pos, and without the lower bound the rescue would call it
-        # "grasped" and the holding-guard would then block every pick.
+        # lower bound is critical: an open/idle gripper (active position 90;
+        # default 100) also lies below rescue_max_pos, and without the lower bound
+        # the rescue would call it "grasped" and the holding-guard would then block
+        # every pick.
         rescue_applied = (
             obj != 2 and pos is not None and rescue_lo <= pos < rescue_hi
         )
@@ -370,7 +411,6 @@ class SocketControllerNode(Node):
         self.monitoring_active = bool(grasped)
         return grasped
 
-
     def _publish_released(self):
         """Greifer wurde absichtlich geöffnet (Handover-Release / normales
         Öffnen): Ground-Truth aktualisieren — nichts mehr gehalten — und den
@@ -380,7 +420,6 @@ class SocketControllerNode(Node):
         msg = Bool()
         msg.data = False
         self.tool_grasped_publisher.publish(msg)
-
 
     def _monitor_grasp(self):
         """Poll gOBJ/gPO and confirm a conclusive loss with a second sample."""
@@ -435,11 +474,11 @@ class SocketControllerNode(Node):
         self.tool_grasped_publisher.publish(msg)
         self.monitoring_active = False
 
-
     def gripper_zeroer_callback(self, bool_msg):
         # Extrahiere bool aus nachricht
         self.zeroer_active_ = bool_msg.data
-        self.get_logger().info(f"Aktivitätsstatus: {'Aktiv' if self.zeroer_active_ else 'Inaktiv'}")
+        activity = 'Aktiv' if self.zeroer_active_ else 'Inaktiv'
+        self.get_logger().info(f"Aktivitätsstatus: {activity}")
         if self.zeroer_active_:
             self.reset_force_offset()
 
@@ -470,7 +509,7 @@ class SocketControllerNode(Node):
     def force_callback(self, msg):
         if not self.zeroer_active_:
             return
-        
+
         # Falls der Offset noch nicht gesetzt wurde, speichere ihn als Nullpunkt
         if self.force_offset is None:
             self.force_offset = msg.wrench.force
@@ -485,14 +524,12 @@ class SocketControllerNode(Node):
         # Nur wenn sich die Kraft von der Nullposition signifikant ändert, soll der Greifer öffnen
         if abs(force_x) > 2 or abs(force_y) > 2 or abs(force_z) > 2:
             self.get_logger().info("Force threshold exceeded, opening gripper.")
-            self.ur_node.command_gripper(100, speed=255, force=1) # 0 = auf, 255 = ganz zu
-            self._publish_released()  # Werkzeug übergeben: nichts mehr gehalten
+            self._open_gripper()
             msg = Bool()
             msg.data = True
             self.status_publisher.publish(msg)
             self.get_logger().info("Gripper open.")
             self.zeroer_active_ = False
-
 
     def reset_force_offset(self):
         """Setzt die Kraft- und Drehmomentwerte auf 0 zurück."""

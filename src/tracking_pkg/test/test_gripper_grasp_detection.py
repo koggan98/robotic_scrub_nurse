@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,6 +17,7 @@ from gripper_opener_with_zeroer import (  # noqa: E402
     classify_loss_monitor_sample,
     is_confirmed_tool_loss,
     is_tool_grasped,
+    validate_gripper_position,
     validate_loss_confirm_delay,
     validate_rescue_window,
 )
@@ -42,11 +44,15 @@ class _FakePublisher:
 
 
 class _FakeUR:
-    def __init__(self, values):
+    def __init__(self, values=()):
         self.values = iter(values)
+        self.commands = []
 
     def query_gripper_var(self, _name):
         return next(self.values)
+
+    def command_gripper(self, position, speed, force):
+        self.commands.append((position, speed, force))
 
 
 def _monitor_node(values):
@@ -65,8 +71,82 @@ def _monitor_node(values):
     return node, logger, publisher
 
 
+def _command_node():
+    logger = _FakeLogger()
+    tool_grasped_publisher = _FakePublisher()
+    status_publisher = _FakePublisher()
+    node = SimpleNamespace(
+        gripper_open_position=90,
+        ur_node=_FakeUR(),
+        monitoring_active=True,
+        tool_grasped_publisher=tool_grasped_publisher,
+        status_publisher=status_publisher,
+        get_logger=lambda: logger,
+    )
+    node._publish_released = lambda: SocketControllerNode._publish_released(node)
+    node._open_gripper = lambda: SocketControllerNode._open_gripper(node)
+    return node, logger, tool_grasped_publisher, status_publisher
+
+
+def test_normal_open_uses_configured_position_and_publishes_release():
+    node, logger, tool_grasped_publisher, _ = _command_node()
+
+    SocketControllerNode.gripper_mover_callback(
+        node, SimpleNamespace(data=True))
+
+    assert node.ur_node.commands == [(90, 255, 1)]
+    assert tool_grasped_publisher.values == [False]
+    assert node.monitoring_active is False
+    assert any('position 90' in line for line in logger.infos)
+
+
+def test_normal_close_remains_at_position_250():
+    node, _, _, _ = _command_node()
+    grasp_checks = []
+    node.check_tool_grasped = lambda: grasp_checks.append(True)
+
+    SocketControllerNode.gripper_mover_callback(
+        node, SimpleNamespace(data=False))
+
+    assert node.ur_node.commands == [(250, 255, 255)]
+    assert grasp_checks == [True]
+
+
+def test_force_triggered_open_uses_configured_position():
+    node, _, tool_grasped_publisher, status_publisher = _command_node()
+    node.zeroer_active_ = True
+    node.force_offset = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+    node.torque_offset = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+    message = SimpleNamespace(
+        wrench=SimpleNamespace(
+            force=SimpleNamespace(x=3.0, y=0.0, z=0.0),
+            torque=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        )
+    )
+
+    SocketControllerNode.force_callback(node, message)
+
+    assert node.ur_node.commands == [(90, 255, 1)]
+    assert tool_grasped_publisher.values == [False]
+    assert status_publisher.values == [True]
+    assert node.zeroer_active_ is False
+
+
+def test_active_profile_opens_to_position_90():
+    config_path = os.path.join(_PKG, 'config', 'loop_mover_profiles.yaml')
+    with open(config_path, encoding='utf-8') as config_file:
+        config = yaml.safe_load(config_file)
+
+    assert (
+        config['gripper_opener_with_zeroer']['ros__parameters'][
+            'gripper.open_position'
+        ] == 90
+    )
+
+
 @pytest.mark.parametrize('position,expected', [
-    (100, False),  # open gripper
+    (90, False),  # active open position
+    (100, False),  # standalone default open position
     (179, False),
     (180, True),
     (227, True),
@@ -136,6 +216,18 @@ def test_valid_rescue_window_is_accepted():
 def test_valid_loss_confirmation_delay_is_accepted():
     validate_loss_confirm_delay(0.0)
     validate_loss_confirm_delay(0.1)
+
+
+@pytest.mark.parametrize('position', [0, 90, 100, 255])
+def test_valid_gripper_positions_are_accepted(position):
+    validate_gripper_position(position, 'gripper.open_position')
+
+
+@pytest.mark.parametrize('position', [-1, 256])
+def test_invalid_gripper_positions_are_rejected(position):
+    with pytest.raises(
+            ValueError, match='gripper.open_position must be between 0 and 255'):
+        validate_gripper_position(position, 'gripper.open_position')
 
 
 def test_negative_loss_confirmation_delay_is_rejected():
