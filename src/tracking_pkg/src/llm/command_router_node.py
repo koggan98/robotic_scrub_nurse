@@ -35,6 +35,7 @@ Parameters:
 import json
 import os
 import threading
+import time
 
 import rclpy
 import yaml
@@ -76,9 +77,15 @@ class CommandRouterNode(Node):
         self.declare_parameter('openai_api_key', '')
         self.declare_parameter('model_name', 'gpt-5-mini')
         self.declare_parameter('action_timeout_sec', 120.0)
+        # Drive the arm home automatically after a skill failure instead of
+        # waiting for the operator to say "home". Executor already self-homes on
+        # empty-gripper failures; this covers the still-holding / stuck cases.
+        self.declare_parameter('auto_home_on_error', True)
 
         self.action_timeout_sec = float(
             self.get_parameter('action_timeout_sec').value)
+        self._auto_home_on_error = bool(
+            self.get_parameter('auto_home_on_error').value)
 
         share = get_package_share_directory('tracking_pkg')
         self.catalog = self._load_yaml(
@@ -376,6 +383,7 @@ class CommandRouterNode(Node):
                 continue
             self._set_fsm(IDLE)
             self._publish_response(f'Cannot pick. {msg}')
+            self._auto_home_core('pick failed')
             return
 
         # Tool is in the gripper — hand it over, asynchronously.
@@ -387,6 +395,7 @@ class CommandRouterNode(Node):
         if gh is None:
             self._set_fsm(IDLE)
             self._publish_response(f'Handover failed to start. {err}')
+            self._auto_home_core('handover start failed')
             return
 
         with self._pending_lock:
@@ -407,6 +416,7 @@ class CommandRouterNode(Node):
         except Exception as e:
             self.get_logger().warn(f'handover result error: {e}')
             self._set_fsm(IDLE)
+            self._auto_home_async('handover result error')
             return
         if (wrapped.status == GoalStatus.STATUS_SUCCEEDED
                 and getattr(wrapped.result, 'success', False)):
@@ -428,9 +438,12 @@ class CommandRouterNode(Node):
             threading.Thread(
                 target=self._retry_thread, args=(cls,), daemon=True).start()
             return
-        # canceled / aborted (e.g. preempted by return_tool): stay silent —
-        # the preempting command reports its own result.
+        # canceled / aborted. If an operator command preempted the handover
+        # (e.g. return_tool) it holds _busy and owns recovery -> _auto_home_async
+        # skips and stays silent. A genuine motion failure (e.g. "handover
+        # execute failed", arm stuck holding the tool) auto-homes.
         self._set_fsm(IDLE)
+        self._auto_home_async('handover aborted')
 
     def _retry_thread(self, tool_class):
         if not self._busy.acquire(blocking=False):
@@ -464,10 +477,12 @@ class CommandRouterNode(Node):
         self._set_fsm(IDLE)
         if result is None:
             self._publish_response(f'Cannot return. {err}')
+            self._auto_home_core('return failed')
         elif result.success:
             self._publish_response('Returned.')
         else:
             self._publish_response(f'Cannot return. {result.message}')
+            self._auto_home_core('return failed')
 
     def _cmd_put_back(self, intent):
         wm = self._world_model()
@@ -545,6 +560,7 @@ class CommandRouterNode(Node):
             wrapped = future.result()
         except Exception as e:
             self.get_logger().warn(f'put_back result error: {e}')
+            self._auto_home_async('put_back result error')
             return
         res = wrapped.result
         if getattr(res, 'success', False):
@@ -554,6 +570,7 @@ class CommandRouterNode(Node):
             skipped = list(getattr(res, 'skipped_reasons', []) or [])
             reason = skipped[0] if skipped else getattr(res, 'message', 'failed')
             self._publish_response(f'Cannot put back. {reason}')
+            self._auto_home_async('put_back failed')
 
     def _cmd_simple(self, client, goal, label, ok_text):
         result, err = self._send_action(client, goal, label)
@@ -564,6 +581,63 @@ class CommandRouterNode(Node):
             self._publish_response(ok_text)
         else:
             self._publish_response(f'{label} failed. {result.message}')
+
+    # ── Autonomous recovery ─────────────────────────────────────────
+    # Settle before probing the world model, so the executor's own state
+    # publish / self-home lands first.
+    _AUTO_HOME_SETTLE_SEC = 0.4
+
+    def _auto_home_core(self, reason):
+        """Drive the arm home after a failure — the manual 'home' command, made
+        automatic. Self-gating: does nothing when the executor already homed
+        itself (empty gripper -> IDLE). Runs synchronously; the caller must hold
+        self._busy so this serialises against normal commands."""
+        if not self._auto_home_on_error:
+            return
+        time.sleep(self._AUTO_HOME_SETTLE_SEC)
+        wm = self._world_model() or {}
+        state = wm.get('system_state', '')
+        holds = bool(wm.get('gripper_holds_tool'))
+        if state == IDLE and not holds:
+            return  # executor already drove home; nothing to do
+        self.get_logger().info(
+            f'Auto-home after {reason} (state={state or "?"}, holds={holds})')
+        self._set_fsm(RETURNING)
+        result, err = self._send_action(
+            self.home_client, ReturnHome.Goal(), 'return_home')
+        self._set_fsm(IDLE)
+        if result is None or not getattr(result, 'success', False):
+            # The executor's own home already failed once — do NOT loop.
+            detail = err or getattr(result, 'message', '')
+            self.get_logger().error(f'Auto-home failed: {detail}')
+            self._publish_response('Auto-home failed. Manual help needed.')
+        elif holds:
+            # Home reached, tool still gripped: executor stays in RECOVERY_ERROR
+            # until the operator returns/releases it.
+            self._publish_response('Homed. Still holding — say return.')
+        else:
+            self._publish_response('Homed after error.')
+
+    def _auto_home_async(self, reason):
+        """Auto-home from an async result callback (executor thread, no _busy
+        held). A daemon thread grabs _busy non-blocking; if a command is already
+        driving the robot (operator preemption), that command owns recovery and
+        we skip."""
+        if not self._auto_home_on_error:
+            return
+        threading.Thread(
+            target=self._auto_home_async_thread, args=(reason,),
+            daemon=True).start()
+
+    def _auto_home_async_thread(self, reason):
+        if not self._busy.acquire(blocking=False):
+            self.get_logger().info(
+                f'Auto-home skipped ({reason}): another command active')
+            return
+        try:
+            self._auto_home_core(reason)
+        finally:
+            self._busy.release()
 
     def _cmd_abort(self):
         with self._pending_lock:
