@@ -25,8 +25,9 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -63,6 +64,26 @@ def generate_launch_description():
         [FindPackageShare('tracking_pkg'), 'models', 'robot.onnx']
     )
 
+    # ASR parameters shared by both wake-word modes. The acoustic node adds the
+    # openWakeWord model (needs models/robot.onnx); the text-gate node runs without
+    # it so the pipeline is testable before that model is trained — see the
+    # 'use_wake_word' launch argument below.
+    asr_params_common = {
+        # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU. The deterministic
+        # NLU (fuzzy verbs/tools) plus the initial_prompt vocabulary bias absorb
+        # its rougher raw accuracy. Revert to 'base.en' if mishearings get worse.
+        'whisper_model':                'tiny.en',
+        'language':                     'en',
+        'silence_threshold_seconds':    0.35,
+        'max_speech_seconds':           8.0,
+        'cpu_threads':                  3,
+        # PortAudio name substrings paired with native capture rates. Exactly one
+        # is expected to be connected.
+        'audio_device_candidates':      ['Samson', 'USB Composite Device'],
+        'audio_device_candidate_rates': [16000, 48000],
+        'wake_words':                   ['robot'],
+    }
+
     # RViz runs on the NUC (which has the robot model + planning scene natively).
     # The Jetson is headless — it must NOT generate a robot_description here: that
     # would pull rsn_ur.urdf.xacro / the UR ros2_control xacro (not needed for
@@ -71,6 +92,14 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument('ur_type',       default_value='ur3e'),
+        # Acoustic openWakeWord gate (needs models/robot.onnx). Set false to test
+        # without the trained model: Whisper text-gate — say "robot", pause, then
+        # the command. asr_node transcribes everything and matches "robot" as text.
+        DeclareLaunchArgument(
+            'use_wake_word', default_value='true',
+            description='true: acoustic openWakeWord gate (needs '
+                        'models/robot.onnx). false: Whisper text-gate for '
+                        'testing without the model (say "robot", then command).'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
 
         # ── Static TFs (ArUco marker world-poses) ─────────────────
@@ -359,39 +388,45 @@ def generate_launch_description():
         # connected supported microphone and uses its native capture rate.
         # openWakeWord filters idle audio before Whisper; the spoken interaction
         # is deliberately two-stage: "Robot", a short pause, then one command.
+        #
+        # Two mutually-exclusive nodes gated by use_wake_word (only one launches):
+        # acoustic (default, needs models/robot.onnx, fail-closed) vs. Whisper
+        # text-gate for testing before that model exists.
         TimerAction(
             period=13.0,
             actions=[
+                # Acoustic openWakeWord gate — the production path. Fails closed
+                # if the enabled detector or its model cannot be loaded; there is
+                # no Whisper fallback.
                 Node(
                     package='tracking_pkg',
                     executable='asr_node.py',
                     name='asr_node',
                     output='screen',
+                    condition=IfCondition(LaunchConfiguration('use_wake_word')),
                     parameters=[{
-                        # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU.
-                        # The deterministic NLU (fuzzy verbs/tools) plus the
-                        # initial_prompt vocabulary bias absorb its rougher
-                        # raw accuracy. Revert to 'base.en' if mishearings
-                        # get worse in practice.
-                        'whisper_model':               'tiny.en',
-                        'language':                    'en',
-                        'silence_threshold_seconds':   0.35,
-                        'max_speech_seconds':           8.0,
-                        'cpu_threads':                 3,
-                        # PortAudio name substrings paired with native capture
-                        # rates. Exactly one is expected to be connected.
-                        'audio_device_candidates':
-                            ['Samson', 'USB Composite Device'],
-                        'audio_device_candidate_rates': [16000, 48000],
-                        # Fail closed if the enabled detector or its installed
-                        # model cannot be loaded; there is no Whisper fallback.
+                        **asr_params_common,
                         'audio_wake_enabled': True,
                         'audio_wake_model_path': ParameterValue(
                             wake_word_model_path, value_type=str),
                         'audio_wake_threshold': 0.5,
-                        'wake_require_separate_command': True,
                         # Whisper verifies only the exact isolated wake token.
-                        'wake_words': ['robot'],
+                        'wake_require_separate_command': True,
+                    }],
+                ),
+                # Whisper text-gate — no ONNX needed. Whisper transcribes every
+                # segment and matches "robot" as text (two-stage: say "robot",
+                # pause, then the command). For testing before robot.onnx exists.
+                Node(
+                    package='tracking_pkg',
+                    executable='asr_node.py',
+                    name='asr_node',
+                    output='screen',
+                    condition=UnlessCondition(
+                        LaunchConfiguration('use_wake_word')),
+                    parameters=[{
+                        **asr_params_common,
+                        'audio_wake_enabled': False,
                     }],
                 ),
             ],
