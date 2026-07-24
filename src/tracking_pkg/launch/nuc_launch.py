@@ -312,6 +312,15 @@ def generate_launch_description():
             output='screen',
             parameters=[{'publish_hz': 0.2}],
         ),
+        # Thin ceiling plate (world frame) — a hard upper bound the planner keeps
+        # the arm below. Geometry defaults live in upper_bound_publisher.py.
+        Node(
+            package='tracking_pkg',
+            executable='upper_bound_publisher.py',
+            name='upper_bound_publisher',
+            output='screen',
+            parameters=[{'publish_hz': 0.2}],
+        ),
 
         # ── RViz (optional) ───────────────────────────────────────
         TimerAction(

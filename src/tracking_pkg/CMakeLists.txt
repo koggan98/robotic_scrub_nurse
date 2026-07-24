@@ -48,6 +48,7 @@ install(
     src/publisher/instrument_tray_collision_publisher.py
     src/publisher/reclaim_tray_collision_publisher.py
     src/publisher/display_collision_publisher.py
+    src/publisher/upper_bound_publisher.py
     # Execution
     src/execution/gripper_opener_with_zeroer.py
     src/execution/reclaim_controller.py
