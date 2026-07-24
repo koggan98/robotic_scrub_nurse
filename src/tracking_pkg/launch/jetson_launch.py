@@ -16,21 +16,112 @@ Env vars:
   OPENAI_API_KEY     OpenAI API key for LLM
 """
 
+import glob
 import os
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+
+# openWakeWord pretrained models (no training needed) and the exact wake token(s)
+# Whisper must transcribe to confirm the acoustic hit. Download once with:
+#   python3 -c "import openwakeword.utils; openwakeword.utils.download_models()"
+# Their license is CC BY-NC-SA 4.0 (non-commercial).
+_PRETRAINED_WAKE_WORDS = {
+    'alexa':       ['alexa'],
+    'hey_jarvis':  ['jarvis', 'hey jarvis'],
+    'hey_mycroft': ['mycroft', 'hey mycroft'],
+    'hey_rhasspy': ['rhasspy', 'hey rhasspy'],
+}
+
+# ASR parameters shared by every wake-word mode. The acoustic path adds the
+# wake model + wake_words; the text-gate path just disables the acoustic gate.
+ASR_PARAMS_COMMON = {
+    # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU. The deterministic NLU
+    # (fuzzy verbs/tools) plus the initial_prompt vocabulary bias absorb its
+    # rougher raw accuracy. Revert to 'base.en' if mishearings get worse.
+    'whisper_model':                'tiny.en',
+    'language':                     'en',
+    'silence_threshold_seconds':    0.35,
+    'max_speech_seconds':           8.0,
+    'cpu_threads':                  3,
+    # PortAudio name substrings paired with native capture rates. Exactly one is
+    # expected to be connected.
+    'audio_device_candidates':      ['Samson', 'USB Composite Device'],
+    'audio_device_candidate_rates': [16000, 48000],
+    'wake_words':                   ['robot'],
+}
+
+
+def _resolve_wake_model(name):
+    """Map a wake_model name to (onnx_path, wake_words).
+
+    A pretrained openWakeWord name (alexa, hey_jarvis, ...) resolves to the
+    bundled .onnx inside the installed openwakeword package; any other name is a
+    custom models/<name>.onnx shipped in the tracking_pkg share. The node itself
+    still fail-closes if the resolved file is missing."""
+    name = (name or 'robot').strip()
+    if name in _PRETRAINED_WAKE_WORDS:
+        try:
+            import openwakeword
+        except ImportError as exc:
+            raise RuntimeError(
+                "wake_model='%s' needs openwakeword installed on this host "
+                "(pip install openwakeword==0.6.0)." % name) from exc
+        models_dir = os.path.join(
+            os.path.dirname(openwakeword.__file__), 'resources', 'models')
+        hits = sorted(glob.glob(os.path.join(models_dir, name + '*.onnx')))
+        if not hits:
+            raise RuntimeError(
+                "Pretrained wake model '%s' not found in %s. Download it once "
+                "with: python3 -c \"import openwakeword.utils; "
+                "openwakeword.utils.download_models()\"" % (name, models_dir))
+        return hits[0], list(_PRETRAINED_WAKE_WORDS[name])
+    share = get_package_share_directory('tracking_pkg')
+    return os.path.join(share, 'models', name + '.onnx'), [name]
+
+
+def _truthy(value):
+    return str(value).strip().lower() in ('true', '1', 'yes', 'on')
+
+
+def _asr_node_actions(context, *args, **kwargs):
+    """Build the single asr_node for the selected mode (evaluated at launch).
+
+    use_wake_word=true -> acoustic openWakeWord gate with the wake_model model;
+    false -> Whisper text-gate (no model needed, say "robot" then the command)."""
+    params = dict(ASR_PARAMS_COMMON)
+    if _truthy(LaunchConfiguration('use_wake_word').perform(context)):
+        model_path, wake_words = _resolve_wake_model(
+            LaunchConfiguration('wake_model').perform(context))
+        params.update({
+            'audio_wake_enabled':            True,
+            'audio_wake_model_path':         model_path,
+            'audio_wake_threshold':          0.5,
+            # Whisper verifies only the exact isolated wake token.
+            'wake_require_separate_command': True,
+            'wake_words':                    wake_words,
+        })
+    else:
+        params['audio_wake_enabled'] = False
+    return [Node(
+        package='tracking_pkg',
+        executable='asr_node.py',
+        name='asr_node',
+        output='screen',
+        parameters=[params],
+    )]
 
 
 def _default_model_path(filename):
@@ -60,29 +151,6 @@ def generate_launch_description():
     rs_launch_file = PathJoinSubstitution(
         [FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py']
     )
-    wake_word_model_path = PathJoinSubstitution(
-        [FindPackageShare('tracking_pkg'), 'models', 'robot.onnx']
-    )
-
-    # ASR parameters shared by both wake-word modes. The acoustic node adds the
-    # openWakeWord model (needs models/robot.onnx); the text-gate node runs without
-    # it so the pipeline is testable before that model is trained — see the
-    # 'use_wake_word' launch argument below.
-    asr_params_common = {
-        # tiny.en: ~1 s instead of base.en's ~2.7 s on CPU. The deterministic
-        # NLU (fuzzy verbs/tools) plus the initial_prompt vocabulary bias absorb
-        # its rougher raw accuracy. Revert to 'base.en' if mishearings get worse.
-        'whisper_model':                'tiny.en',
-        'language':                     'en',
-        'silence_threshold_seconds':    0.35,
-        'max_speech_seconds':           8.0,
-        'cpu_threads':                  3,
-        # PortAudio name substrings paired with native capture rates. Exactly one
-        # is expected to be connected.
-        'audio_device_candidates':      ['Samson', 'USB Composite Device'],
-        'audio_device_candidate_rates': [16000, 48000],
-        'wake_words':                   ['robot'],
-    }
 
     # RViz runs on the NUC (which has the robot model + planning scene natively).
     # The Jetson is headless — it must NOT generate a robot_description here: that
@@ -92,14 +160,24 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument('ur_type',       default_value='ur3e'),
-        # Acoustic openWakeWord gate (needs models/robot.onnx). Set false to test
-        # without the trained model: Whisper text-gate — say "robot", pause, then
-        # the command. asr_node transcribes everything and matches "robot" as text.
+        # Acoustic openWakeWord gate. Set false to test without any model:
+        # Whisper text-gate — say "robot", pause, then the command (asr_node
+        # transcribes everything and matches "robot" as text).
         DeclareLaunchArgument(
             'use_wake_word', default_value='true',
-            description='true: acoustic openWakeWord gate (needs '
-                        'models/robot.onnx). false: Whisper text-gate for '
-                        'testing without the model (say "robot", then command).'),
+            description='true: acoustic openWakeWord gate (see wake_model). '
+                        'false: Whisper text-gate for testing without any model '
+                        '(say "robot", then command).'),
+        # Which acoustic model to use when use_wake_word:=true. 'robot' = the
+        # custom (not-yet-trained) models/robot.onnx; a pretrained openWakeWord
+        # name works out of the box with no training.
+        DeclareLaunchArgument(
+            'wake_model', default_value='robot',
+            description="Acoustic wake model (use_wake_word:=true). 'robot' = "
+                        'custom models/robot.onnx; or a pretrained openWakeWord '
+                        'name (alexa, hey_jarvis, hey_mycroft, hey_rhasspy) — '
+                        'download once: python3 -c "import openwakeword.utils; '
+                        'openwakeword.utils.download_models()".'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
 
         # ── Static TFs (ArUco marker world-poses) ─────────────────
@@ -387,49 +465,14 @@ def generate_launch_description():
         # starve sshd during startup. The node automatically selects the one
         # connected supported microphone and uses its native capture rate.
         # openWakeWord filters idle audio before Whisper; the spoken interaction
-        # is deliberately two-stage: "Robot", a short pause, then one command.
+        # is deliberately two-stage: wake word, a short pause, then one command.
         #
-        # Two mutually-exclusive nodes gated by use_wake_word (only one launches):
-        # acoustic (default, needs models/robot.onnx, fail-closed) vs. Whisper
-        # text-gate for testing before that model exists.
+        # _asr_node_actions resolves the mode at launch time: acoustic gate with
+        # the selected wake_model (custom robot.onnx, or a pretrained openWakeWord
+        # model), or the Whisper text-gate when use_wake_word:=false.
         TimerAction(
             period=13.0,
-            actions=[
-                # Acoustic openWakeWord gate — the production path. Fails closed
-                # if the enabled detector or its model cannot be loaded; there is
-                # no Whisper fallback.
-                Node(
-                    package='tracking_pkg',
-                    executable='asr_node.py',
-                    name='asr_node',
-                    output='screen',
-                    condition=IfCondition(LaunchConfiguration('use_wake_word')),
-                    parameters=[{
-                        **asr_params_common,
-                        'audio_wake_enabled': True,
-                        'audio_wake_model_path': ParameterValue(
-                            wake_word_model_path, value_type=str),
-                        'audio_wake_threshold': 0.5,
-                        # Whisper verifies only the exact isolated wake token.
-                        'wake_require_separate_command': True,
-                    }],
-                ),
-                # Whisper text-gate — no ONNX needed. Whisper transcribes every
-                # segment and matches "robot" as text (two-stage: say "robot",
-                # pause, then the command). For testing before robot.onnx exists.
-                Node(
-                    package='tracking_pkg',
-                    executable='asr_node.py',
-                    name='asr_node',
-                    output='screen',
-                    condition=UnlessCondition(
-                        LaunchConfiguration('use_wake_word')),
-                    parameters=[{
-                        **asr_params_common,
-                        'audio_wake_enabled': False,
-                    }],
-                ),
-            ],
+            actions=[OpaqueFunction(function=_asr_node_actions)],
         ),
 
         # ── Command router (deterministic, replaces the LLM orchestrator) ──
