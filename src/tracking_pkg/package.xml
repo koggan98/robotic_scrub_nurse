@@ -12,6 +12,7 @@
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
   <depend>tracking_msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
@@ -40,12 +41,15 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <!-- llm_orchestrator_node needs pydantic + the OpenAI SDK.
        pydantic is available via rosdep; the OpenAI SDK is pip-only:
        pip install openai -->
   <exec_depend>python3-pydantic</exec_depend>
+  <!-- The acoustic wake-word gate additionally needs the pip-only package
+       openwakeword==0.6.0. SciPy above supplies native-rate resampling. -->
 
   <export>
     <build_type>ament_cmake</build_type>

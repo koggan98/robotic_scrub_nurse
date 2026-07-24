@@ -305,6 +305,13 @@ def generate_launch_description():
             # works with the shortened gripper cylinder from files/ur.urdf.xacro.
             parameters=[{'publish_hz': 0.2}],
         ),
+        Node(
+            package='tracking_pkg',
+            executable='display_collision_publisher.py',
+            name='display_collision_publisher',
+            output='screen',
+            parameters=[{'publish_hz': 0.2}],
+        ),
 
         # ── RViz (optional) ───────────────────────────────────────
         TimerAction(

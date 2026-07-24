@@ -47,6 +47,7 @@ install(
     src/publisher/mir_publisher.py
     src/publisher/instrument_tray_collision_publisher.py
     src/publisher/reclaim_tray_collision_publisher.py
+    src/publisher/display_collision_publisher.py
     # Execution
     src/execution/gripper_opener_with_zeroer.py
     src/execution/reclaim_controller.py
@@ -63,6 +64,7 @@ install(
     src/llm/intent_parser.py
     src/llm/llm_intent_backend.py
     src/interfaces/wake_word.py
+    src/interfaces/openwakeword_detector.py
     src/interfaces/hri_display_logic.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -75,6 +77,11 @@ install(
 
 install(
   DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY models
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -158,9 +165,12 @@ install(
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(test_reclaim_preflight_retry
     test/test_reclaim_preflight_retry.cpp)
   target_include_directories(test_reclaim_preflight_retry PRIVATE include)
+  ament_add_pytest_test(test_tracking_pkg_python test
+    TIMEOUT 120)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)

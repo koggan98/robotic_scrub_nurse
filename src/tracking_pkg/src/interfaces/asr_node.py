@@ -1,49 +1,49 @@
 #!/usr/bin/env python3
 """
-ASR (Automatic Speech Recognition) Node
-========================================
-Captures audio from microphone via sounddevice, detects speech segments
-using energy-based VAD, and transcribes them with faster-whisper (local, free).
+Capture microphone speech and publish commands transcribed by Whisper.
 
-Pipeline:
-  Microphone (sounddevice) → energy-based VAD → WAV buffer
-    → faster-whisper transcription → /user_speech
+In the active Jetson setup, a lightweight openWakeWord model runs before the
+Whisper queue. Ordinary room conversation is therefore discarded without an
+expensive transcription. Acoustic hits are verified as an exact wake token,
+then one command is captured and published on ``/user_speech``.
 
-Publishers:
-  /user_speech (std_msgs/String) - transcribed speech segments
-
-Parameters:
-  whisper_model (str): Model size: tiny.en, base.en, small.en, medium, large-v3
-                       Recommendation: 'base.en' for CPU (fast, English-only)
-  language (str): Expected language code (en) or empty for auto-detect
-  sample_rate (int): Whisper input sample rate in Hz (default: 16000)
-  capture_sample_rate (int): Native microphone rate; 0 uses sample_rate
-  silence_threshold_seconds (float): Seconds of silence to end a segment
-  energy_threshold (float): RMS energy threshold for speech detection
-  min_speech_seconds (float): Minimum speech duration to trigger transcription
-  device_index (int): Explicit microphone index (-1 = automatic selection)
-  audio_device (str): Explicit name substring; overrides automatic selection
-  audio_device_candidates (str[]): Auto-detected input name substrings
-  audio_device_candidate_rates (int[]): Native rates paired with candidates
-  audio_device_retry_seconds (float): Rescan interval while no unique input exists
-
-Install:
-  pip install faster-whisper sounddevice numpy
+The runtime dependencies are faster-whisper, sounddevice, NumPy, SciPy, and
+``openwakeword==0.6.0``.
 """
 
+from collections import deque
+from dataclasses import dataclass
 import io
+import math
+import os
+import queue
 import time
 import wave
-import queue
+from threading import Lock, Thread
+
 import numpy as np
-from threading import Thread
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 
-from wake_word import plan_wake_segment
+from wake_word import (
+    correct_addressed_command,
+    is_exact_wake_utterance,
+    plan_wake_segment,
+)
+
+
+@dataclass(frozen=True)
+class AudioQueueItem:
+    """One transcription candidate tied to an acoustic wake session."""
+
+    kind: str
+    generation: int
+    audio: np.ndarray
+    started_at: float
+    deadline_reserved: bool
 
 
 class AudioDeviceSelectionError(RuntimeError):
@@ -51,7 +51,8 @@ class AudioDeviceSelectionError(RuntimeError):
 
 
 def select_supported_audio_device(devices, candidates, sample_rates):
-    """Return the single supported input as ``(index, name, rate, match)``.
+    """
+    Return the single supported input as ``(index, name, rate, match)``.
 
     ``None`` means that no configured microphone is currently present. Output-only
     devices are ignored. More than one match is rejected so the robot never picks
@@ -90,6 +91,18 @@ def audio_capture_block_size(sample_rate, chunk_duration):
     return int(sample_rate * chunk_duration)
 
 
+def _positive_finite_parameter(name, value):
+    """Return one positive finite floating-point ROS parameter."""
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f'{name} must be a positive finite number') from exc
+    if not math.isfinite(normalized) or normalized <= 0.0:
+        raise ValueError(f'{name} must be a positive finite number')
+    return normalized
+
+
 class ASRNode(Node):
     def __init__(self):
         super().__init__('asr_node')
@@ -106,6 +119,10 @@ class ASRNode(Node):
         self.declare_parameter('silence_threshold_seconds', 0.8)
         self.declare_parameter('energy_threshold', 0.015)
         self.declare_parameter('min_speech_seconds', 0.5)
+        # Hard bound for one deliberate wake/command segment. Idle audio keeps
+        # only the 1.5-s pre-roll, but an active segment also needs a cap so a
+        # stuck VAD or continuous tone cannot grow memory or hold the FSM open.
+        self.declare_parameter('max_speech_seconds', 8.0)
         self.declare_parameter('device_index', -1)
         # Select the input device by NAME substring (passed straight to sounddevice),
         # e.g. 'Samson'. Preferred over device_index: robust to index changes and works
@@ -134,10 +151,21 @@ class ASRNode(Node):
             'robot', 'robo', 'rob', 'robi', 'robbie', 'robert'])
         # Fuzzy acceptance for Whisper re-spellings ("Roby", "Robots").
         self.declare_parameter('wake_word_fuzzy', 0.75)
-        # Two-stage wake word: say "robot" alone -> the display shows "speak
-        # now" -> then say the command. Solves the wake word getting lost inside
-        # a fast "robot needle holder". A one-breath "robot needle holder" still
-        # works (published directly). False -> old single-segment behaviour.
+        # Optional acoustic pre-filter. The active distributed Jetson launch
+        # enables it and points at the packaged custom "Robot" ONNX model.
+        # Other/legacy launches stay transcription-first unless they explicitly
+        # opt in. An enabled but unloadable detector is a startup error: silently
+        # falling back would recreate the background-speech queue this gate fixes.
+        self.declare_parameter('audio_wake_enabled', False)
+        self.declare_parameter('audio_wake_model_path', '')
+        self.declare_parameter('audio_wake_threshold', 0.5)
+        # True means the wake candidate must transcribe to the wake token alone.
+        # "Robot needle holder" is rejected; say "Robot", pause, then command.
+        self.declare_parameter('wake_require_separate_command', False)
+        # Legacy text-gate policy: saying "robot" alone arms a second segment,
+        # while a one-breath command remains accepted. The active acoustic path
+        # additionally sets wake_require_separate_command, which intentionally
+        # rejects that one-breath form.
         self.declare_parameter('two_stage_wake', True)
         # After the wake word, how long to wait for the command to START before
         # disarming back to idle.
@@ -167,6 +195,10 @@ class ASRNode(Node):
         self.silence_threshold = float(self.get_parameter('silence_threshold_seconds').value)
         self.energy_threshold = float(self.get_parameter('energy_threshold').value)
         self.min_speech_seconds = float(self.get_parameter('min_speech_seconds').value)
+        self.max_speech_seconds = _positive_finite_parameter(
+            'max_speech_seconds',
+            self.get_parameter('max_speech_seconds').value,
+        )
         device_idx = int(self.get_parameter('device_index').value)
         audio_device = self.get_parameter('audio_device').value
         self.audio_device_candidates = list(
@@ -199,10 +231,22 @@ class ASRNode(Node):
             'float16' if str(self.asr_device).startswith('cuda') else 'int8')
         self.wake_words = list(self.get_parameter('wake_words').value or [])
         self.wake_word_fuzzy = float(self.get_parameter('wake_word_fuzzy').value)
+        self.audio_wake_enabled = bool(
+            self.get_parameter('audio_wake_enabled').value)
+        self.audio_wake_model_path = str(
+            self.get_parameter('audio_wake_model_path').value or '')
+        self.audio_wake_threshold = float(
+            self.get_parameter('audio_wake_threshold').value)
+        if not 0.0 < self.audio_wake_threshold <= 1.0:
+            raise ValueError('audio_wake_threshold must be in (0, 1]')
+        self.wake_require_separate_command = bool(
+            self.get_parameter('wake_require_separate_command').value)
         self.initial_prompt = self.get_parameter('initial_prompt').value or None
         self.two_stage_wake = bool(self.get_parameter('two_stage_wake').value)
-        self.command_window_sec = float(
-            self.get_parameter('command_window_sec').value)
+        self.command_window_sec = _positive_finite_parameter(
+            'command_window_sec',
+            self.get_parameter('command_window_sec').value,
+        )
         self.no_speech_threshold = float(
             self.get_parameter('no_speech_threshold').value)
 
@@ -217,9 +261,24 @@ class ASRNode(Node):
             String, 'asr_status',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
-        # Two-stage wake FSM state (only used when two_stage_wake and wake_words).
-        self._phase = 'wait_wake'      # 'wait_wake' | 'command'
+        # Wake FSM state. With the acoustic filter there is an intermediate
+        # verification phase; without it the legacy text-only flow uses the
+        # original wait_wake/command pair.
+        # ``resetting`` is a short internal barrier: capture cannot run the
+        # detector between closing a session and clearing the model's history.
+        self._phase = 'wait_wake'  # wait_wake | verify_wake | command | resetting
         self._command_deadline = 0.0
+        self._wake_generation = 0
+        self._wake_state_lock = Lock()
+        self._detector_lock = Lock()
+        self._active_segment_generation = None
+        self._active_segment_started_at = None
+        # A command may finish and enter the queue in the narrow interval
+        # between Queue.get() timing out and the worker checking the session
+        # deadline. Reserving it under the FSM lock prevents that check from
+        # invalidating an otherwise in-time command.
+        self._pending_in_time_commands = 0
+        self._wake_detector = None
 
         # Audio state. Capture runs continuously on one thread and hands whole
         # speech segments to a transcription thread through this queue, so the
@@ -231,6 +290,13 @@ class ASRNode(Node):
         self._audio_queue = queue.Queue()
         self._model = None
         self._running = True
+        self._fatal_error = None
+
+        # Load the small wake model synchronously so a missing dependency/model
+        # fails the process before it can claim to be ready. Whisper is still
+        # loaded lazily on the listening thread after a microphone is available.
+        if self.audio_wake_enabled:
+            self._wake_detector = self._create_wake_detector()
 
         capture_rate_description = (
             'auto' if self._auto_select_audio
@@ -241,15 +307,48 @@ class ASRNode(Node):
             f'lang={self.language or "auto"}, '
             f'capture_rate={capture_rate_description}, '
             f'whisper_rate={self.sample_rate}Hz, '
-            f'silence={self.silence_threshold}s, energy={self.energy_threshold})'
+            f'silence={self.silence_threshold}s, energy={self.energy_threshold}, '
+            f'acoustic_wake={self.audio_wake_enabled})'
         )
 
         # Start audio + transcription threads
         self._listen_thread = Thread(target=self._listen_loop, daemon=True)
         self._listen_thread.start()
 
+    def _create_wake_detector(self):
+        """Create the acoustic detector or fail closed during node startup."""
+        if not self.audio_wake_model_path:
+            message = (
+                'audio_wake_enabled is true but audio_wake_model_path is empty')
+            self.get_logger().error(message)
+            raise RuntimeError(message)
+        if not os.path.isfile(self.audio_wake_model_path):
+            message = (
+                'Acoustic wake model does not exist: '
+                f'{self.audio_wake_model_path}')
+            self.get_logger().error(message)
+            raise RuntimeError(message)
+        try:
+            from openwakeword_detector import OpenWakeWordDetector
+            detector = OpenWakeWordDetector(
+                self.audio_wake_model_path,
+                self.audio_wake_threshold,
+            )
+        except Exception as exc:
+            message = (
+                'Failed to initialize acoustic wake detector '
+                f'({self.audio_wake_model_path}): {exc}')
+            self.get_logger().error(message)
+            raise RuntimeError(message) from exc
+        self.get_logger().info(
+            'Acoustic wake detector ready '
+            f'(model={self.audio_wake_model_path}, '
+            f'threshold={self.audio_wake_threshold:.2f})')
+        return detector
+
     def _load_model(self):
-        """Load faster-whisper model (runs on first audio segment).
+        """
+        Load the faster-whisper model when the first audio input is ready.
 
         Defaults to CUDA on the Spark; degrades to CPU/int8 if the GPU build of
         CTranslate2 is unavailable so ASR still works without a usable GPU.
@@ -298,8 +397,9 @@ class ASRNode(Node):
 
     def _listen_loop(self):
         """
-        Set up audio + model, then run the continuous capture producer. A
-        separate worker thread transcribes queued segments and runs the wake
+        Set up audio and run the continuous capture producer.
+
+        A separate worker thread transcribes queued segments and runs the wake
         FSM, so the microphone stays open while Whisper is busy.
         """
         try:
@@ -330,8 +430,11 @@ class ASRNode(Node):
         self._capture_loop(sd)
 
     def _capture_loop(self, sd):
-        """Producer: hold the mic open and enqueue speech segments forever.
-        Never blocks on transcription — that runs on the worker thread."""
+        """
+        Keep the microphone open and enqueue speech segments.
+
+        Transcription runs on the worker thread and never blocks this producer.
+        """
         chunk_duration = 0.1  # 100ms chunks
         _no_mic_warned = False
         while self._running and rclpy.ok():
@@ -339,6 +442,9 @@ class ASRNode(Node):
                 self._stream_and_segment(sd, chunk_duration)
                 _no_mic_warned = False
             except sd.PortAudioError as e:
+                self._reset_acoustic_wake_runtime('audio device disconnected')
+                if not self._running:
+                    return
                 if self._auto_select_audio:
                     self.get_logger().warn(
                         f'Audio device lost ({e}); rescanning supported microphones.'
@@ -363,8 +469,10 @@ class ASRNode(Node):
                     self.get_logger().error(f'Audio device error: {e}')
                     time.sleep(2.0)
             except Exception as e:
+                self._reset_acoustic_wake_runtime('capture loop error')
                 self.get_logger().error(f'Capture loop error: {e}')
-                time.sleep(1.0)
+                if self._running:
+                    time.sleep(1.0)
 
     def _refresh_portaudio_devices(self, sd):
         """Refresh PortAudio's frozen device list while no stream is open."""
@@ -378,8 +486,15 @@ class ASRNode(Node):
     def _apply_audio_selection(self, selection):
         """Apply an automatic selection to the next capture stream."""
         index, _name, sample_rate, _candidate = selection
+        changed = (
+            self.device_index is not None and
+            (self.device_index != index or
+             self.capture_sample_rate != sample_rate))
         self.device_index = index
         self.capture_sample_rate = sample_rate
+        if changed:
+            self._reset_acoustic_wake_runtime(
+                'microphone selection changed')
 
     def _wait_for_audio_input(self, sd, refresh=False):
         """Wait until exactly one configured input is connected."""
@@ -438,18 +553,23 @@ class ASRNode(Node):
         return False
 
     def _stream_and_segment(self, sd, chunk_duration):
-        """Hold ONE InputStream open and enqueue each complete speech segment.
+        """
+        Hold one input stream and route complete energy-VAD segments.
 
-        Energy-based VAD:
-        1. energy above threshold  -> speech start
-        2. accumulate while above threshold
-        3. silence longer than silence_threshold -> segment complete -> enqueue
-        Then keep reading immediately for the next segment. Returns only on
-        shutdown; a device error propagates to _capture_loop for a rescan.
+        openWakeWord sees every raw chunk while the node is idle. The energy
+        segmenter remains responsible for defining the audio sent to Whisper,
+        but segments without an acoustic hit are discarded before the queue.
+        A small rolling pre-roll retains the beginning of a quiet wake word when
+        the acoustic model fires before/without the energy threshold.
         """
         speech_buffer = []
         is_speaking = False
         silence_start = None
+        segment_started_at = None
+        buffer_started_at = None
+        segment_wake_generation = None
+        pre_roll = deque(
+            maxlen=max(1, int(round(1.5 / float(chunk_duration)))))
 
         # Recomputed per stream so a Samson/Jieli hot-swap also updates the
         # 100 ms block size from 1600 to 4800 samples (or vice versa).
@@ -469,26 +589,163 @@ class ASRNode(Node):
                 if overflowed:
                     self.get_logger().debug('Audio overflow (dropped frames)')
 
+                now = time.monotonic()
+                chunk_copy = audio_chunk.copy()
+                pre_roll.append(chunk_copy)
                 rms = np.sqrt(np.mean(audio_chunk ** 2))
                 if rms >= self.energy_threshold:
                     if not is_speaking:
                         is_speaking = True
+                        segment_started_at = now
+                        self._note_active_segment_started(segment_started_at)
                         self.get_logger().debug('Speech started')
-                    speech_buffer.append(audio_chunk.copy())
+                    if self._should_buffer_segment(
+                            segment_wake_generation):
+                        if buffer_started_at is None:
+                            buffer_started_at = segment_started_at
+                        speech_buffer.append(chunk_copy)
                     silence_start = None
                 elif is_speaking:
-                    speech_buffer.append(audio_chunk.copy())
+                    if self._should_buffer_segment(
+                            segment_wake_generation):
+                        if buffer_started_at is None:
+                            buffer_started_at = segment_started_at
+                        speech_buffer.append(chunk_copy)
                     if silence_start is None:
-                        silence_start = time.time()
-                    elif time.time() - silence_start >= self.silence_threshold:
-                        # Segment complete: hand it off and keep listening.
-                        self._enqueue_segment(speech_buffer)
-                        speech_buffer = []
-                        is_speaking = False
-                        silence_start = None
+                        silence_start = now
 
-    def _enqueue_segment(self, speech_buffer):
-        """Queue a finished segment for the transcription worker (bounded)."""
+                wake_score = self._process_acoustic_wake(audio_chunk)
+                if wake_score is not None:
+                    generation = self._begin_wake_verification(wake_score)
+                    if generation is not None:
+                        segment_wake_generation = generation
+                        # Always replace the idle VAD history with the bounded
+                        # pre-roll. Thus quiet onsets are retained and a long
+                        # background utterance never becomes a long candidate.
+                        speech_buffer = list(pre_roll)
+                        buffer_started_at = (
+                            now - (len(pre_roll) - 1) * chunk_duration)
+                        segment_started_at = buffer_started_at
+                        if not is_speaking:
+                            is_speaking = True
+                            silence_start = now
+
+                silence_complete = (
+                    is_speaking and silence_start is not None and
+                    now - silence_start >= self.silence_threshold)
+                segment_limit_reached = (
+                    is_speaking and buffer_started_at is not None and
+                    now - buffer_started_at >= self.max_speech_seconds)
+                if silence_complete or segment_limit_reached:
+                    if segment_limit_reached and not silence_complete:
+                        self.get_logger().warn(
+                            'Maximum speech segment duration reached; '
+                            'closing the current bounded segment.')
+                    # Segment complete: hand it off and keep listening.
+                    self._enqueue_segment(
+                        speech_buffer,
+                        wake_generation=segment_wake_generation,
+                        segment_started_at=segment_started_at,
+                    )
+                    self._note_active_segment_finished(segment_started_at)
+                    speech_buffer = []
+                    is_speaking = False
+                    silence_start = None
+                    segment_started_at = None
+                    buffer_started_at = None
+                    segment_wake_generation = None
+
+    def _should_buffer_segment(self, wake_generation):
+        """Keep full audio only for a wake candidate or active wake session."""
+        if not getattr(self, 'audio_wake_enabled', False):
+            return True
+        if wake_generation is not None:
+            return True
+        with self._wake_state_lock:
+            return self._phase in ('verify_wake', 'command')
+
+    def _process_acoustic_wake(self, audio_chunk):
+        """Return a detector score only while waiting for a wake word."""
+        if not getattr(self, 'audio_wake_enabled', False):
+            return None
+        with self._wake_state_lock:
+            if self._phase != 'wait_wake':
+                return None
+        try:
+            with self._detector_lock:
+                return self._wake_detector.process(
+                    np.asarray(audio_chunk).reshape(-1),
+                    self.capture_sample_rate,
+                )
+        except Exception as exc:
+            # Runtime detector failure is also fail-closed. Continuing with the
+            # transcription-first path would silently restore the original bug.
+            self._stop_for_acoustic_failure(
+                f'Acoustic wake detector failed; ASR is stopping: {exc}')
+            return None
+
+    def _stop_for_acoustic_failure(self, message):
+        """Stop microphone ASR after an unrecoverable detector error."""
+        self._fatal_error = message
+        self.get_logger().error(message)
+        self._running = False
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
+
+    def _begin_wake_verification(self, score):
+        """Atomically open a new acoustic wake session."""
+        with self._wake_state_lock:
+            if self._phase != 'wait_wake':
+                return None
+            self._wake_generation += 1
+            generation = self._wake_generation
+            self._phase = 'verify_wake'
+            self._command_deadline = 0.0
+            self._pending_in_time_commands = 0
+        discarded = 0
+        while True:
+            try:
+                self._audio_queue.get_nowait()
+                discarded += 1
+            except queue.Empty:
+                break
+        if discarded:
+            self.get_logger().debug(
+                f'Discarded {discarded} stale queued segment(s) before '
+                f'wake session {generation}.')
+        self.get_logger().info(
+            f'Acoustic wake candidate detected (score={score:.3f}, '
+            f'session={generation}); awaiting exact Whisper verification.')
+        return generation
+
+    def _note_active_segment_started(self, started_at):
+        """Remember a possible command that began while wake is verified."""
+        if not getattr(self, 'audio_wake_enabled', False):
+            return
+        with self._wake_state_lock:
+            if self._phase not in ('verify_wake', 'command'):
+                return
+            self._active_segment_generation = self._wake_generation
+            self._active_segment_started_at = started_at
+
+    def _note_active_segment_finished(self, started_at):
+        if not getattr(self, 'audio_wake_enabled', False):
+            return
+        with self._wake_state_lock:
+            if self._active_segment_started_at == started_at:
+                self._active_segment_generation = None
+                self._active_segment_started_at = None
+
+    def _enqueue_segment(self, speech_buffer, wake_generation=None,
+                         segment_started_at=None):
+        """
+        Route a segment into the bounded transcription queue.
+
+        In acoustic mode only the wake candidate and segments from its active
+        session are admitted. Idle background speech is discarded here.
+        """
         if not speech_buffer:
             return
         audio_data = np.concatenate(speech_buffer, axis=0).flatten()
@@ -496,10 +753,61 @@ class ASRNode(Node):
         if duration < self.min_speech_seconds:
             self.get_logger().debug(
                 f'Speech too short ({duration:.2f}s), skipping')
+            if wake_generation is not None:
+                self._close_acoustic_session(
+                    wake_generation, 'wake candidate was too short')
             return
-        self.get_logger().info(f'Captured {duration:.1f}s of speech, queued.')
-        # Drop the oldest stale segment rather than let a backlog grow if
-        # transcription is lagging behind capture.
+
+        if not getattr(self, 'audio_wake_enabled', False):
+            self.get_logger().info(
+                f'Captured {duration:.1f}s of speech, queued.')
+            self._put_legacy_audio(audio_data)
+            return
+
+        started_at = (
+            segment_started_at
+            if segment_started_at is not None else time.monotonic())
+        deadline_reserved = False
+        if wake_generation is not None:
+            kind = 'wake'
+            generation = wake_generation
+        else:
+            with self._wake_state_lock:
+                phase = self._phase
+                if phase not in ('verify_wake', 'command'):
+                    self.get_logger().debug(
+                        f'Discarded {duration:.1f}s background segment '
+                        '(no acoustic wake hit).')
+                    return
+                generation = self._wake_generation
+                deadline_reserved = (
+                    phase == 'verify_wake' or
+                    started_at <= self._command_deadline)
+                if deadline_reserved:
+                    self._pending_in_time_commands += 1
+            kind = 'command'
+
+        item = AudioQueueItem(
+            kind=kind,
+            generation=generation,
+            audio=audio_data,
+            started_at=started_at,
+            deadline_reserved=deadline_reserved,
+        )
+        try:
+            queued = self._put_acoustic_item(item)
+        except Exception:
+            self._release_deadline_reservation(item)
+            raise
+        if not queued:
+            self._release_deadline_reservation(item)
+            return
+        self.get_logger().info(
+            f'Captured {duration:.1f}s {kind} segment for '
+            f'wake session {generation}, queued.')
+
+    def _put_legacy_audio(self, audio_data):
+        """Preserve the bounded transcription-first diagnostic behaviour."""
         if self._audio_queue.qsize() >= self._max_queued_segments:
             try:
                 self._audio_queue.get_nowait()
@@ -507,14 +815,53 @@ class ASRNode(Node):
                 pass
         self._audio_queue.put(audio_data)
 
+    def _put_acoustic_item(self, item):
+        """Bound a deliberate wake session without ever dropping its wake item."""
+        if self._audio_queue.qsize() >= self._max_queued_segments:
+            if item.kind == 'command':
+                self.get_logger().warn(
+                    f'Wake session {item.generation} command queue full; '
+                    'dropping newest segment.')
+                return False
+            # A new wake starts from WAIT_WAKE, so anything already queued is
+            # stale. Clear it before inserting the verification candidate.
+            while True:
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+        self._audio_queue.put(item)
+        return True
+
+    def _release_deadline_reservation(self, item):
+        """Release one generation-bound in-time command reservation."""
+        if (item.kind != 'command' or
+                not item.deadline_reserved):
+            return
+        with self._wake_state_lock:
+            if item.generation != self._wake_generation:
+                return
+            if self._pending_in_time_commands > 0:
+                self._pending_in_time_commands -= 1
+
     # ── Transcription worker + two-stage wake FSM ───────────────────
 
     def _transcribe_worker(self):
-        """Consumer: transcribe queued segments and drive the wake FSM. Runs on
-        its own thread so capture never stops while Whisper decodes."""
+        """
+        Transcribe queued segments and drive the wake FSM.
+
+        Run on a separate thread so capture continues while Whisper decodes.
+        """
+        if getattr(self, 'audio_wake_enabled', False):
+            self._transcribe_worker_acoustic()
+            return
+        self._transcribe_worker_legacy()
+
+    def _transcribe_worker_legacy(self):
+        """Original transcription-first flow, kept only for explicit diagnostics."""
         while self._running and rclpy.ok():
             if self._phase == 'command':
-                remaining = self._command_deadline - time.time()
+                remaining = self._command_deadline - time.monotonic()
                 if remaining <= 0:
                     self._handle_segment(None)      # window elapsed -> disarm
                     continue
@@ -534,6 +881,214 @@ class ASRNode(Node):
                     continue
                 text = self._transcribe(audio)
                 self._handle_segment(text)          # wake decision
+
+    def _transcribe_worker_acoustic(self):
+        """Consume only candidates admitted by the acoustic wake gate."""
+        while self._running and rclpy.ok():
+            try:
+                item = self._audio_queue.get(timeout=0.2)
+            except queue.Empty:
+                # Queued items are checked first because the deadline applies to
+                # when speech *started*, not when the finished segment happens
+                # to be dequeued. An in-time item carries its own start time.
+                self._expire_acoustic_command_window()
+                continue
+            if not isinstance(item, AudioQueueItem):
+                self.get_logger().warn(
+                    'Discarded untagged audio from acoustic wake queue.')
+                continue
+            self._process_acoustic_queue_item(item)
+
+    def _process_acoustic_queue_item(self, item):
+        """Transcribe one tagged item and always release its deadline claim."""
+        try:
+            with self._wake_state_lock:
+                current_generation = self._wake_generation
+                phase = self._phase
+                deadline = self._command_deadline
+            if item.generation != current_generation:
+                self.get_logger().debug(
+                    f'Discarded stale {item.kind} segment from wake session '
+                    f'{item.generation}.')
+                return
+
+            if item.kind == 'wake':
+                if phase != 'verify_wake':
+                    self.get_logger().debug(
+                        f'Discarded unexpected wake segment in phase {phase}.')
+                    return
+                self._handle_acoustic_wake_transcript(
+                    item.generation, self._transcribe(item.audio))
+                return
+
+            if item.kind != 'command':
+                self.get_logger().error(
+                    f'Discarded unknown audio queue item kind: {item.kind}')
+                return
+            if phase != 'command':
+                # FIFO ordering guarantees that the wake item is processed
+                # before its followers. A different phase therefore means this
+                # command belongs to a rejected/closed session.
+                self.get_logger().debug(
+                    f'Discarded command segment while phase is {phase}.')
+                return
+            if item.started_at > deadline:
+                self._close_acoustic_session(
+                    item.generation,
+                    'command started after the six-second window',
+                )
+                return
+
+            text = self._transcribe(item.audio)
+            if not text:
+                # A cough/noise segment does not consume the command window.
+                return
+            action = plan_wake_segment(
+                'command', text, self.wake_words, self.wake_word_fuzzy,
+                self.two_stage_wake)
+            command = (
+                action[1] if action[0] == 'command'
+                else correct_addressed_command(text))
+            if self._close_acoustic_session(
+                    item.generation, 'command accepted'):
+                self._publish_command(command)
+        finally:
+            self._release_deadline_reservation(item)
+
+    def _handle_acoustic_wake_transcript(self, generation, text):
+        """Verify the acoustic hit with Whisper and arm/publish/reject it."""
+        with self._wake_state_lock:
+            if (generation != self._wake_generation or
+                    self._phase != 'verify_wake'):
+                return
+
+        if self.wake_require_separate_command:
+            if not is_exact_wake_utterance(text, self.wake_words):
+                rendered = text if text else '<empty>'
+                self.get_logger().info(
+                    'Acoustic wake candidate rejected by exact verification: '
+                    f'"{rendered}" (expected the wake word alone).')
+                self._close_acoustic_session(
+                    generation, 'exact wake verification rejected')
+                return
+            self._arm_acoustic_session(generation)
+            return
+
+        # Compatibility mode: retain the previous one-breath behaviour when
+        # strict separation is explicitly disabled.
+        action = plan_wake_segment(
+            'wait_wake', text, self.wake_words, self.wake_word_fuzzy,
+            self.two_stage_wake)
+        if action[0] == 'arm':
+            self._arm_acoustic_session(generation)
+        elif action[0] == 'command':
+            if self._close_acoustic_session(
+                    generation, 'inline command accepted'):
+                self._publish_command(action[1])
+        else:
+            rendered = text if text else '<empty>'
+            self.get_logger().info(
+                f'Acoustic wake candidate rejected after transcription: '
+                f'"{rendered}".')
+            self._close_acoustic_session(
+                generation, 'wake verification rejected')
+
+    def _arm_acoustic_session(self, generation):
+        with self._wake_state_lock:
+            if (generation != self._wake_generation or
+                    self._phase != 'verify_wake'):
+                return
+            self._phase = 'command'
+            self._command_deadline = (
+                time.monotonic() + self.command_window_sec)
+            # Serialize status with session state. Otherwise a disconnect could
+            # publish idle between unlock and this listening update, leaving
+            # the HRI stuck on a stale "speak now" indication.
+            self._publish_status('listening')
+        self.get_logger().info(
+            'Wake word verified — speak your command within '
+            f'{self.command_window_sec:g} seconds.')
+
+    def _expire_acoustic_command_window(self):
+        """Disarm at the deadline unless a command began before it."""
+        with self._wake_state_lock:
+            generation = self._wake_generation
+        self._close_acoustic_session(
+            generation,
+            'command window expired',
+            require_expired_idle=True,
+        )
+
+    def _close_acoustic_session(
+            self, generation, reason, require_expired_idle=False):
+        """Close one session and invalidate every queued follower atomically."""
+        if not getattr(self, 'audio_wake_enabled', False):
+            return False
+        with self._wake_state_lock:
+            if generation != self._wake_generation:
+                return False
+            if self._phase == 'resetting':
+                return False
+            if require_expired_idle:
+                now = time.monotonic()
+                in_time_segment_active = (
+                    self._active_segment_generation == generation and
+                    self._active_segment_started_at is not None and
+                    self._active_segment_started_at <= self._command_deadline)
+                if (self._phase != 'command' or
+                        now < self._command_deadline or
+                        in_time_segment_active or
+                        self._pending_in_time_commands > 0):
+                    return False
+            old_phase = self._phase
+            self._phase = 'resetting'
+            self._command_deadline = 0.0
+            self._wake_generation += 1
+            reset_generation = self._wake_generation
+            self._active_segment_generation = None
+            self._active_segment_started_at = None
+            self._pending_in_time_commands = 0
+            if old_phase == 'command':
+                self._publish_status('')
+        self.get_logger().info(
+            f'Wake session {generation} closed: {reason}.')
+        detector = getattr(self, '_wake_detector', None)
+        reset_ok = True
+        if detector is not None:
+            try:
+                with self._detector_lock:
+                    detector.reset()
+            except Exception as exc:
+                reset_ok = False
+                self._stop_for_acoustic_failure(
+                    'Failed to reset acoustic wake detector; ASR is '
+                    f'stopping: {exc}')
+        if reset_ok:
+            with self._wake_state_lock:
+                if (self._phase == 'resetting' and
+                        self._wake_generation == reset_generation):
+                    self._phase = 'wait_wake'
+        return reset_ok
+
+    def _reset_acoustic_wake_runtime(self, reason):
+        """Reset detector/session after a microphone disconnect or hot-swap."""
+        if not getattr(self, 'audio_wake_enabled', False):
+            return
+        with self._wake_state_lock:
+            generation = self._wake_generation
+            active = self._phase != 'wait_wake'
+        if active:
+            self._close_acoustic_session(generation, reason)
+            return
+        detector = getattr(self, '_wake_detector', None)
+        if detector is not None:
+            try:
+                with self._detector_lock:
+                    detector.reset()
+            except Exception as exc:
+                self._stop_for_acoustic_failure(
+                    'Failed to reset acoustic wake detector; ASR is '
+                    f'stopping: {exc}')
 
     def _publish_status(self, status):
         msg = String()
@@ -564,7 +1119,8 @@ class ASRNode(Node):
         elif kind == 'arm':
             self.get_logger().info('Wake word detected — speak your command.')
             self._phase = 'command'
-            self._command_deadline = time.time() + self.command_window_sec
+            self._command_deadline = (
+                time.monotonic() + self.command_window_sec)
             self._publish_status('listening')
         elif kind == 'disarm':
             self.get_logger().info('Command window expired — disarmed.')
@@ -641,7 +1197,10 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
+    if node._fatal_error:
+        raise RuntimeError(node._fatal_error)
 
 
 if __name__ == '__main__':

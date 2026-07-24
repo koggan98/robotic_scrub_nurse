@@ -27,7 +27,7 @@ NVIDIA Jetson Orin Nano (192.168.12.6)        Intel NUC (192.168.12.5)
 Perception + AI (headless, ARM64/CUDA)        Robot control (x86_64)
   cameras, YOLO-OBB, hand tracking,             UR driver, MoveIt move_group,
   ArUco, grasp reasoning, world model,   <-->   skill_executor, gripper, collision
-  ASR (Whisper), LLM orchestrator          DDS  publishers, RViz
+  ASR (openWakeWord → Whisper), LLM        DDS  publishers, RViz
                                                      |
                                                      v
                                           UR3e + Robotiq 2F + (MiR base as collision object)
@@ -80,13 +80,22 @@ RViz live only on the NUC.
   camera rate, ~63% CPU + ~1.6 GB, for no production consumer).
 
 ## High-Level Active ROS Flow
-1. `asr_node` (faster-whisper `tiny.en`, local, energy-based VAD) runs on the Jetson, automatically
-   selects the single connected supported USB microphone, transcribes a spoken command, and
-   publishes it on `/user_speech`. Samson Q2U is captured directly at 16 kHz; the Jieli receiver is
-   captured at its native 48 kHz and decoded/resampled to Whisper's 16 kHz. With no supported input
-   ASR waits and rescans; two simultaneous supported inputs are rejected as ambiguous. After the
-   wake-word gate, the exact one-token `Oh.` substitution is corrected to `awl`; `oh` inside longer
-   phrases, unaddressed speech, and direct topic injection remain untouched.
+1. `asr_node` is configured to run openWakeWord before faster-whisper `tiny.en` on the Jetson. It automatically
+   selects the single connected supported USB microphone; Samson Q2U is processed directly at
+   16 kHz and the Jieli receiver is captured at 48 kHz and resampled to 16 kHz. In `WAIT_WAKE`,
+   background audio is discarded before the Whisper queue. An acoustic hit enters `VERIFY_WAKE`,
+   where Whisper must confirm the isolated token `robot`; the active strict mode then requires at
+   least 0.35 s of silence before `WAIT_COMMAND` opens for 6 s. The next usable command is published
+   without the wake word on `/user_speech`, after which the session closes. One-breath phrases such
+   as “Robot needle holder” are intentionally rejected. Audio buffered while wake verification is
+   running remains tied to that session, and generation IDs prevent stale segments from publishing
+   after rejection, timeout, reconnect, or success. Missing openWakeWord/model resources fail
+   closed with a ROS error instead of enabling continuous Whisper; direct `/user_speech` injection
+   remains a microphone-independent diagnostic bypass. With no supported input ASR waits and
+   rescans; at startup or reconnect, two simultaneous supported inputs are rejected as ambiguous.
+   A second device inserted during a healthy stream is considered at the next reconnect scan. The
+   integration and pinned training contract are present, but the validated `robot.onnx` artifact
+   is still required; until it is installed, the active ASR intentionally does not start.
 2. `command_router_node` consumes `/user_speech`, parses verbs and tool synonyms deterministically,
    and checks choices against `/get_world_model`. OpenAI is only a stateless intent fallback when
    deterministic parsing has no evidence. When the router asks `Which one?`, it retains the closed

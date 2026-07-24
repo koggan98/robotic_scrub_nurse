@@ -1,0 +1,62 @@
+# Production configuration for an openWakeWord 0.6.0 model that detects the
+# isolated English wake word "robot".
+#
+# Run this only in the pinned, isolated training environment documented in
+# README.md. All relative paths are resolved from the training working
+# directory, not from the ROS package.
+
+model_name: "robot"
+
+target_phrase:
+  - "robot"
+
+# These are common conversational or phonetic confusions, not alternative wake
+# words. Keep deployment-derived false activations in this list for retraining.
+custom_negative_phrases:
+  - "the robot"
+  - "a robot"
+  - "robots"
+  - "robotic"
+  - "robotics"
+  - "robo"
+  - "Robert"
+  - "rowboat"
+
+# The official configuration recommends at least 20,000 positive examples and
+# states that 100,000 or more often performs best. The short single-word trigger
+# and false-activation-first acceptance policy justify the production count.
+n_samples: 100000
+n_samples_val: 10000
+
+tts_batch_size: 50
+augmentation_batch_size: 16
+
+piper_sample_generator_path: "./piper-sample-generator"
+output_dir: "./robot_training"
+
+rir_paths:
+  - "./mit_rirs"
+
+background_paths:
+  - "./background_clips"
+
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "./validation_set_features.npy"
+augmentation_rounds: 1
+
+feature_data_files:
+  "ACAV100M_sample": "./openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+model_type: "dnn"
+layer_size: 32
+
+steps: 50000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2

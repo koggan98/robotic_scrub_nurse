@@ -1,6 +1,6 @@
 """
-Jetson Launch File — Perception & AI Layer
-==========================================
+Launch the perception and AI layer on the Jetson Orin Nano.
+
 Runs on the NVIDIA Jetson Orin Nano (Humble, ARM64, CUDA / JetPack).
 Handles cameras, detection, hand tracking, grasp reasoning, world model, ASR and LLM.
 
@@ -25,9 +25,8 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
-from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -46,7 +45,7 @@ def _default_model_path(filename):
 def generate_launch_description():
 
     reclaim_tray_cam_serial = os.environ.get('RECLAIM_TRAY_CAM_SERIAL', '239222300719')
-    tray_cam_serial  = os.environ.get('TRAY_CAM_SERIAL',  '239222302690')
+    tray_cam_serial = os.environ.get('TRAY_CAM_SERIAL', '239222302690')
 
     instrument_tray_model_path = os.environ.get(
         'INSTRUMENT_TRAY_MODEL_PATH',
@@ -57,10 +56,11 @@ def generate_launch_description():
         _default_model_path('reclaim_tray_detector.pt'),
     )
 
-    ur_type       = LaunchConfiguration('ur_type')
-
     rs_launch_file = PathJoinSubstitution(
         [FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py']
+    )
+    wake_word_model_path = PathJoinSubstitution(
+        [FindPackageShare('tracking_pkg'), 'models', 'robot.onnx']
     )
 
     # RViz runs on the NUC (which has the robot model + planning scene natively).
@@ -275,7 +275,7 @@ def generate_launch_description():
                         # point LATERALLY away from the camera, not just downward.
                         # Grasp DEPTH is held constant by reclaim_z_offset in
                         # nuc_launch.py: plane + reclaim_z_offset = TCP.
-                        'fixed_tool_plane_z_m':  -0.137,
+                        'fixed_tool_plane_z_m': -0.137,
                         'location':              'reclaim_tray',
                         'publish_annotated_image': True,
                         'annotation_line_width_px': 1,
@@ -353,10 +353,12 @@ def generate_launch_description():
         # (handover_sound_publisher still exists for hosts that do; see
         # llm_launch.py. The HRI display carries the surgeon-facing feedback.)
 
-        # ── ASR (Whisper — CPU on the Jetson, ctranslate2 has no CUDA build) ──
+        # ── ASR (openWakeWord + Whisper — CPU on the Jetson) ─────────────
         # Loaded last (13 s) and thread-capped so it doesn't peg all 6 cores /
         # starve sshd during startup. The node automatically selects the one
         # connected supported microphone and uses its native capture rate.
+        # openWakeWord filters idle audio before Whisper; the spoken interaction
+        # is deliberately two-stage: "Robot", a short pause, then one command.
         TimerAction(
             period=13.0,
             actions=[
@@ -374,17 +376,22 @@ def generate_launch_description():
                         'whisper_model':               'tiny.en',
                         'language':                    'en',
                         'silence_threshold_seconds':   0.35,
+                        'max_speech_seconds':           8.0,
                         'cpu_threads':                 3,
                         # PortAudio name substrings paired with native capture
                         # rates. Exactly one is expected to be connected.
                         'audio_device_candidates':
                             ['Samson', 'USB Composite Device'],
                         'audio_device_candidate_rates': [16000, 48000],
-                        # Only utterances addressed to the robot pass; the wake
-                        # word is stripped before /user_speech. Direct topic
-                        # injection bypasses the gate (no mic involved).
-                        'wake_words': ['robot', 'robo', 'rob', 'robi',
-                                       'robbie', 'robert'],
+                        # Fail closed if the enabled detector or its installed
+                        # model cannot be loaded; there is no Whisper fallback.
+                        'audio_wake_enabled': True,
+                        'audio_wake_model_path': ParameterValue(
+                            wake_word_model_path, value_type=str),
+                        'audio_wake_threshold': 0.5,
+                        'wake_require_separate_command': True,
+                        # Whisper verifies only the exact isolated wake token.
+                        'wake_words': ['robot'],
                     }],
                 ),
             ],

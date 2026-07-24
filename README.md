@@ -109,7 +109,8 @@ Official UR simulation environment included as a git submodule for testing and d
 - **Intel RealSense SDK** + `realsense2_camera`: Camera integration
 - **Ultralytics (YOLOv8-OBB)** + **PyTorch**: instrument detection
 - **MediaPipe**: Hand tracking and gesture detection
-- **faster-whisper** + **sounddevice**: local speech-to-text and microphone capture
+- **openWakeWord 0.6.0** + **SciPy**: acoustic wake-word detection and native-rate resampling
+- **faster-whisper** + **sounddevice**: local command transcription and microphone capture
 - **OpenAI Python SDK**: LLM orchestrator using `gpt-5-mini` (requires
   `OPENAI_API_KEY`)
 - **ur_rtde**: Direct UR RTDE motion interface for the legacy socket runtime path
@@ -119,7 +120,8 @@ Official UR simulation environment included as a git submodule for testing and d
 
 ```bash
 pip install mediapipe pyrealsense2 ultralytics torch pillow \
-            faster-whisper sounddevice openai tabulate ur_rtde
+            faster-whisper sounddevice openwakeword==0.6.0 scipy \
+            openai tabulate ur_rtde
 ```
 
 ---
@@ -162,15 +164,42 @@ ros2 launch tracking_pkg nuc_launch.py ur_type:=ur3e
 
 Connect either the Samson Q2U or the Jieli-based `USB Composite Device` receiver to the Jetson;
 `asr_node` detects the single connected supported microphone automatically. Samson is captured at
-16 kHz. Jieli is captured at its native 48 kHz and faster-whisper decodes/resamples the WAV buffer
-to 16 kHz. If neither microphone is present, ASR waits and rescans every five seconds. If both are
-connected, ASR rejects the ambiguous setup until one is disconnected. Numeric ALSA device indices
-are rediscovered automatically after reconnecting USB hardware.
+16 kHz. Jieli is captured at its native 48 kHz and resampled to 16 kHz for the acoustic wake-word
+detector. If neither microphone is present, ASR waits and rescans every five seconds. If both are
+connected at startup or during a reconnect scan, ASR rejects the ambiguous setup until one is
+disconnected. Numeric ALSA device indices are rediscovered automatically after reconnecting USB
+hardware; plugging in a second microphone does not interrupt an already healthy stream.
 
-The wake-word gate also contains a deliberately narrow correction for the observed `tiny.en`
-substitution `awl` → `Oh.`: only an explicitly addressed command whose complete post-wake text is
-the single token `oh` is published as `awl`. Longer phrases containing `oh`, background speech, and
-direct `/user_speech` injection are not rewritten, so `oh` is not a global instrument synonym.
+The active launch runs a strict, two-stage wake flow: say **“Robot”**, wait for at least `0.35 s` of
+silence, then speak one command within `6 s`. Saying “Robot needle holder” in one breath is
+intentionally rejected. While idle, openWakeWord examines the 16 kHz PCM stream and background
+speech is discarded before it can enter the Whisper transcription queue. An acoustic hit is
+verified by Whisper as the isolated token `robot`; only then does the listening window open and
+the next usable transcript publish on `/user_speech`. Direct test injection on `/user_speech`
+still bypasses microphone processing.
+
+`jetson_launch.py` enables `audio_wake_enabled`, expects the installed
+`share/tracking_pkg/models/robot.onnx` model, uses an initial detector threshold of `0.5`, and
+requires the separate command. If openWakeWord or the model cannot be loaded, `asr_node` fails
+closed with a ROS error instead of reverting to continuous Whisper transcription. Only when
+starting `asr_node` separately for diagnostics, set its ROS parameter
+`audio_wake_enabled:=false` to use the previous text-gated path. For hardware calibration, isolate
+`/user_speech` from the command router, test thresholds
+`0.50`–`0.90` in `0.05` steps with at least 20 wake attempts per microphone, and run 60 minutes of
+representative background conversation. Use the lowest threshold with no false trigger and at
+least 19/20 detected attempts; otherwise retrain the custom
+[openWakeWord model](https://github.com/dscripka/openWakeWord).
+
+The repository currently contains the pinned training configuration and provenance contract, not
+an unvalidated placeholder binary. Follow
+[`src/tracking_pkg/models/README.md`](src/tracking_pkg/models/README.md), copy the accepted output
+to `src/tracking_pkg/models/robot.onnx`, and update its model manifest before using the active
+launch. Until then, the deliberate fail-closed startup error confirms that no unsafe Whisper
+fallback is running.
+
+Idle capture retains only a rolling `1.5 s` pre-roll instead of complete conversations. Once a
+wake/command session is active, `max_speech_seconds` bounds each accumulated speech segment to
+`8 s` even if the energy VAD never observes silence.
 
 The deterministic command router retains the candidate set whenever it asks `Which one?`. The next
 utterance is resolved only against those offered, currently available tools, so replies such as

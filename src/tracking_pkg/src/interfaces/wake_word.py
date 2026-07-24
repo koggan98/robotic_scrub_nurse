@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Wake-word gate for the ASR pipeline. Pure — no ROS, unit-testable.
+"""
+Gate transcribed speech using configured wake words.
 
 The microphone hears everything said near the table; only utterances addressed
 to the robot ("robot, needle holder") may become commands. The gate also kills
@@ -47,9 +48,31 @@ def correct_addressed_command(text: str) -> str:
     return text
 
 
+def is_exact_wake_utterance(text: Optional[str],
+                            wake_words: List[str]) -> bool:
+    """
+    Return whether ``text`` consists of exactly one configured wake token.
+
+    This deliberately does *not* use fuzzy matching or allow leading fillers.
+    The acoustic detector has already proposed the audio as a wake candidate;
+    this second-stage check prevents sentences such as "the robot is ready" or
+    one-breath commands such as "robot needle holder" from arming the robot.
+    Alternative entries in ``wake_words`` are only explicit Whisper spellings
+    of the same spoken wake word (for example ``robert``), not extra acoustic
+    trigger phrases.
+    """
+    if not text or not wake_words:
+        return False
+    tokens = [_norm_token(token) for token in text.split()]
+    tokens = [token for token in tokens if token]
+    accepted = {_norm_token(word) for word in wake_words if _norm_token(word)}
+    return len(tokens) == 1 and tokens[0] in accepted
+
+
 def strip_wake_word(text: str, wake_words: List[str],
                     fuzzy_threshold: float = 0.75) -> Optional[str]:
-    """The command after the wake word, or None when no wake word was heard.
+    """
+    Return the command after a wake word, or ``None`` when none was heard.
 
     Returns '' when the utterance was ONLY the wake word — the caller decides
     whether that means anything.
@@ -72,7 +95,8 @@ def strip_wake_word(text: str, wake_words: List[str],
 
 def plan_wake_segment(phase, text, wake_words, fuzzy_threshold=0.75,
                       two_stage=True):
-    """Decide what a transcribed segment means in the two-stage wake FSM.
+    """
+    Decide what a transcribed segment means in the two-stage wake FSM.
 
     Pure — no ROS, no side effects — so the branching is unit-testable. Returns
     one of:

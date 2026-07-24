@@ -1,0 +1,41 @@
+# Asset contract and provenance record for the runtime wake-word classifier.
+# Update this file only after a real candidate passes every check in README.md.
+
+schema_version: 1
+
+artifact:
+  expected_file: "robot.onnx"
+  state: "required_external_asset"
+  format: "onnx"
+  target_phrase: "robot"
+  bytes: null
+  sha256: null
+  created_utc: null
+  license: "CC-BY-NC-SA-4.0"
+
+runtime:
+  openwakeword_version: "0.6.0"
+  sample_rate_hz: 16000
+  frame_duration_ms: 80
+  initial_threshold: 0.5
+
+training:
+  config: "robot.training.yaml"
+  openwakeword_repository: "https://github.com/dscripka/openWakeWord.git"
+  openwakeword_tag: "v0.6.0"
+  openwakeword_commit: "c8ef6912c5feccf1037b852d9bc6c7ed644135ba"
+  official_notebook_sha256: "b7e46fd0369dec0b0aeb2755d5e27307143da04b5a1ae2065585474b12074554"
+  piper_repository: "https://github.com/rhasspy/piper-sample-generator.git"
+  piper_tag: "v2.0.0"
+  piper_commit: "195e3bd967d54589c2137c9de2b22ad526ba6b6f"
+
+validation:
+  state: "not_run"
+  selected_threshold: null
+  samson_wake_trials: null
+  samson_wake_detections: null
+  jieli_wake_trials: null
+  jieli_wake_detections: null
+  background_audio_minutes: null
+  false_activations: null
+  validated_utc: null

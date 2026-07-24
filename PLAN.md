@@ -26,6 +26,11 @@ The system has moved from a single-host, numeric `/tool_selection` MoveIt loop t
 - Local speech-to-text (`asr_node`, faster-whisper, energy VAD, `/user_speech`).
 - Automatic Jetson-side selection of the single connected Samson Q2U or Jieli USB receiver,
   including reconnect detection, native-rate capture, and 48 kHz → 16 kHz decoding for Jieli.
+- Acoustic openWakeWord prefilter integration for a custom `Robot` model: idle conversation is
+  discarded before Whisper, while the two-stage interaction requires “Robot”, a pause, then one
+  command within the bounded listening window. Code and training contract are delivered; training
+  and hardware validation of the required `robot.onnx` artifact remain outstanding. Missing
+  detector/model resources fail closed.
 - OpenAI function-calling orchestrator (`llm_orchestrator_node`) exposing robot skills as tools
   (`get_world_model`, `pick_and_handover`, `return_tool`, `release_tool`, `return_home`, `abort`).
 - Terse status feedback on `/system_response`; audio cues via `handover_sound_publisher`.
@@ -69,7 +74,8 @@ The system has moved from a single-host, numeric `/tool_selection` MoveIt loop t
 - **M0 — Baseline documentation alignment:** docs (`ARCHITECTURE.md`, `README.md`, `AGENTS.md`,
   `deployment_guide.md`, `PLAN.md`) reflect the distributed LLM/skill architecture. *(current)*
 - **M1 — Distributed runtime stable:** NUC/Jetson bring-up reliable within the Orin's resource budget.
-- **M2 — Speech-to-handover loop:** spoken command → pick → gesture-gated, force-released handover.
+- **M2 — Speech-to-handover loop:** “Robot” → pause → spoken command → pick → gesture-gated,
+  force-released handover.
 - **M3 — Reclaim-tray integration:** reclaim perception wired into the world model and execution.
 - **M4 — Context-aware planning prototype:** affordance-aware pickup/handover orientation.
 - **M5 — Evaluation and thesis packaging:** consolidated benchmarks and thesis-ready artifacts.
