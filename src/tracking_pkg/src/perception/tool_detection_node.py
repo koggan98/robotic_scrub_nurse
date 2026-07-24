@@ -89,6 +89,12 @@ class ToolDetectionNode(Node):
         self.declare_parameter('conf_threshold', 0.35)
         self.declare_parameter('imgsz', 1024)
         self.declare_parameter('device', 'cpu')
+        # A CUDA inference can fail transiently under GPU memory pressure (NvMap
+        # OOM). Do NOT pin to CPU on the first failure — CPU inference is ~100x
+        # slower and starves the rest of the stack. Run the failing frame on CPU
+        # but keep retrying CUDA; only latch to CPU after this many consecutive
+        # CUDA failures.
+        self.declare_parameter('max_cuda_failures', 8)
         self.declare_parameter('handle_class_name', 'handle')
         self.declare_parameter('inference_rate_hz', 5.0)
         self.declare_parameter('depth_search_radius_px', 5)
@@ -115,6 +121,8 @@ class ToolDetectionNode(Node):
         self.conf_threshold = float(self.get_parameter('conf_threshold').value)
         self.imgsz = int(self.get_parameter('imgsz').value)
         self.device = self.get_parameter('device').value
+        self.max_cuda_failures = int(self.get_parameter('max_cuda_failures').value)
+        self._cuda_failures = 0
         self.handle_class_name = self.get_parameter('handle_class_name').value
         self.inference_rate_hz = float(self.get_parameter('inference_rate_hz').value)
         self.depth_search_radius_px = int(self.get_parameter('depth_search_radius_px').value)
@@ -254,25 +262,40 @@ class ToolDetectionNode(Node):
             return False
 
     def _predict(self, color):
-        """Run YOLO-OBB inference, falling back to CPU if a CUDA call fails.
+        """Run YOLO-OBB inference on the configured device.
 
-        On the Spark the default device is cuda:0; if CUDA is unavailable or
-        misconfigured we degrade to CPU (once) instead of failing every tick.
+        A CUDA inference can fail transiently under GPU memory pressure (NvMap
+        OOM). That must NOT pin the node to CPU for the rest of the session — CPU
+        inference here is ~100x slower and saturates the CPU, starving the rest
+        of the stack (ASR, etc.). So a failing frame is retried once on CPU, but
+        the node keeps using CUDA on the next frame; it only latches to CPU after
+        CUDA has failed max_cuda_failures times in a row. Any success resets the
+        counter.
         """
         try:
-            return self._model.predict(
+            result = self._model.predict(
                 source=color, task='obb', imgsz=self.imgsz,
                 conf=self.conf_threshold, device=self.device, verbose=False,
             )
+            self._cuda_failures = 0
+            return result
         except Exception as e:
             if not str(self.device).startswith('cuda'):
                 raise
-            self.get_logger().warn(
-                f'CUDA inference failed ({e}); falling back to device=cpu')
-            self.device = 'cpu'
+            self._cuda_failures += 1
+            if self._cuda_failures >= self.max_cuda_failures:
+                self.get_logger().error(
+                    f'CUDA inference failed {self._cuda_failures}x in a row; '
+                    f'latching to CPU for this session. ({e})')
+                self.device = 'cpu'
+            else:
+                self.get_logger().warn(
+                    f'CUDA inference failed ({e}); running this frame on CPU, '
+                    f'retrying CUDA next frame '
+                    f'[{self._cuda_failures}/{self.max_cuda_failures}].')
             return self._model.predict(
                 source=color, task='obb', imgsz=self.imgsz,
-                conf=self.conf_threshold, device=self.device, verbose=False,
+                conf=self.conf_threshold, device='cpu', verbose=False,
             )
 
     def _tick(self):
