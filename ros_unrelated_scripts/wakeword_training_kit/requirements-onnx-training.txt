@@ -1,0 +1,38 @@
+# Reproducible userspace dependencies for the openWakeWord 0.6.0 ONNX-only
+# training kit. PyTorch comes from the university image. The setup script
+# installs the exact matching TorchAudio 2.10 CUDA wheel separately so pip
+# cannot replace the Hub's PyTorch build.
+#
+# The older openWakeWord training pipeline is most reliable with Python 3.10.
+numpy==1.26.4
+scipy==1.11.4
+scikit-learn==1.3.2
+onnx==1.14.0
+protobuf==3.20.3
+PyYAML==6.0.1
+tqdm==4.66.5
+requests==2.32.3
+
+# Official automatic-training notebook dependencies.
+mutagen==1.47.0
+torchinfo==1.8.0
+torchmetrics==1.2.0
+speechbrain==0.5.14
+audiomentations==0.33.0
+torch-audiomentations==0.12.0
+acoustics==0.2.6
+pronouncing==0.2.0
+datasets==2.14.6
+deep-phonemizer==0.0.19
+piper-phonemize==1.1.0
+webrtcvad==2.0.10
+
+# Compatibility pins for the 2023/2024 training stack.
+huggingface-hub==0.17.3
+fsspec==2023.10.0
+pyarrow==14.0.2
+librosa==0.10.1
+soundfile==0.12.1
+
+# scripts/01_setup.sh installs a CUDA/cuDNN-compatible onnxruntime-gpu build
+# after inspecting the PyTorch image. Do not add the CPU "onnxruntime" package.

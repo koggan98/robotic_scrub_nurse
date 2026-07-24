@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "name": "en_US-libritts_r-medium.pt",
+      "url": "https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt",
+      "bytes": 204089915,
+      "sha256": "e95ee53770bf598c354a6e6dbfc95ccb259aeeb501d35a86be8a767429ab0ff6"
+    },
+    {
+      "name": "embedding_model.onnx",
+      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx",
+      "bytes": 1326578,
+      "sha256": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f"
+    },
+    {
+      "name": "melspectrogram.onnx",
+      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx",
+      "bytes": 1087958,
+      "sha256": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f"
+    },
+    {
+      "name": "openwakeword_features_ACAV100M_2000_hrs_16bit.npy",
+      "url": "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/2b54ab75af92aac3a2c49f82ba58c1daae350563/openwakeword_features_ACAV100M_2000_hrs_16bit.npy",
+      "bytes": 17280000128,
+      "sha256": "721a66d0682c65a1b5c1da0aa109409cede1d20e28b15235c344b000cbb7654f"
+    },
+    {
+      "name": "validation_set_features.npy",
+      "url": "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/2b54ab75af92aac3a2c49f82ba58c1daae350563/validation_set_features.npy",
+      "bytes": 184836608,
+      "sha256": "a56a8a0f8e0efb91900acc6de4c0cdf4c564842e8475a7d49b36c039e17a690f"
+    }
+  ]
+}
+

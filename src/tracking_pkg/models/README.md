@@ -91,10 +91,20 @@ come from:
 
 ## Reproducible training workflow
 
-1. Prepare an isolated x86_64 Linux environment with Python 3.10 and an NVIDIA
-   GPU. The pinned notebook may be run through Colab connected to that compatible
-   local runtime, or reproduced in a compatible container. Do not install the
-   training stack into the robot's ROS Python environment.
+For a university GPU Hub, use the upload-ready PyTorch/ONNX training kit and
+its German step-by-step guide:
+[`ros_unrelated_scripts/wakeword_training_kit/START_HERE_DE.md`](../../../ros_unrelated_scripts/wakeword_training_kit/START_HERE_DE.md).
+It pins both upstream repositories, downloads and verifies all large assets,
+handles interrupted stages, validates the ONNX candidate, and packages only
+the small result archive for return to this workspace. The kit targets
+PyTorch 2.10 with Python 3.10 and a CUDA 12.6/12.8 build. If the university
+VPN is available only on macOS, follow the separate
+[`MAC_TRANSFER_DE.md`](../../../ros_unrelated_scripts/wakeword_training_kit/MAC_TRANSFER_DE.md)
+bridge guide.
+
+1. Prepare an isolated x86_64 Linux environment with Python 3.10,
+   `torch==2.10.0`, a CUDA 12.6/12.8 PyTorch build, and an NVIDIA GPU. Do not
+   install the training stack into the robot's ROS Python environment.
 2. Check out the pinned commits listed above. Do not train from moving `main`
    branches.
 3. Prepare and checksum the inputs listed above.

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "openwakeword": {
+    "repository": "https://github.com/dscripka/openWakeWord.git",
+    "tag": "v0.6.0",
+    "commit": "c8ef6912c5feccf1037b852d9bc6c7ed644135ba",
+    "local_changes": [
+      "ONNX-only: skip the post-export TFLite conversion",
+      "Use scheduler affinity for CPU worker discovery and clamp the halved worker count to at least one",
+      "Force the legacy ONNX exporter with dynamo=false and opset 13 at all three export sites for PyTorch 2.10",
+      "Restore the removed TorchAudio info/load APIs through a PCM-WAV-only SoundFile adapter before importing the legacy augmentation stack"
+    ],
+    "effective_train_py_sha256": "48be9c8f640ad13a8816988a6efeb3b26d1d3ef6d2d8c54b948691b55ba1eda5",
+    "effective_data_py_sha256": "bb81e61216dd55f6b595822c879ca81538294d8bd1f0b02fcbbaa2ba5c1432e8"
+  },
+  "piper_sample_generator": {
+    "repository": "https://github.com/rhasspy/piper-sample-generator.git",
+    "tag": "v2.0.0",
+    "commit": "195e3bd967d54589c2137c9de2b22ad526ba6b6f",
+    "local_change": "After verifying the official voice-model SHA-256, pass weights_only=false to torch.load because PyTorch 2.10 defaults to weights-only loading",
+    "effective_generate_samples_py_sha256": "a6107e0240d66d97a3c3c7dd2e6194be0a177b2cbf18fb88e56b6d67ae48edfb",
+    "supported_pytorch": "2.10.x with Python 3.10 and a CUDA 12.6 or CUDA 12.8 build"
+  },
+  "output": {
+    "format": "ONNX",
+    "target_phrase": "robot",
+    "runtime": "openWakeWord 0.6.0"
+  }
+}

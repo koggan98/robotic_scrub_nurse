@@ -1,0 +1,57 @@
+# Pipeline-only smoke configuration. Never deploy its output.
+#
+# It intentionally uses very few synthetic examples and training steps so that
+# environment, downloads, augmentation, CUDA, and ONNX export can be checked
+# before committing resources to the production run.
+
+model_name: "robot_smoke_DO_NOT_DEPLOY"
+
+target_phrase:
+  - "robot"
+
+custom_negative_phrases:
+  - "the robot"
+  - "a robot"
+  - "robots"
+  - "robotic"
+  - "robotics"
+  - "robo"
+  - "Robert"
+  - "rowboat"
+
+n_samples: 500
+n_samples_val: 100
+
+tts_batch_size: 25
+augmentation_batch_size: 8
+
+piper_sample_generator_path: "./work/piper-sample-generator"
+output_dir: "./output/robot_smoke"
+
+rir_paths:
+  - "./data/mit_rirs"
+
+background_paths:
+  - "./data/background_clips"
+
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "./data/validation_set_features.npy"
+augmentation_rounds: 1
+
+feature_data_files:
+  "ACAV100M_sample": "./data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 128
+  "adversarial_negative": 16
+  "positive": 16
+
+model_type: "dnn"
+layer_size: 32
+
+steps: 200
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2
+

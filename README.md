@@ -197,6 +197,14 @@ to `src/tracking_pkg/models/robot.onnx`, and update its model manifest before us
 launch. Until then, the deliberate fail-closed startup error confirms that no unsafe Whisper
 fallback is running.
 
+For training on an x86_64 university GPU Hub, the upload-ready
+[PyTorch/ONNX training kit](ros_unrelated_scripts/wakeword_training_kit/START_HERE_DE.md) provides
+checked setup/download scripts, a non-deployable smoke run, resumable production stages, audio
+recording guidance, ONNX validation, and a compact candidate export. It is prepared for the
+available PyTorch 2.10 image (Python 3.10, CUDA 12.6/12.8); the separate
+[macOS transfer guide](ros_unrelated_scripts/wakeword_training_kit/MAC_TRANSFER_DE.md) covers the
+VPN bridge to and from a browser/Jupyter-based Hub.
+
 Idle capture retains only a rolling `1.5 s` pre-roll instead of complete conversations. Once a
 wake/command session is active, `max_speech_seconds` bounds each accumulated speech segment to
 `8 s` even if the energy VAD never observes silence.

@@ -1,0 +1,64 @@
+# Production configuration for an openWakeWord 0.6.0 classifier that detects
+# the isolated English wake word "robot".
+#
+# Run every command from the root of the extracted training kit. Paths are
+# deliberately relative so the directory can be moved between GPU jobs.
+
+model_name: "robot"
+
+target_phrase:
+  - "robot"
+
+# Phrases that must not activate the model. Deployment-derived confusions can
+# be appended here before a later retraining run.
+custom_negative_phrases:
+  - "the robot"
+  - "a robot"
+  - "robots"
+  - "robotic"
+  - "robotics"
+  - "robo"
+  - "Robert"
+  - "rowboat"
+
+# The upstream example recommends at least 20,000 positive examples and states
+# that 100,000+ often performs best. These are production, not smoke-test,
+# values.
+n_samples: 100000
+n_samples_val: 10000
+
+tts_batch_size: 50
+augmentation_batch_size: 16
+
+piper_sample_generator_path: "./work/piper-sample-generator"
+output_dir: "./output/robot_training"
+
+rir_paths:
+  - "./data/mit_rirs"
+
+# Files in this directory are mixed into synthetic speech during augmentation.
+# Keep real deployment validation recordings outside this directory.
+background_paths:
+  - "./data/background_clips"
+
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "./data/validation_set_features.npy"
+augmentation_rounds: 1
+
+feature_data_files:
+  "ACAV100M_sample": "./data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+model_type: "dnn"
+layer_size: 32
+
+steps: 50000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2
+
