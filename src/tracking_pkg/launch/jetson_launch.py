@@ -174,7 +174,7 @@ def generate_launch_description():
         # custom (not-yet-trained) models/robot.onnx; a pretrained openWakeWord
         # name works out of the box with no training.
         DeclareLaunchArgument(
-            'wake_model', default_value='robot',
+            'wake_model', default_value='alexa',
             description="Acoustic wake model (use_wake_word:=true). 'robot' = "
                         'custom models/robot.onnx; or a pretrained openWakeWord '
                         'name (alexa, hey_jarvis, hey_mycroft, hey_rhasspy) — '
