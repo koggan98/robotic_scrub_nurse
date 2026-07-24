@@ -109,8 +109,10 @@ def _asr_node_actions(context, *args, **kwargs):
             'audio_wake_enabled':            True,
             'audio_wake_model_path':         model_path,
             'audio_wake_threshold':          0.5,
-            # Whisper verifies only the exact isolated wake token.
-            'wake_require_separate_command': True,
+            # Accept BOTH one-breath ("alexa awl") and wake-then-pause
+            # ("alexa" .. "awl"); Whisper still gates the wake word going first.
+            'wake_require_separate_command': False,
+            'two_stage_wake':                True,
             'wake_words':                    wake_words,
         })
     else:
