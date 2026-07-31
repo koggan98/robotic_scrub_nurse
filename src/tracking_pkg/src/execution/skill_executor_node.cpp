@@ -259,11 +259,11 @@ public:
             throw std::invalid_argument(message);
         }
         // The held tool's collision box, measured FROM THE JAWS along the tool —
-        // not from its middle. See attachToolBox(). Near-symmetric now that the
-        // sliding grasp grips tools closer to their middle (was 0.08 handle /
-        // 0.18 tip; re-centred 5 cm toward the handle, same 0.26 m total).
-        tool_box_handle_m_ = declare_parameter("tool_box_handle_m", 0.13);
-        tool_box_tip_m_ = declare_parameter("tool_box_tip_m", 0.13);
+        // not from its middle. See attachToolBox(). Symmetric 0.15/0.15 (0.30 m
+        // total) now that the sliding grasp grips tools closer to their middle
+        // (was 0.08 handle / 0.18 tip).
+        tool_box_handle_m_ = declare_parameter("tool_box_handle_m", 0.15);
+        tool_box_tip_m_ = declare_parameter("tool_box_tip_m", 0.15);
         tool_box_width_m_ = declare_parameter("tool_box_width_m", 0.05);
         tool_box_height_m_ = declare_parameter("tool_box_height_m", 0.05);
         // OMPL planning is stochastic and its post-smoothing occasionally
