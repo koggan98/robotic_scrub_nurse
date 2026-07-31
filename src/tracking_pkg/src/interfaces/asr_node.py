@@ -1150,16 +1150,21 @@ class ASRNode(Node):
                 audio_input.seek(0)
 
             # Greedy decoding (beam_size=1) is ~2x faster than beam search.
-            # The rest is about bailing FAST on non-speech: background noise used
-            # to trigger a segment and then take up to 30 s to decode (Whisper
-            # looping/hallucinating), blocking the wake word. Silero vad_filter
-            # drops non-speech before decoding, condition_on_previous_text=False
-            # stops the repetition spiral, and the thresholds abort low-confidence
-            # / repetitive output early.
+            # The rest is about bailing FAST on non-speech and NEVER getting stuck
+            # in Whisper's repetition spiral ("awl, awl, awl, ..." for 30+ s, which
+            # blocks the whole transcription queue). Silero vad_filter drops
+            # non-speech before decoding; condition_on_previous_text=False avoids
+            # cross-segment priming; no_repeat_ngram_size stops the model from
+            # looping a short phrase; temperature=0.0 disables the multi-temperature
+            # fallback whose retries are what make a bad segment take tens of
+            # seconds; max_new_tokens bounds the worst case (a command is short).
             segments, info = self._model.transcribe(
                 audio_input,
                 language=self.language,
                 beam_size=1,
+                temperature=0.0,
+                no_repeat_ngram_size=3,
+                max_new_tokens=64,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=300),
                 condition_on_previous_text=False,
