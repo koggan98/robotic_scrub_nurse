@@ -183,17 +183,31 @@ grasp_strategies:
     distance_m: 0.035
     z_offset_m: 0.000
 
+  # Grasped like the needle holder: slide the grasp point into the tray opening
+  # and reach 4 mm deeper (over_opening), instead of a shallow surface grasp. Only
+  # engages when the forceps actually lies ACROSS the slot with both fingertips
+  # clearing the rails; otherwise it falls back to z_offset_m (see the "grasping
+  # shallow" warning, which names the field to tune). Keep from_handle_center to
+  # not move the nominal grasp point if the inner-edge point grabs badly.
   forceps_big:
-    placement: fixed
-    distance_rule: from_handle_center
-    distance_m: 0.035
-    z_offset_m: 0.000
+    placement: sliding                      # was: fixed
+    distance_rule: from_handle_inner_edge    # like needle_holder
+    distance_m: 0.020
+    slide_min_m: 0.020
+    slide_max_m: 0.100
+    tip_margin_m: 0.020
+    z_offset_m: -0.002
+    z_offset_over_opening_m: -0.004
 
   forceps_mid:
-    placement: fixed
-    distance_rule: from_handle_center
-    distance_m: 0.035
-    z_offset_m: 0.000
+    placement: sliding                      # was: fixed
+    distance_rule: from_handle_inner_edge
+    distance_m: 0.020
+    slide_min_m: 0.020
+    slide_max_m: 0.085
+    tip_margin_m: 0.020
+    z_offset_m: -0.002
+    z_offset_over_opening_m: -0.004
 
   # ── "Flat" tools: so thin that the jaws only catch their top 2-3 mm at the
   #    tray surface, and they slip out. Long enough to be grasped anywhere along
