@@ -77,6 +77,12 @@ class CommandRouterNode(Node):
         self.declare_parameter('openai_api_key', '')
         self.declare_parameter('model_name', 'gpt-5-mini')
         self.declare_parameter('action_timeout_sec', 120.0)
+        # Test convenience: freeze the tray as the inventory on every pick, so a
+        # single-tool test loop needs no explicit "start surgery" and the tool is
+        # returned to exactly where it was just picked up. OFF for real
+        # operations, which register once and then pick many. Read live so it can
+        # be toggled at runtime with `ros2 param set`.
+        self.declare_parameter('auto_register_on_pick', False)
         # Drive the arm home automatically after a skill failure instead of
         # waiting for the operator to say "home". Executor already self-homes on
         # empty-gripper failures; this covers the still-holding / stuck cases.
@@ -308,6 +314,10 @@ class CommandRouterNode(Node):
             self._publish_response(f'No {name.lower()} on tray.')
             return
 
+        if bool(self.get_parameter('auto_register_on_pick').value):
+            # Capture the tool's CURRENT tray position as its home slot, so it is
+            # returned exactly here — no separate "start surgery" needed.
+            self._register_now()
         self._publish_response(f'{name}. Picking.')
         self._do_pick_and_handover(tool_id, tool_class)
 
@@ -654,6 +664,24 @@ class CommandRouterNode(Node):
             self._publish_response('Stopped.')
         except Exception as e:
             self._publish_response(f'Cannot stop. {e}')
+
+    def _register_now(self):
+        """Freeze the current tray as the inventory (quietly), so a just-picked
+        tool's CURRENT position becomes its home slot. Used by
+        auto_register_on_pick; logs instead of speaking so it stays out of the
+        way of the pick response."""
+        if not self.register_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn('auto-register: /register_inventory unavailable')
+            return False
+        resp = self._wait_for_future(
+            self.register_client.call_async(Trigger.Request()), 10.0)
+        if resp is None or not resp.success:
+            self.get_logger().warn(
+                'auto-register failed: '
+                f'{getattr(resp, "message", "timed out")}')
+            return False
+        self.get_logger().info('auto-registered current tray as home slots')
+        return True
 
     def _cmd_register(self):
         if not self.register_client.wait_for_service(timeout_sec=5.0):

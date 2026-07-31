@@ -31,6 +31,7 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -180,6 +181,15 @@ def generate_launch_description():
                         'name (alexa, hey_jarvis, hey_mycroft, hey_rhasspy) — '
                         'download once: python3 -c "import openwakeword.utils; '
                         'openwakeword.utils.download_models()".'),
+        # Testing: freeze the tray on every pick so a single-tool loop
+        # (place -> say the tool name -> reclaim -> return) needs no "start
+        # surgery" and the tool is returned exactly where it was picked up.
+        # Leave false for real operations.
+        DeclareLaunchArgument(
+            'auto_register', default_value='false',
+            description='true: every pick first registers the current tray, so '
+                        'no "start surgery" is needed and a tool is returned to '
+                        'its just-picked position (single-tool testing).'),
         SetEnvironmentVariable('LC_NUMERIC', 'en_US.UTF-8'),
 
         # ── Static TFs (ArUco marker world-poses) ─────────────────
@@ -503,6 +513,10 @@ def generate_launch_description():
                         'llm_fallback_enabled': True,
                         'model_name':           'gpt-5-mini',
                         'action_timeout_sec':   120.0,
+                        # auto_register:=true -> every pick first freezes the
+                        # tray, so single-tool test runs need no "start surgery".
+                        'auto_register_on_pick': ParameterValue(
+                            LaunchConfiguration('auto_register'), value_type=bool),
                     }],
                 ),
             ]
