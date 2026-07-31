@@ -425,6 +425,15 @@ public:
         reversed_tool_box_classes_ = declare_parameter(
             "reversed_tool_box_classes", std::vector<std::string>{"hammer"});
 
+        // Classes grasped with the EE rotated 180° (an extra pi of yaw), so the
+        // tool is held — and therefore handed over — reversed. The lopsided
+        // collision box follows automatically (attachToolBox derives tip_sign
+        // from the grasp quaternion). Read LIVE in the grasp builder, so it can
+        // be toggled with `ros2 param set` without a rebuild.
+        declare_parameter(
+            "reversed_grasp_classes",
+            std::vector<std::string>{"forceps_big", "forceps_mid", "forceps_short"});
+
         // ── Publishers ───────────────────────────────────────────────
         gripper_mover_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_mover", 10);
         gripper_zeroer_pub_ = create_publisher<std_msgs::msg::Bool>("/gripper_zeroer", 10);
@@ -1780,8 +1789,20 @@ private:
         grasp_pose_out.position.z = cand.grasp_pose.pose.position.z
                                   + cand.grasp_z_offset
                                   + z_offset_m;
-        grasp_pose_out.orientation = topDownQuaternionFromHandleAxis(
-            cand.handle_axis, tool_yaw_offset_rad_);
+        // Some tools are grasped with the EE rotated 180° so they end up presented
+        // reversed at handover (the box follows automatically — attachToolBox
+        // derives tip_sign from this quaternion). Read the class list live.
+        double grasp_yaw = tool_yaw_offset_rad_;
+        {
+            const auto reversed =
+                get_parameter("reversed_grasp_classes").as_string_array();
+            if (std::find(reversed.begin(), reversed.end(), cand.tool_class)
+                    != reversed.end()) {
+                grasp_yaw += 3.14159265358979323846;   // + pi
+            }
+        }
+        grasp_pose_out.orientation =
+            topDownQuaternionFromHandleAxis(cand.handle_axis, grasp_yaw);
 
         approach_pose_out = grasp_pose_out;
         approach_pose_out.position.z += approach_height_m_;
