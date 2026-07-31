@@ -257,6 +257,12 @@ def generate_launch_description():
                     executable='hand_tracker.py',
                     name='hand_tracker',
                     output='screen',
+                    # Deprioritise the CPU-hungry perception nodes (hand_tracker,
+                    # both YOLO detectors) so the CPU-only Whisper ASR wins
+                    # scheduling when a command comes in — otherwise transcription
+                    # gets starved and segments queue up. Positive nice needs no
+                    # root; these still run full speed whenever there is spare CPU.
+                    prefix='nice -n 10',
                     parameters=[{
                         'camera_frame': 'reclaim_tray_camera_color_optical_frame',
                         'world_frame': 'world',
@@ -286,6 +292,7 @@ def generate_launch_description():
                     executable='tool_detection_node.py',
                     name='tool_detection_node',
                     output='screen',
+                    prefix='nice -n 10',  # yield CPU to the ASR (see hand_tracker)
                     parameters=[{
                         'model_path': instrument_tray_model_path,
                         'tray_camera_namespace': '/tray_camera',
@@ -359,6 +366,7 @@ def generate_launch_description():
                     executable='tool_detection_node.py',
                     name='reclaim_tool_detection_node',
                     output='screen',
+                    prefix='nice -n 10',  # yield CPU to the ASR (see hand_tracker)
                     parameters=[{
                         'model_path': reclaim_tray_model_path,
                         'tray_camera_namespace': '/reclaim_tray_camera',
