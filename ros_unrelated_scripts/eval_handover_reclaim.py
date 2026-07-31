@@ -167,6 +167,10 @@ class EvalNode(Node):
         self.active: Cycle | None = None
         self.cycle_rows: list[dict] = []
         self.completed = 0
+        # Running tally of SUCCESSFUL cycles per type + their total duration,
+        # printed live so you can see how many good ones you already have.
+        self._success = {"handover": 0, "reclaim": 0}
+        self._success_time = {"handover": 0.0, "reclaim": 0.0}
         self._next_index = 1
         self._last_user_speech_t: float | None = None
         self._last_picking_t: float | None = None
@@ -375,14 +379,24 @@ class EvalNode(Node):
         self._cycles_w.writerow(row)
         self._cycles_fh.flush()
         self.completed += 1
+        if outcome == "success" and c.cycle_type in self._success:
+            self._success[c.cycle_type] += 1
+            if isinstance(row["d_total"], (int, float)):
+                self._success_time[c.cycle_type] += float(row["d_total"])
         if self.active is c:
             self.active = None
         icon = "OK " if outcome == "success" else "FAIL"
+        extra = "" if outcome == "success" else f" ({reason})"
+
+        def _avg(t):
+            n = self._success[t]
+            return f"{self._success_time[t] / n:.1f}s" if n else "-"
+
         self.get_logger().info(
-            f"[{icon}] cycle {c.index} {c.cycle_type} {c.tool_class or '?'} "
-            f"total={row['d_total'] or '?'}s "
-            f"{'' if outcome == 'success' else '(' + reason + ')'} "
-            f"| done={self.completed}")
+            f"[{icon}] {c.cycle_type} {c.tool_class or '?'} "
+            f"{row['d_total'] or '?'}s{extra}   ||   SUCCESSFUL SO FAR:  "
+            f"handover={self._success['handover']} (avg {_avg('handover')})   "
+            f"reclaim={self._success['reclaim']} (avg {_avg('reclaim')})")
         if self.args.target and self.completed >= self.args.target:
             self.get_logger().info(f"Reached target of {self.args.target} cycles. Finishing.")
             self.done = True
