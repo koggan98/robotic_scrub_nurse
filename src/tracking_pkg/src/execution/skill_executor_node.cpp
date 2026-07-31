@@ -244,6 +244,12 @@ public:
         // not the instrument tray's. 5 mm shallower than the instrument tray.
         reclaim_z_offset_m_ = declare_parameter("reclaim_z_offset", 0.009);
         approach_height_m_ = declare_parameter("approach_height_m", 0.04);
+        // Height above an instrument-tray slot the arm reaches — and finishes
+        // rotating to the placement orientation — BEFORE the final descent, so a
+        // tool never rotates low among its neighbours and sweeps them. The
+        // descent from here is a pure vertical cartesian move. Bigger = more
+        // clearance; tune if a long tool still grazes while rotating.
+        place_rotate_height_m_ = declare_parameter("place_rotate_height_m", 0.15);
         tool_yaw_offset_rad_ = declare_parameter("tool_yaw_offset_rad", 1.57079632679);
         // Dynamic instrument-tray IK must stay on the elbow-up branch. A pose
         // target otherwise lets KDL/RRTConnect choose the negative branch, where
@@ -2743,8 +2749,14 @@ private:
             }
         }
 
+        // Reach the placement orientation well ABOVE the slot, then descend
+        // straight down: the approach plan may rotate the tool to its final
+        // orientation, but it does so high up; the descend below is a pure
+        // vertical cartesian move that never rotates. The tight reclaim tray
+        // keeps its small approach height (its staging handles clearance).
         geometry_msgs::msg::Pose approach_pose = release_pose;
-        approach_pose.position.z += approach_height_m_;
+        approach_pose.position.z +=
+            reclaim ? approach_height_m_ : place_rotate_height_m_;
 
         moveit::planning_interface::MoveGroupInterface::Plan
             approach_plan, descend_plan, lift_plan;
@@ -3526,6 +3538,7 @@ private:
     double z_offset_m_;
     double reclaim_z_offset_m_;
     double approach_height_m_;
+    double place_rotate_height_m_;
     double tool_yaw_offset_rad_;
     double instrument_pick_elbow_min_rad_;
     double tool_box_handle_m_;
