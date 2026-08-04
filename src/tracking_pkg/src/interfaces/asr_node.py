@@ -14,6 +14,7 @@ The runtime dependencies are faster-whisper, sounddevice, NumPy, SciPy, and
 from collections import deque
 from dataclasses import dataclass
 import io
+import json
 import math
 import os
 import queue
@@ -44,6 +45,9 @@ class AudioQueueItem:
     audio: np.ndarray
     started_at: float
     deadline_reserved: bool
+    # Monotonic time at which the VAD closed this segment (utterance end / cut).
+    # Used only for the /asr_timing latency diagnostic.
+    speech_end_at: float = 0.0
 
 
 class AudioDeviceSelectionError(RuntimeError):
@@ -252,6 +256,10 @@ class ASRNode(Node):
 
         # Publishers
         self.publisher = self.create_publisher(String, 'user_speech', 10)
+        # Diagnostic-only: per accepted command, a JSON String with monotonic
+        # timestamps (segment-cut vs publish) so an external logger can measure
+        # transcription latency. No effect on the command path.
+        self._timing_pub = self.create_publisher(String, 'asr_timing', 10)
         # HRI status for the visual display: 'listening' (armed, waiting for the
         # command -> amber "speak now") or '' (idle). A pure feedback channel.
         # Latched: the HRI display (which boots faster than the Whisper model
@@ -746,6 +754,7 @@ class ASRNode(Node):
         In acoustic mode only the wake candidate and segments from its active
         session are admitted. Idle background speech is discarded here.
         """
+        cut_t = time.monotonic()   # VAD closed this segment (utterance end)
         if not speech_buffer:
             return
         audio_data = np.concatenate(speech_buffer, axis=0).flatten()
@@ -793,6 +802,7 @@ class ASRNode(Node):
             audio=audio_data,
             started_at=started_at,
             deadline_reserved=deadline_reserved,
+            speech_end_at=cut_t,
         )
         try:
             queued = self._put_acoustic_item(item)
@@ -918,7 +928,7 @@ class ASRNode(Node):
                         f'Discarded unexpected wake segment in phase {phase}.')
                     return
                 self._handle_acoustic_wake_transcript(
-                    item.generation, self._transcribe(item.audio))
+                    item, self._transcribe(item.audio))
                 return
 
             if item.kind != 'command':
@@ -952,11 +962,13 @@ class ASRNode(Node):
             if self._close_acoustic_session(
                     item.generation, 'command accepted'):
                 self._publish_command(command)
+                self._emit_timing(item, command)
         finally:
             self._release_deadline_reservation(item)
 
-    def _handle_acoustic_wake_transcript(self, generation, text):
+    def _handle_acoustic_wake_transcript(self, item, text):
         """Verify the acoustic hit with Whisper and arm/publish/reject it."""
+        generation = item.generation
         with self._wake_state_lock:
             if (generation != self._wake_generation or
                     self._phase != 'verify_wake'):
@@ -985,6 +997,7 @@ class ASRNode(Node):
             if self._close_acoustic_session(
                     generation, 'inline command accepted'):
                 self._publish_command(action[1])
+                self._emit_timing(item, action[1])
         else:
             rendered = text if text else '<empty>'
             self.get_logger().info(
@@ -1100,6 +1113,28 @@ class ASRNode(Node):
         msg.data = text
         self.publisher.publish(msg)
         self.get_logger().info(f'Published: "{text}"')
+
+    def _emit_timing(self, item, text):
+        """Diagnostic only: publish per-command latency timestamps on /asr_timing.
+
+        All times are asr_node's monotonic clock, so an external logger can take
+        the pure transcription latency as t_publish - t_speech_end directly from
+        the message (host/DDS-latency independent). No effect on the command path.
+        """
+        try:
+            audio_s = float(len(item.audio)) / float(self.capture_sample_rate)
+        except Exception:
+            audio_s = 0.0
+        payload = {
+            't_speech_start': round(float(item.started_at), 6),
+            't_speech_end': round(float(item.speech_end_at), 6),
+            't_publish': round(time.monotonic(), 6),
+            'audio_s': round(audio_s, 4),
+            'text': text,
+        }
+        m = String()
+        m.data = json.dumps(payload)
+        self._timing_pub.publish(m)
 
     def _handle_segment(self, text):
         """Apply the two-stage wake decision (pure planner) + its side effects."""
