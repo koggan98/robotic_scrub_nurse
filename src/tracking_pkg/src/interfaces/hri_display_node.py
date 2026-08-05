@@ -243,8 +243,8 @@ class HriDisplayNode(Node):
                                   color=text_col)
 
         # Listening badge: drawn ON TOP of any state so the wake-word feedback
-        # is visible even while a red RECOVERY/BUSY field owns the main colour —
-        # the surgeon can still see that "robot" was heard.
+        # is visible even while a red RECOVERY or amber BUSY field owns the main
+        # colour — the surgeon can still see that "robot" was heard.
         if self.asr_listening:
             self._draw_listening_badge(img)
 

@@ -85,13 +85,13 @@ def resolve_display(alert_active, alert_text, system_state, active_tool_class,
             detail = f'Fetching {tool}'
         else:
             detail = last_response or 'Moving'
-        return ('red', 'BUSY', detail, 'steady')
+        return ('amber', 'BUSY', detail, 'steady')
     if system_state in _TAKE:
         tool = pretty_tool(active_tool_class)
         detail = f'Take {tool}' if tool else 'Take the tool'
         return ('green', 'TAKE', detail, 'pulse' if pulse_take else 'steady')
     if system_state == 'AWAIT_GESTURE' or handover_waiting:
-        return ('amber', 'GESTURE', 'Make your gesture', 'steady')
+        return ('green', 'GESTURE', 'Make your gesture', 'steady')
     if not booted:
         return ('boot', 'STARTING', 'Waiting for speech recognition', 'steady')
     return ('green', 'READY', last_response or 'Ready', 'steady')
